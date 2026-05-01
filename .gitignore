@@ -47,4 +47,4 @@ worldshare-credentials.json
 *.log
 logs/
 
-src/main/resources/worldshare/oauth/client_secret.json
+src/main/resources/worldshare/oauth/client_secret*.json

@@ -19,6 +19,8 @@ import net.minecraft.network.chat.Component;
 import java.nio.file.Path;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import net.minecraft.client.gui.screens.GenericMessageScreen;
+import net.minecraft.client.gui.screens.TitleScreen;
 
 /**
  * Full-screen UI that runs after the user clicks "Save and Upload" from the
@@ -163,6 +165,12 @@ public final class SaveAndUploadScreen extends Screen {
         // 1.21.1: renderBackground takes (graphics, mouseX, mouseY, partialTick).
         // The 1.20.1 single-arg overload was removed.
         this.renderBackground(gfx, mouseX, mouseY, partial);
+        // Draw solid backdrop panel so UI is readable over the blurred world
+        final int panelX = this.width / 2 - 200;
+        final int panelY = 25;
+        final int panelW = 400;
+        final int panelH = 175;
+        gfx.fill(panelX, panelY, panelX + panelW, panelY + panelH, 0xCC000000);
 
         // Title.
         gfx.drawCenteredString(
@@ -432,20 +440,38 @@ public final class SaveAndUploadScreen extends Screen {
         final WorldContext.CurrentWorld current = WorldContext.current().orElse(null);
 
         if (current == null) {
-            mc.disconnect();
+            mc.level.disconnect();
+            if (mc.isLocalServer()) {
+                mc.disconnect(new GenericMessageScreen(
+                        Component.translatable("menu.savingLevel")));
+            } else {
+                mc.disconnect();
+            }
+            mc.setScreen(new TitleScreen());
             return;
         }
 
-        WorldShareMod.LOGGER.info("launchFromPauseMenu: showing SaveAndUploadScreen");
+        // ⚠️ MUST set token BEFORE disconnect. ServerStoppedEvent fires
+        // INSIDE mc.disconnect(Screen), and AutoSyncListener checks the token then.
         final Object token = new Object();
         AutoSyncListener.setSuppressionToken(token);
 
-        // Show our screen first — it renders immediately.
-        // Then schedule disconnect via execute() so it runs at the start of the
-        // next game loop iteration, not nested inside the button click handler.
-        // This breaks the deadlock: the render thread is free to process
-        // mc.execute() callbacks while disconnect waits for the server to stop.
-        mc.setScreen(new SaveAndUploadScreen(current.worldRoot, current.playerUuid, current.name));
-        mc.execute(mc::disconnect);
+        mc.level.disconnect();
+
+        // ⚠️ MUST use the Screen overload for singleplayer.
+        // mc.disconnect(Screen) BLOCKS the render thread until the integrated
+        // server is fully stopped. ServerStopping and ServerStopped fire inside
+        // this call. mc.disconnect() no-arg is the multiplayer path and does NOT
+        // stop the integrated server — waitForServerStopped() will time out.
+        if (mc.isLocalServer()) {
+            mc.disconnect(new GenericMessageScreen(
+                    Component.translatable("menu.savingLevel")));
+        } else {
+            mc.disconnect();
+        }
+
+        // disconnect(Screen) returned = server is stopped = serverHasStopped = true
+        mc.setScreen(new SaveAndUploadScreen(
+                current.worldRoot, current.playerUuid, current.name));
     }
 }
