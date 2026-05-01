@@ -1,0 +1,19 @@
+{
+    "mod.worldshare.name": "WorldShare",
+    "mod.worldshare.description": "Session-Locked Cloud Sync Bridge for sharing Minecraft worlds.",
+
+    "worldshare.ui.tab.contributor_worlds": "Contributor Worlds",
+    "worldshare.ui.status.live": "Live",
+    "worldshare.ui.status.available": "Available",
+    "worldshare.ui.status.needs_update": "Needs Update",
+    "worldshare.ui.status.locked": "Locked",
+    "worldshare.ui.action.join": "Join",
+    "worldshare.ui.action.play": "Play",
+    "worldshare.ui.action.sync_and_play": "Sync & Play",
+    "worldshare.ui.action.wait_retry": "Wait & Retry",
+
+    "worldshare.lock.stale.title": "Session Lock Held",
+    "worldshare.lock.stale.body": "This world is currently locked by %s.",
+
+    "worldshare.config.title": "WorldShare Settings"
+}

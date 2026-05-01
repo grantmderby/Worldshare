@@ -1,0 +1,48 @@
+# Build output
+build/
+out/
+*.class
+
+# Gradle
+.gradle/
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+
+# Forge runtime directories
+run/
+run-data/
+runs/
+
+# ForgeGradle generated files
+src/generated/
+
+# IDE files - IntelliJ
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# IDE files - Eclipse
+.classpath
+.project
+.settings/
+bin/
+
+# IDE files - VS Code
+.vscode/
+.factorypath
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Credentials — critically important to never commit.
+# The mod stores Google Drive OAuth tokens here; they must stay local.
+credentials/
+*.token
+*.refresh-token
+worldshare-credentials.json
+
+# Log files
+*.log
+logs/

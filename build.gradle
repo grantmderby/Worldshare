@@ -1,0 +1,188 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'maven-publish'
+    // NeoGradle replaces ForgeGradle. NeoGradle 7+ targets NeoForge.
+    id 'net.neoforged.gradle.userdev' version '7.0.145'
+    // Shadow plugin for shading Google Drive deps. Keep using this; works fine with NeoGradle.
+    // (We previously considered JarJar; for our use case Shadow is simpler since we only
+    // ship one jar and the Google libs need package relocation to avoid conflicts.)
+    id 'io.github.goooler.shadow' version '8.1.8'
+}
+
+
+configurations {
+    shade
+    implementation.extendsFrom shade
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_id
+}
+
+// NeoForge 1.21.1 requires Java 21 (Minecraft moved up from 17 in 1.20.5).
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+runs {
+    configureEach {
+        workingDirectory project.file('run')
+        systemProperty 'forge.logging.markers', 'REGISTRIES'
+        systemProperty 'forge.logging.console.level', 'debug'
+        modSource project.sourceSets.main
+
+        // Add Google libs explicitly to the run classpath
+        dependencies {
+            runtime 'com.google.api-client:google-api-client:2.2.0'
+            runtime 'com.google.oauth-client:google-oauth-client:1.34.1'
+            runtime 'com.google.oauth-client:google-oauth-client-java6:1.34.1'
+            runtime 'com.google.apis:google-api-services-drive:v3-rev20230815-2.0.0'
+        }
+    }
+
+    client {
+        systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+    }
+
+    server {
+        systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+        programArgument '--nogui'
+    }
+
+    gameTestServer {
+        systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+    }
+
+    data {
+        workingDirectory project.file('run-data')
+        programArguments.addAll '--mod', mod_id, '--all',
+                '--output', file('src/generated/resources/').getAbsolutePath(),
+                '--existing', file('src/main/resources/').getAbsolutePath()
+    }
+}
+
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+repositories {
+    mavenCentral()
+    // NeoForge maven (also pulls neoforge.userdev from here)
+    maven {
+        name = 'NeoForged'
+        url = 'https://maven.neoforged.net/releases'
+    }
+}
+
+configurations.all {
+    resolutionStrategy {
+        force 'org.ow2.asm:asm:9.8'
+        force 'org.ow2.asm:asm-analysis:9.8'
+        force 'org.ow2.asm:asm-tree:9.8'
+        force 'org.ow2.asm:asm-commons:9.8'
+        force 'org.ow2.asm:asm-util:9.8'
+    }
+}
+
+dependencies {
+    implementation "net.neoforged:neoforge:${neo_version}"
+
+    // Shade for jar packing (relocates packages into the output jar)
+    shade 'com.google.api-client:google-api-client:2.2.0'
+    shade 'com.google.oauth-client:google-oauth-client:1.34.1'
+    shade 'com.google.oauth-client:google-oauth-client-java6:1.34.1'
+    shade 'com.google.apis:google-api-services-drive:v3-rev20230815-2.0.0'
+}
+
+// Populate neoforge.mods.toml placeholders at build time.
+tasks.named('processResources', ProcessResources).configure {
+    var replaceProperties = [
+            minecraft_version      : minecraft_version,
+            minecraft_version_range: minecraft_version_range,
+            neo_version            : neo_version,
+            neo_version_range      : neo_version_range,
+            loader_version_range   : loader_version_range,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_license            : mod_license,
+            mod_version            : mod_version,
+            mod_authors            : mod_authors,
+            mod_description        : mod_description,
+    ]
+    inputs.properties replaceProperties
+
+    filesMatching(['META-INF/neoforge.mods.toml', 'pack.mcmeta']) {
+        expand replaceProperties + [project: project]
+    }
+}
+
+// ----- Jar + ShadowJar wiring -----
+// Same pattern as before: shadowJar is the deliverable, plain jar is intermediate.
+// NeoGradle does NOT have the "reobf" task that ForgeGradle did - NeoForge uses
+// official mappings end-to-end, so what you build is what runs. No reobfuscation step!
+// This is one of the cleanest wins of migrating: Shadow's output is the deliverable directly.
+
+jar {
+    archiveClassifier = 'slim'
+    manifest {
+        attributes([
+                'Specification-Title'     : mod_id,
+                'Specification-Vendor'    : mod_authors,
+                'Specification-Version'   : '1',
+                'Implementation-Title'    : project.name,
+                'Implementation-Version'  : project.jar.archiveVersion,
+                'Implementation-Vendor'   : mod_authors,
+                'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+        ])
+    }
+}
+
+shadowJar {
+    archiveClassifier = ''
+    configurations = [project.configurations.shade]
+
+    relocate 'com.google.api', 'com.worldshare.shaded.com.google.api'
+    relocate 'com.google.auth', 'com.worldshare.shaded.com.google.auth'
+
+    exclude 'META-INF/LICENSE*'
+    exclude 'META-INF/NOTICE*'
+    exclude 'META-INF/DEPENDENCIES'
+    exclude 'META-INF/maven/**'
+    exclude 'META-INF/*.SF'
+    exclude 'META-INF/*.DSA'
+    exclude 'META-INF/*.RSA'
+
+    manifest {
+        attributes([
+                'Specification-Title'     : mod_id,
+                'Specification-Vendor'    : mod_authors,
+                'Specification-Version'   : '1',
+                'Implementation-Title'    : project.name,
+                'Implementation-Version'  : project.jar.archiveVersion,
+                'Implementation-Vendor'   : mod_authors,
+                'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+        ])
+    }
+}
+
+// `./gradlew build` should produce the shaded jar as the primary artifact.
+tasks.named('assemble') {
+    dependsOn 'shadowJar'
+}
+
+publishing {
+    publications {
+        register('mavenJava', MavenPublication) {
+            artifact shadowJar
+        }
+    }
+    repositories {
+        maven {
+            url "file://${project.projectDir}/mcmodsrepo"
+        }
+    }
+}

@@ -1,0 +1,42 @@
+# NeoForge mod metadata. Replaces the old META-INF/mods.toml from Forge.
+modLoader="javafml"
+loaderVersion="${loader_version_range}"
+
+license="${mod_license}"
+
+[[mods]]
+modId="${mod_id}"
+version="${mod_version}"
+displayName="${mod_name}"
+authors="${mod_authors}"
+description='''${mod_description}'''
+credits="Built with NeoForge MDK"
+
+# ----- Dependencies -----
+
+# NeoForge itself - required
+[[dependencies.${mod_id}]]
+    modId="neoforge"
+    type="required"
+    versionRange="${neo_version_range}"
+    ordering="NONE"
+    side="BOTH"
+
+# Minecraft - required, version range scoped to 1.21.1
+[[dependencies.${mod_id}]]
+    modId="minecraft"
+    type="required"
+    versionRange="${minecraft_version_range}"
+    ordering="NONE"
+    side="BOTH"
+
+# e4mc - required for live co-op (M4)
+# The mod ID for e4mc on the NeoForge build is "e4mc" (was "e4mc_minecraft" on Forge).
+# We mark this as "required" so brother gets a clear "you need to install e4mc"
+# message if it's missing. Side=CLIENT because e4mc is a client-side mod.
+[[dependencies.${mod_id}]]
+    modId="e4mc"
+    type="required"
+    versionRange="[6.0,)"
+    ordering="AFTER"
+    side="CLIENT"
