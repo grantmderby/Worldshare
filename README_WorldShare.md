@@ -8,7 +8,7 @@ Either player can open the world solo. When both are online simultaneously, they
 
 ## Why I Built This
 
-I wanted to play Create Aeronautics with my brother (he's in Utah, I'm in Texas) without either of us having to maintain a dedicated server. WorldShare lets either of us boot up the world solo, with our changes synced to Drive when we save and quit. When we're both online, we connect live through e4mc.
+I wanted to play multiplayer with my brother (he's in Utah, I'm in Texas) without either of us having to maintain a dedicated server. WorldShare lets either of us boot up the world solo, with our changes synced to Drive when we save and quit. When we're both online, we connect live through e4mc.
 
 The interesting engineering problem is what happens when both people want to play. You can't just sync files naively — you'll corrupt the world. You need session locking. You need to handle the case where someone's computer crashes while holding the lock. You need atomic commits so a half-uploaded world doesn't replace the good one on Drive. That's most of what this mod is.
 
