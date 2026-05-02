@@ -3,24 +3,24 @@ package com.worldshare.mod.relay;
 import com.worldshare.mod.WorldShareMod;
 
 /**
- * Relay module - owns the "live co-op" path via e4mc.
+ * Relay module — owns the live co-op path via e4mc.
  *
- * <p>Planned sub-components (Milestone 4):
+ * <p>M4: initializes {@link E4mcCoordinator}, which handles:
  * <ul>
- *   <li>{@code E4mcBridge} - detects e4mc's generated relay address and publishes it to the lock</li>
- *   <li>{@code HostPresence} - maintains the players_online list on the lock while hosting</li>
- *   <li>{@code JoinFlow} - when the client clicks "Join", routes them to the relay address</li>
+ *   <li>Host side: log appender domain capture, presence.json write/refresh/delete</li>
+ *   <li>Guest side: title-screen presence poll, JoinPromptScreen display</li>
  * </ul>
  *
- * <p>Milestone 0: init does nothing but log. No relay interaction.
+ * <p>The actual EVENT_BUS registration of E4mcCoordinator happens in
+ * {@code UiModule.init()} during client setup, since its handlers are
+ * client-only.
  */
 public final class RelayModule {
 
-    private RelayModule() {
-        // utility / module holder class
-    }
+    private RelayModule() {}
 
     public static void init() {
-        WorldShareMod.LOGGER.info("RelayModule initialized (stub - no relay integration yet).");
+        WorldShareMod.LOGGER.info("RelayModule initialized.");
+        E4mcCoordinator.init();
     }
 }

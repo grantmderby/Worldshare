@@ -162,24 +162,23 @@ public final class SaveAndUploadScreen extends Screen {
 
     @Override
     public void render(final GuiGraphics gfx, final int mouseX, final int mouseY, final float partial) {
-        // 1.21.1: renderBackground takes (graphics, mouseX, mouseY, partialTick).
-        // The 1.20.1 single-arg overload was removed.
-        this.renderBackground(gfx, mouseX, mouseY, partial);
-        // Draw solid backdrop panel so UI is readable over the blurred world
+        gfx.fill(0, 0, this.width, this.height, 0xFF1a1a1a);
+
+
+        // Everything drawn AFTER super.render() is above the blur layer
+        // Draw solid backdrop panel
         final int panelX = this.width / 2 - 200;
         final int panelY = 25;
         final int panelW = 400;
         final int panelH = 175;
         gfx.fill(panelX, panelY, panelX + panelW, panelY + panelH, 0xCC000000);
 
-        // Title.
+        // Title
         gfx.drawCenteredString(
                 this.font,
                 Component.literal("Save and Upload — '" + worldName + "'")
                         .withStyle(ChatFormatting.YELLOW),
-                this.width / 2,
-                40,
-                0xFFFFFF);
+                this.width / 2, 40, 0xFFFFFF);
 
         // Stage text.
         gfx.drawCenteredString(
@@ -250,6 +249,11 @@ public final class SaveAndUploadScreen extends Screen {
         // Don't let escape kill the upload silently — user must explicitly
         // hit Cancel or Continue in Background.
         return false;
+    }
+
+    @Override
+    protected void renderBlurredBackground(float partialTick) {
+        // Don't blur — we want our progress UI to be readable
     }
 
     // ---- Flow orchestration ----

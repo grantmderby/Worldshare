@@ -11,6 +11,7 @@ plugins {
 }
 
 
+
 configurations {
     shade
     implementation.extendsFrom shade
@@ -92,6 +93,7 @@ dependencies {
     implementation "net.neoforged:neoforge:${neo_version}"
 
     // Shade for jar packing (relocates packages into the output jar)
+    compileOnly files('run/mods/e4mc-neoforge-6.1.0.jar')
     shade 'com.google.api-client:google-api-client:2.2.0'
     shade 'com.google.oauth-client:google-oauth-client:1.34.1'
     shade 'com.google.oauth-client:google-oauth-client-java6:1.34.1'
@@ -186,3 +188,5 @@ publishing {
         }
     }
 }
+
+

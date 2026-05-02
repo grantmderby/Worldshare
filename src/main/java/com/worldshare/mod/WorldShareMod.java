@@ -10,6 +10,7 @@ import com.worldshare.mod.sync.AutoSyncListener;
 import com.worldshare.mod.ui.UiModule;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.config.ModConfig;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
@@ -17,7 +18,6 @@ import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import org.slf4j.Logger;
-import net.neoforged.fml.ModContainer;
 
 /**
  * Main entry point for the WorldShare mod.
@@ -30,46 +30,40 @@ import net.neoforged.fml.ModContainer;
  *   <li>The {@link AutoSyncListener} for auto-push on Save and Quit</li>
  * </ul>
  *
- * <p>NeoForge 1.21.1 differences from the Forge 1.20.1 version:
- * <ul>
- *   <li>{@code MinecraftForge.EVENT_BUS} → {@code NeoForge.EVENT_BUS}</li>
- *   <li>{@code FMLJavaModLoadingContext.get().getModEventBus()} → {@code IEventBus} parameter
- *       in the constructor</li>
- *   <li>All {@code net.minecraftforge.*} imports → {@code net.neoforged.*}</li>
- * </ul>
+ * <p>Note: {@code E4mcCoordinator} is NOT registered here. Its handlers are
+ * client-only and must register from {@code FMLClientSetupEvent}, which is
+ * done by {@link UiModule#init()}.
+ *
+ * <p>NeoForge 1.21.1 injects {@link ModContainer} into the constructor; we
+ * use it for config registration. The older {@code ModLoadingContext.get()
+ * .registerConfig(...)} pattern was removed in 1.21.1.
  */
 @Mod(WorldShareMod.MOD_ID)
 public final class WorldShareMod {
 
-    /** The mod id. Must match the value in gradle.properties. */
     public static final String MOD_ID = "worldshare";
-
-    /** Shared SLF4J logger. All mod code should use this rather than System.out. */
     public static final Logger LOGGER = LogUtils.getLogger();
 
-    /**
-     * NeoForge passes the mod's event bus directly to our constructor (along with
-     * the mod container, FML context, etc - all optional). This is one of the
-     * cleaner NeoForge improvements: no more {@code FMLJavaModLoadingContext.get()}.
-     */
     public WorldShareMod(final IEventBus modBus, final ModContainer container) {
         LOGGER.info("WorldShare mod constructing...");
 
+        // NeoForge 1.21.1: register config via the injected ModContainer.
         container.registerConfig(
                 ModConfig.Type.CLIENT,
                 WorldShareConfig.SPEC,
                 "worldshare-client.toml"
         );
 
-        // Lifecycle hooks on the mod event bus.
         modBus.addListener(this::onCommonSetup);
         modBus.addListener(this::onClientSetup);
 
-        // Register ourselves on the NeoForge event bus so our @SubscribeEvent handlers
-        // below (RegisterCommandsEvent, etc) are picked up.
         NeoForge.EVENT_BUS.register(this);
 
-        // AutoSyncListener uses static @SubscribeEvent methods, so register the class.
+        // ⚠️ CRITICAL — DO NOT REMOVE.
+        // AutoSyncListener uses STATIC @SubscribeEvent methods.
+        // Must register the CLASS, not an instance.
+        // Removing this line silently breaks all auto-push functionality.
+        // This was discovered after hours of debugging (events fired, nothing received).
         NeoForge.EVENT_BUS.register(AutoSyncListener.class);
 
         LOGGER.info("WorldShare: registered AutoSyncListener on EVENT_BUS");
@@ -94,11 +88,6 @@ public final class WorldShareMod {
         });
     }
 
-    /**
-     * Registers our /worldshare commands. Fired once on every world load
-     * (integrated server start on singleplayer), which is the correct place
-     * per NeoForge's documentation.
-     */
     @SubscribeEvent
     public void onRegisterCommands(final RegisterCommandsEvent event) {
         WorldShareCommands.register(event.getDispatcher());
