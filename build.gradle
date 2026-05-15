@@ -157,6 +157,19 @@ shadowJar {
     exclude 'META-INF/*.SF'
     exclude 'META-INF/*.DSA'
     exclude 'META-INF/*.RSA'
+    exclude 'com/google/errorprone/**'
+    exclude 'org/checkerframework/**'
+    exclude 'javax/annotation/**'
+    exclude 'com/google/j2objc/**'
+    exclude 'com/google/errorprone/**'
+    exclude 'javax/annotation/**'
+    exclude 'javax/inject/**'
+    exclude 'aopalliance/**'
+    exclude 'org/apache/commons/**'
+    relocate 'com.google.gson', 'com.worldshare.repack.gson'
+    relocate 'org.apache.http', 'com.worldshare.repack.apache.http'
+    relocate 'com.google.common', 'com.worldshare.repack.guava'
+    relocate 'com.google.thirdparty', 'com.worldshare.repack.google.thirdparty'
 
     manifest {
         attributes([

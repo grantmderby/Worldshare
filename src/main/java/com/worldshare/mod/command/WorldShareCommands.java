@@ -9,8 +9,16 @@ import com.worldshare.mod.cloud.DriveClient;
 import com.worldshare.mod.cloud.LockManager;
 import com.worldshare.mod.cloud.OAuthHelper;
 import com.worldshare.mod.cloud.SessionLock;
+import com.worldshare.mod.config.SubscriptionStore;
+import com.worldshare.mod.config.WorldLink;
 import com.worldshare.mod.config.WorldShareConfig;
+import com.worldshare.mod.config.WorldSubscription;
 import com.worldshare.mod.relay.E4mcCoordinator;
+import com.worldshare.mod.sync.OnlineChecker;
+import com.worldshare.mod.sync.SyncDiff;
+import com.worldshare.mod.sync.SyncEngine;
+import com.worldshare.mod.sync.SyncProgress;
+import com.worldshare.mod.sync.WorldContext;
 import com.worldshare.mod.util.MachineId;
 import com.worldshare.mod.util.SHA256Util;
 import net.minecraft.ChatFormatting;
@@ -36,10 +44,22 @@ import java.time.Instant;
  * <p>Subcommands by milestone:
  * <ul>
  *   <li>M1: {@code test}, {@code signout}</li>
- *   <li>M2: {@code setfolder}, {@code clearfolder}, {@code lock}, {@code unlock},
+ *   <li>M2: {@code setDriveLink}, {@code clearDriveLink}, {@code lock}, {@code unlock},
  *       {@code lockinfo}, {@code heartbeat}</li>
  *   <li>M3: {@code push}, {@code pull}, {@code status}</li>
  *   <li>M4: {@code invite}</li>
+ * </ul>
+ *
+ * <p><b>M5 changes:</b>
+ * <ul>
+ *   <li>{@code setfolder} renamed to {@code setDriveLink}; also writes
+ *       {@code worldshare-link.json} and registers in the subscription store</li>
+ *   <li>{@code clearfolder} renamed to {@code clearDriveLink}; also unsubscribes
+ *       from the subscription store so the world disappears from Contributor Worlds</li>
+ *   <li>{@code lock} now checks if the local copy is behind Drive before acquiring;
+ *       if behind, refuses the lock with a clear message explaining how to fix it</li>
+ *   <li>All Drive folder ID lookups now use {@link WorldLink} (per-world link file)
+ *       rather than the legacy global config value</li>
  * </ul>
  */
 public final class WorldShareCommands {
@@ -56,13 +76,13 @@ public final class WorldShareCommands {
                                 .executes(ctx -> runDriveTest(ctx.getSource())))
                         .then(Commands.literal("signout")
                                 .executes(ctx -> runSignOut(ctx.getSource())))
-                        .then(Commands.literal("setfolder")
+                        .then(Commands.literal("setDriveLink")
                                 .then(Commands.argument("id", StringArgumentType.greedyString())
-                                        .executes(ctx -> runSetFolder(
+                                        .executes(ctx -> runSetDriveLink(
                                                 ctx.getSource(),
                                                 StringArgumentType.getString(ctx, "id")))))
-                        .then(Commands.literal("clearfolder")
-                                .executes(ctx -> runClearFolder(ctx.getSource())))
+                        .then(Commands.literal("clearDriveLink")
+                                .executes(ctx -> runClearDriveLink(ctx.getSource())))
                         .then(Commands.literal("lock")
                                 .executes(ctx -> runLock(ctx.getSource())))
                         .then(Commands.literal("unlock")
@@ -79,48 +99,44 @@ public final class WorldShareCommands {
                                 .executes(ctx -> runPull(ctx.getSource())))
                         .then(Commands.literal("invite")
                                 .executes(ctx -> runInvite(ctx.getSource())))
+                        .then(Commands.literal("modpack")
+                                .then(Commands.literal("generate")
+                                        .executes(ctx -> runModpackGenerate(ctx.getSource()))))
         );
         WorldShareMod.LOGGER.info("Registered /worldshare commands");
     }
 
-    // ----- M1: Auth commands -----
+    // ----- M1 -----
 
     private static int runDriveTest(final CommandSourceStack source) {
         sendFeedback(source, "Starting Google Drive round-trip test.", ChatFormatting.GRAY);
-
         CloudModule.executor().submit(() -> {
             try {
-                final DriveClient client = CloudModule.driveClient(WorldShareCommands::postClickableAuthLink);
-
+                final DriveClient client = CloudModule.driveClient(
+                        WorldShareCommands::postClickableAuthLink);
                 sendClientMessage("§7[WorldShare] Authenticating with Google...");
                 final Path tmp = Files.createTempFile("worldshare-test-", ".txt");
                 final String content = "WorldShare round-trip test - " + Instant.now();
                 Files.writeString(tmp, content, StandardCharsets.UTF_8);
                 final String localHash = SHA256Util.hashFile(tmp);
-
                 sendClientMessage("[WorldShare] Writing local test file...");
                 sendClientMessage("         local hash: " + localHash.substring(0, 16) + "...");
-
                 sendClientMessage("[WorldShare] Uploading to Drive...");
                 final String fileId = client.uploadFile(tmp, TEST_FILE_NAME, null);
                 sendClientMessage("         drive file id: " + fileId);
-
                 sendClientMessage("[WorldShare] Downloading back from Drive...");
                 final Path downloaded = Files.createTempFile("worldshare-dl-", ".txt");
                 client.downloadFile(fileId, downloaded);
                 final String dlHash = SHA256Util.hashFile(downloaded);
                 sendClientMessage("         downloaded hash: " + dlHash.substring(0, 16) + "...");
-
-                sendClientMessage("[WorldShare] Cleaning up (deleting drive file + local temps)...");
+                sendClientMessage("[WorldShare] Cleaning up...");
                 client.deleteFile(fileId);
                 Files.deleteIfExists(tmp);
                 Files.deleteIfExists(downloaded);
-
                 if (localHash.equals(dlHash)) {
                     sendClientMessage("§a[WorldShare] \u2705 Round-trip successful! Hashes match.");
                 } else {
-                    sendClientMessage("§c[WorldShare] \u274c Hash mismatch! local="
-                            + localHash.substring(0, 8) + " drive=" + dlHash.substring(0, 8));
+                    sendClientMessage("§c[WorldShare] \u274c Hash mismatch!");
                 }
             } catch (final Throwable t) {
                 WorldShareMod.LOGGER.error("Drive test failed", t);
@@ -141,8 +157,7 @@ public final class WorldShareCommands {
                             .withClickEvent(new ClickEvent(ClickEvent.Action.OPEN_URL, url))
                             .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
                                     Component.literal("Opens Google OAuth in your browser.\n"
-                                            + "This tab will stop loading - "
-                                            + "that's expected. Return to Minecraft."))));
+                                            + "Return to Minecraft after authorizing."))));
             if (mc.player != null) {
                 mc.player.displayClientMessage(link, false);
             }
@@ -154,7 +169,8 @@ public final class WorldShareCommands {
             try {
                 OAuthHelper.forgetStoredCredential();
                 CloudModule.resetDriveClient();
-                sendClientMessage("§a[WorldShare] Signed out. Next Drive operation will prompt to sign in again.");
+                sendClientMessage("§a[WorldShare] Signed out. "
+                        + "Next Drive operation will prompt to sign in.");
             } catch (final IOException e) {
                 WorldShareMod.LOGGER.error("Sign out failed", e);
                 sendClientMessage("§c[WorldShare] Sign out failed: " + e.getMessage());
@@ -163,63 +179,220 @@ public final class WorldShareCommands {
         return Command.SINGLE_SUCCESS;
     }
 
-    // ----- M2: Session Lock commands -----
+    // ----- M2 -----
 
-    private static int runSetFolder(final CommandSourceStack source, final String id) {
+    /**
+     * M5: renamed from {@code setfolder}. Now also writes a
+     * {@code worldshare-link.json} into the world folder and registers the
+     * world in the subscription store. This binds the open world to its Drive
+     * folder permanently on this machine.
+     */
+    private static int runSetDriveLink(final CommandSourceStack source, final String id) {
         final String extracted = extractFolderId(id);
+
+
+
         if (extracted == null) {
-            sendFeedback(source, "Couldn't parse a Drive folder ID from that input.", ChatFormatting.RED);
+            sendFeedback(source,
+                    "Couldn't parse a Drive folder ID from that input.", ChatFormatting.RED);
             return 0;
         }
 
-        sendFeedback(source,
-                "Verifying folder is accessible (this requires sign-in if you haven't already)...",
-                ChatFormatting.GRAY);
+        final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
+        if (ctx.isEmpty()) {
+            sendFeedback(source,
+                    "You must be in a world to use /worldshare setDriveLink. "
+                    + "Open a singleplayer world first.",
+                    ChatFormatting.RED);
+            return 0;
+        }
+        final WorldContext.CurrentWorld world = ctx.get();
+
+        sendFeedback(source, "Verifying folder with Drive...", ChatFormatting.GRAY);
+
+
+        final String localFolderName = world.worldRoot.getFileName().toString();
+        final WorldSubscription claimed = SubscriptionStore.get().findByFolderId(extracted);
+        if (claimed != null && claimed.localFolderName != null
+                && !claimed.localFolderName.equals(localFolderName)) {
+            sendFeedback(source,
+                    "This Drive folder is already linked to local world '"
+                            + claimed.localFolderName + "'.",
+                    ChatFormatting.RED);
+            sendFeedback(source,
+                    "Two local worlds cannot share one Drive folder.",
+                    ChatFormatting.RED);
+            sendFeedback(source,
+                    "Open '" + claimed.localFolderName
+                            + "' and run /worldshare clearDriveLink first if you want to move the link.",
+                    ChatFormatting.GRAY);
+            return 0;
+        }
 
         CloudModule.executor().submit(() -> {
             try {
-                final DriveClient client = CloudModule.driveClient(WorldShareCommands::postClickableAuthLink);
-                final com.google.api.services.drive.model.File meta = client.getFileMeta(extracted);
+                final DriveClient client = CloudModule.driveClient(
+                        WorldShareCommands::postClickableAuthLink);
+                final com.google.api.services.drive.model.File meta =
+                        client.getFileMeta(extracted);
                 if (meta == null) {
-                    sendClientMessage("§c[WorldShare] Folder not found or not accessible. "
-                            + "Check the ID and that the folder is shared with your signed-in account.");
+                    sendClientMessage("§c[WorldShare] Folder not found or not accessible.");
                     return;
                 }
                 if (!DriveClient.MIME_TYPE_FOLDER.equals(meta.getMimeType())) {
-                    sendClientMessage("§c[WorldShare] That ID points to a file, not a folder. "
-                            + "(mime: " + meta.getMimeType() + ")");
+                    sendClientMessage(
+                            "§c[WorldShare] That ID is a file, not a folder.");
                     return;
                 }
+
+                final String folderName = meta.getName() != null ? meta.getName() : extracted;
+                final String localFolder = world.worldRoot.getFileName().toString();
+
+                // Write link file + subscribe in store.
+                SubscriptionStore.get().linkWorldToFolder(
+                        world.worldRoot, localFolder, extracted, folderName);
+
+                // Keep legacy global config in sync (for any remaining M4 reads).
                 WorldShareConfig.get().driveFolderId.set(extracted);
                 WorldShareConfig.get().driveFolderId.save();
-                sendClientMessage("§a[WorldShare] \u2705 Folder saved: " + meta.getName()
-                        + " (id " + extracted + ")");
-                WorldShareMod.LOGGER.info("Drive folder ID set to: {} (name: {})",
-                        extracted, meta.getName());
+
+                sendClientMessage("§a[WorldShare] \u2705 Drive link set: '"
+                        + folderName + "' (" + extracted + ")");
+                sendClientMessage("§7 World '" + world.name
+                        + "' will now sync to this Drive folder.");
+                sendClientMessage("§a[WorldShare] Drive link set: '" + folderName + "'");
+                sendClientMessage("§7 World '" + world.name + "' will now sync to this Drive folder.");
+// ADD THESE THREE LINES:
+                sendClientMessage("§e ");
+                sendClientMessage("§e[WorldShare] Note: this world is NOT yet locked for syncing.");
+                sendClientMessage("§e To play with Drive sync, save and quit, then open via");
+                sendClientMessage("§e Contributor Worlds tab. Running from vanilla Singleplayer");
+                sendClientMessage("§7 will not save changes to Drive.");
+                WorldShareMod.LOGGER.info(
+                        "setDriveLink: linked '{}' (local: '{}') -> Drive '{}'",
+                        world.name, localFolder, extracted);
+
+                // Auto-generate modpack.json so guests immediately know
+                // which mods are required. Runs on same executor thread.
+                try {
+                    sendClientMessage(
+                            "§7[WorldShare] Generating modpack.json for guests...");
+                    final com.worldshare.mod.modmanager.ModManagerModule.GenerateResult modResult =
+                            com.worldshare.mod.modmanager.ModManagerModule
+                                    .generateAndUpload(extracted);
+                    if (modResult.total > 0) {
+                        sendClientMessage("§7[WorldShare] Modpack published: "
+                                + modResult.total + " mods ("
+                                + modResult.autoInstallable + " auto-installable, "
+                                + modResult.manualInstall + " manual).");
+                    } else {
+                        sendClientMessage(
+                                "§7[WorldShare] No mods published (dev environment?).");
+                    }
+                } catch (final Throwable modErr) {
+                    WorldShareMod.LOGGER.warn(
+                            "setDriveLink: modpack generate failed (non-fatal): {}",
+                            modErr.getMessage());
+                    sendClientMessage(
+                            "§e[WorldShare] modpack.json generation failed - "
+                                    + "run /worldshare modpack generate manually.");
+                }
             } catch (final Throwable t) {
-                WorldShareMod.LOGGER.error("setfolder failed", t);
-                sendClientMessage("§c[WorldShare] setfolder failed: " + t.getMessage());
+                WorldShareMod.LOGGER.error("setDriveLink failed", t);
+                sendClientMessage("§c[WorldShare] setDriveLink failed: " + t.getMessage());
             }
         });
         return Command.SINGLE_SUCCESS;
     }
 
-    private static int runClearFolder(final CommandSourceStack source) {
+    /**
+     * M5: renamed from {@code clearfolder}. Now also removes the world from
+     * the subscription store so it disappears from the Contributor Worlds tab.
+     */
+    private static int runClearDriveLink(final CommandSourceStack source) {
+        final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
+        if (ctx.isEmpty()) {
+            sendFeedback(source, "No world is currently loaded.", ChatFormatting.RED);
+            return 0;
+        }
+        final Path worldRoot = ctx.get().worldRoot;
+
+        // Read folder ID BEFORE deleting the link file — we need it to unsubscribe.
+        final String folderId = WorldLink.readFolderId(worldRoot);
+        // M7: release lock first to avoid orphan on Drive.
+        if (LockManager.weHoldLock()) {
+            sendFeedback(source, "Releasing session lock first...", ChatFormatting.GRAY);
+            CloudModule.executor().submit(() -> {
+                try {
+                    LockManager.release();
+                    sendClientMessage("§a[WorldShare] Lock released.");
+                } catch (final IOException e) {
+                    WorldShareMod.LOGGER.warn("clearDriveLink: lock release failed", e);
+                    sendClientMessage("§e[WorldShare] Warning: lock release failed: " + e.getMessage());
+                }
+            });
+        }
+
+        // M7: explicitly clean up Drive artifacts using the folderId we just read,
+// before we delete the link file that gives us access to it.
+        final String folderIdToClean = folderId;
+        if (folderIdToClean != null) {
+            CloudModule.executor().submit(() -> {
+                try {
+                    // Stop active hosting if we're currently the host.
+                    E4mcCoordinator.stopHostingIfActive();
+                    // Also explicitly find-and-delete presence.json in case
+                    // presenceFileId was null (e.g. after a restart).
+                    final DriveClient client = CloudModule.driveClient();
+                    final String presId = client.findFileByName(
+                            com.worldshare.mod.relay.PresenceFile.FILENAME, folderIdToClean);
+                    if (presId != null) {
+                        client.deleteFile(presId);
+                        WorldShareMod.LOGGER.info(
+                                "clearDriveLink: deleted presence.json from Drive");
+                    }
+                } catch (final Throwable t) {
+                    WorldShareMod.LOGGER.warn(
+                            "clearDriveLink: presence cleanup failed (non-fatal): {}",
+                            t.getMessage());
+                }
+            });
+        }
+
+        // Delete link file.
+        final Path linkFile = worldRoot.resolve(WorldLink.FILENAME);
+        try {
+            Files.deleteIfExists(linkFile);
+        } catch (final IOException e) {
+            WorldShareMod.LOGGER.warn("clearDriveLink: couldn't delete link file: {}",
+                    e.getMessage());
+        }
+
+        // Remove from subscription store so it disappears from Contributor Worlds tab.
+        if (folderId != null) {
+            SubscriptionStore.get().unsubscribe(folderId);
+            WorldShareMod.LOGGER.info("clearDriveLink: unsubscribed folder {}", folderId);
+        }
+
+        // Clear legacy global config.
         WorldShareConfig.get().driveFolderId.set("");
         WorldShareConfig.get().driveFolderId.save();
-        sendFeedback(source, "Drive folder cleared.", ChatFormatting.YELLOW);
+
+        sendFeedback(source,
+                "Drive link cleared. World will no longer sync and has been removed from "
+                + "Contributor Worlds. Your local files are untouched.",
+                ChatFormatting.YELLOW);
         return Command.SINGLE_SUCCESS;
     }
 
     private static int runLockInfo(final CommandSourceStack source) {
-        final String folderId = requireFolderId(source);
+        final String folderId = requireFolderIdForCurrentWorld(source);
         if (folderId == null) return 0;
 
         CloudModule.executor().submit(() -> {
             try {
                 sendClientMessage("§7[WorldShare] Reading session.lock from Drive...");
                 final LockManager.LockStatus status = LockManager.readStatus(folderId);
-
                 switch (status.state) {
                     case FREE:
                         sendClientMessage("§a[WorldShare] \uD83D\uDD13 No lock. World is available.");
@@ -231,7 +404,7 @@ public final class WorldShareCommands {
                         break;
                     case HELD_BY_US_EXPIRED:
                         sendClientMessage("§e[WorldShare] \u23F0 Lock held by us but EXPIRED.");
-                        sendClientMessage("§e         Probably crashed last session. Safe to acquire again.");
+                        sendClientMessage("§e         Probably crashed. Safe to acquire again.");
                         printLockDetails(status.lock);
                         break;
                     case HELD_BY_OTHER:
@@ -261,46 +434,40 @@ public final class WorldShareCommands {
     }
 
     private static int runLock(final CommandSourceStack source) {
-        final String folderId = requireFolderId(source);
+        final String folderId = requireFolderIdForCurrentWorld(source);
         if (folderId == null) return 0;
 
-        CloudModule.executor().submit(() -> {
-            try {
-                final LockManager.LockStatus status = LockManager.readStatus(folderId);
-                if (status.state == LockManager.LockState.HELD_BY_OTHER) {
-                    sendClientMessage("§c[WorldShare] Can't acquire - lock held by §f"
-                            + status.lock.holderName + "§c. Try /worldshare lockinfo for details.");
-                    return;
-                }
-                if (status.state == LockManager.LockState.STALE) {
-                    sendClientMessage("§e[WorldShare] Overriding stale lock from §f"
-                            + status.lock.holderName + "§e...");
-                } else if (status.state == LockManager.LockState.HELD_BY_US_EXPIRED) {
-                    sendClientMessage("§e[WorldShare] Resuming expired lock from previous session...");
-                } else if (status.state == LockManager.LockState.HELD_BY_US) {
-                    sendClientMessage("§a[WorldShare] Already hold this lock. No-op.");
-                    return;
-                }
+        // M7: /worldshare lock is disabled when the world is opened from vanilla
+        // Singleplayer. The Contributor Worlds tab acquires the lock BEFORE
+        // opening the world, so when the user is in-world via that path,
+        // weHoldLock() is true. If we don't hold a lock at this point, the user
+        // came from Singleplayer — refuse the command.
+        if (!LockManager.weHoldLock()) {
+            sendFeedback(source,
+                    "Lock cannot be acquired from vanilla Singleplayer.",
+                    ChatFormatting.RED);
+            sendFeedback(source,
+                    "Save and quit, then open via Contributor Worlds tab.",
+                    ChatFormatting.YELLOW);
+            sendFeedback(source,
+                    "The tab pulls the latest changes and acquires the lock automatically.",
+                    ChatFormatting.GRAY);
+            return 0;
+        }
 
-                final SessionLock ours = LockManager.acquire(folderId);
-                sendClientMessage("§a[WorldShare] \uD83D\uDD12 Lock acquired as §f"
-                        + ours.holderName + "§a, expires "
-                        + humanizeDuration(Duration.between(Instant.now(),
-                                ours.expiresAtInstant())) + " from now.");
-            } catch (final Throwable t) {
-                WorldShareMod.LOGGER.error("lock failed", t);
-                sendClientMessage("§c[WorldShare] lock failed: " + t.getMessage());
-            }
-        });
+        sendFeedback(source,
+                "Lock already held - acquired via Contributor Worlds tab.",
+                ChatFormatting.GREEN);
         return Command.SINGLE_SUCCESS;
     }
 
     private static int runUnlock(final CommandSourceStack source) {
         if (!LockManager.weHoldLock()) {
-            sendFeedback(source, "We don't currently hold a lock. Nothing to release.", ChatFormatting.YELLOW);
+            sendFeedback(source,
+                    "We don't currently hold a lock. Nothing to release.",
+                    ChatFormatting.YELLOW);
             return Command.SINGLE_SUCCESS;
         }
-
         CloudModule.executor().submit(() -> {
             try {
                 LockManager.release();
@@ -316,15 +483,15 @@ public final class WorldShareCommands {
     private static int runHeartbeat(final CommandSourceStack source) {
         if (!LockManager.weHoldLock()) {
             sendFeedback(source,
-                    "We don't currently hold a lock - nothing to heartbeat. Run /worldshare lock first.",
+                    "We don't currently hold a lock. Run /worldshare lock first.",
                     ChatFormatting.YELLOW);
             return Command.SINGLE_SUCCESS;
         }
-
         CloudModule.executor().submit(() -> {
             try {
                 LockManager.heartbeat();
-                sendClientMessage("§a[WorldShare] \uD83D\uDC93 Manual heartbeat sent. Check Drive: expires_at should be refreshed.");
+                sendClientMessage(
+                        "§a[WorldShare] \uD83D\uDC93 Heartbeat sent. expires_at refreshed.");
             } catch (final Throwable t) {
                 WorldShareMod.LOGGER.error("heartbeat failed", t);
                 sendClientMessage("§c[WorldShare] heartbeat failed: " + t.getMessage());
@@ -333,33 +500,32 @@ public final class WorldShareCommands {
         return Command.SINGLE_SUCCESS;
     }
 
-    // ----- M3: Sync commands -----
+    // ----- M3 -----
 
     private static int runStatus(final CommandSourceStack source) {
-        final String folderId = requireFolderId(source);
-        if (folderId == null) return 0;
-
-        final java.util.Optional<com.worldshare.mod.sync.WorldContext.CurrentWorld> ctx
-                = com.worldshare.mod.sync.WorldContext.current();
+        final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
         if (ctx.isEmpty()) {
-            sendFeedback(source, "No world is currently loaded. Open a world first.", ChatFormatting.RED);
+            sendFeedback(source, "No world loaded.", ChatFormatting.RED);
             return 0;
         }
-        final com.worldshare.mod.sync.WorldContext.CurrentWorld world = ctx.get();
+        final WorldContext.CurrentWorld world = ctx.get();
+        final String folderId = requireFolderIdForCurrentWorld(source);
+        if (folderId == null) return 0;
 
-        sendFeedback(source, "Computing sync status for '" + world.name + "'...", ChatFormatting.GRAY);
+        sendFeedback(source,
+                "Computing sync status for '" + world.name + "'...", ChatFormatting.GRAY);
         CloudModule.executor().submit(() -> {
             try {
-                final com.worldshare.mod.sync.SyncDiff diff =
-                        com.worldshare.mod.sync.SyncEngine.status(world.worldRoot, folderId, world.playerUuid);
+                final SyncDiff diff =
+                        SyncEngine.status(world.worldRoot, folderId, world.playerUuid);
                 if (diff.isEmpty()) {
-                    sendClientMessage("§a[WorldShare] \u2705 World is in sync with Drive. "
+                    sendClientMessage("§a[WorldShare] \u2705 In sync. "
                             + diff.identical.size() + " files identical.");
                 } else {
                     sendClientMessage("§e[WorldShare] Sync diff for '" + world.name + "':");
-                    sendClientMessage("§7  " + diff.onlyLocal.size() + " files only local (would push)");
-                    sendClientMessage("§7  " + diff.onlyOnDrive.size() + " files only on Drive (would pull)");
-                    sendClientMessage("§7  " + diff.different.size() + " files differ on both sides");
+                    sendClientMessage("§7  " + diff.onlyLocal.size() + " files only local");
+                    sendClientMessage("§7  " + diff.onlyOnDrive.size() + " files only on Drive");
+                    sendClientMessage("§7  " + diff.different.size() + " files differ");
                     sendClientMessage("§7  " + diff.identical.size() + " files identical");
                 }
             } catch (final Throwable t) {
@@ -371,49 +537,50 @@ public final class WorldShareCommands {
     }
 
     private static int runPush(final CommandSourceStack source) {
-        final String folderId = requireFolderId(source);
-        if (folderId == null) return 0;
-
-        final java.util.Optional<com.worldshare.mod.sync.WorldContext.CurrentWorld> ctx
-                = com.worldshare.mod.sync.WorldContext.current();
+        final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
         if (ctx.isEmpty()) {
-            sendFeedback(source, "No world is currently loaded. Open a world first.", ChatFormatting.RED);
+            sendFeedback(source, "No world loaded.", ChatFormatting.RED);
             return 0;
         }
-        final com.worldshare.mod.sync.WorldContext.CurrentWorld world = ctx.get();
+        final WorldContext.CurrentWorld world = ctx.get();
+        final String folderId = requireFolderIdForCurrentWorld(source);
+        if (folderId == null) return 0;
 
-        sendFeedback(source, "Starting push of '" + world.name + "' to Drive...", ChatFormatting.YELLOW);
+        // M7: refuse push if no lock held (Singleplayer protection).
+        if (!LockManager.weHoldLock()) {
+            sendFeedback(source,
+                    "Cannot push without holding the session lock.",
+                    ChatFormatting.RED);
+            sendFeedback(source,
+                    "Save and quit, then open via Contributor Worlds tab to sync properly.",
+                    ChatFormatting.YELLOW);
+            return 0;
+        }
+
         sendFeedback(source,
-                "Tip: For a fully consistent sync, use Save and Quit instead - auto-push "
-                + "runs after Minecraft finishes saving. Manual push uses file snapshots so "
-                + "it's safe, but Minecraft may keep writing the world causing repeated diffs.",
-                ChatFormatting.GRAY);
+                "Starting push of '" + world.name + "' to Drive...", ChatFormatting.YELLOW);
 
-        final com.worldshare.mod.sync.SyncProgress chatProgress = newChatProgressReporter();
-
-        // Once online is confirmed, dispatch the push onto the cloud executor.
+        final SyncProgress chatProgress = newChatProgressReporter();
         final Thread precheck = new Thread(() -> {
-            final com.worldshare.mod.sync.OnlineChecker.Result online =
-                    com.worldshare.mod.sync.OnlineChecker.check(folderId);
-            if (online == com.worldshare.mod.sync.OnlineChecker.Result.OFFLINE) {
-                sendClientMessage("§c[WorldShare] Drive is unreachable. Check your "
-                        + "internet connection and try again. Local changes are preserved.");
+            final OnlineChecker.Result online = OnlineChecker.check(folderId);
+            if (online == OnlineChecker.Result.OFFLINE) {
+                sendClientMessage(
+                        "§c[WorldShare] Drive unreachable. Local changes preserved.");
                 return;
             }
-            if (online == com.worldshare.mod.sync.OnlineChecker.Result.NOT_AUTHENTICATED) {
-                sendClientMessage("§c[WorldShare] Not signed in to Drive. "
-                        + "Run /worldshare test to authenticate.");
+            if (online == OnlineChecker.Result.NOT_AUTHENTICATED) {
+                sendClientMessage(
+                        "§c[WorldShare] Not signed in. Run /worldshare test first.");
                 return;
             }
-
             CloudModule.executor().submit(() -> {
                 try {
-                    final com.worldshare.mod.sync.SyncEngine.PushResult result =
-                            com.worldshare.mod.sync.SyncEngine.push(
-                                    world.worldRoot, folderId, world.playerUuid, null, chatProgress);
+                    final SyncEngine.PushResult result = SyncEngine.push(
+                            world.worldRoot, folderId, world.playerUuid, null, chatProgress);
                     sendClientMessage("§a[WorldShare] Push complete:");
                     sendClientMessage("§a  uploaded: " + result.uploaded + " files");
-                    sendClientMessage("§7  skipped (someone else's edits): " + result.skippedSomeoneElsesEdit);
+                    sendClientMessage("§7  skipped (someone else's edits): "
+                            + result.skippedSomeoneElsesEdit);
                     sendClientMessage("§7  failed: " + result.failed);
                     sendClientMessage("§7  bytes: " + result.bytes
                             + " (" + (result.bytes / (1024 * 1024)) + " MB)");
@@ -425,33 +592,22 @@ public final class WorldShareCommands {
         }, "WorldShare-PushPrecheck");
         precheck.setDaemon(true);
         precheck.start();
-
         return Command.SINGLE_SUCCESS;
     }
 
-    /**
-     * Returns a SyncProgress that posts rate-limited progress updates to chat.
-     * Updates appear at most every 2 seconds OR every 25% of progress -
-     * whichever comes first - to avoid spamming chat for small worlds while
-     * still giving frequent feedback for large ones.
-     */
-    private static com.worldshare.mod.sync.SyncProgress newChatProgressReporter() {
-        return new com.worldshare.mod.sync.SyncProgress() {
+    private static SyncProgress newChatProgressReporter() {
+        return new SyncProgress() {
             long lastUpdateMs = 0L;
             int lastReportedPercent = -1;
-            int totalFiles = 0;
-            long totalBytes = 0L;
 
             @Override
             public void onStart(final int total, final long bytes) {
-                totalFiles = total;
-                totalBytes = bytes;
                 if (total == 0) {
                     sendClientMessage("§7[WorldShare] Nothing to upload.");
                     return;
                 }
-                final long mb = bytes / (1024 * 1024);
-                sendClientMessage("§e[WorldShare] Uploading " + total + " files (" + mb + " MB)...");
+                sendClientMessage("§e[WorldShare] Uploading " + total
+                        + " files (" + (bytes / (1024 * 1024)) + " MB)...");
             }
 
             @Override
@@ -469,11 +625,10 @@ public final class WorldShareCommands {
                 if (!dueByTime && !dueByPercent) return;
                 lastUpdateMs = now;
                 lastReportedPercent = percent;
-                final long mbDone = bytesDone / (1024 * 1024);
-                final long mbTotal = bytesTotal / (1024 * 1024);
                 sendClientMessage(String.format(
                         "§7[WorldShare] §f%d%%§7 - %d/%d files, %d/%d MB",
-                        percent, filesDone, total, mbDone, mbTotal));
+                        percent, filesDone, total,
+                        bytesDone / (1024 * 1024), bytesTotal / (1024 * 1024)));
             }
 
             @Override public void onComplete() {}
@@ -484,28 +639,23 @@ public final class WorldShareCommands {
     }
 
     private static int runPull(final CommandSourceStack source) {
-        final String folderId = requireFolderId(source);
-        if (folderId == null) return 0;
-
-        final java.util.Optional<com.worldshare.mod.sync.WorldContext.CurrentWorld> ctx
-                = com.worldshare.mod.sync.WorldContext.current();
+        final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
         if (ctx.isEmpty()) {
-            sendFeedback(source, "No world is currently loaded. Open a world first.", ChatFormatting.RED);
+            sendFeedback(source, "No world loaded.", ChatFormatting.RED);
             return 0;
         }
-        final com.worldshare.mod.sync.WorldContext.CurrentWorld world = ctx.get();
+        final WorldContext.CurrentWorld world = ctx.get();
+        final String folderId = requireFolderIdForCurrentWorld(source);
+        if (folderId == null) return 0;
 
         sendFeedback(source,
-                "WARNING: Pulling while a world is loaded may corrupt the open world. "
-                + "Save and Quit first, then run /worldshare pull from a different world.",
+                "WARNING: Pulling while a world is loaded may corrupt it. "
+                + "Save and Quit first.",
                 ChatFormatting.RED);
-        sendFeedback(source, "Proceeding anyway...", ChatFormatting.GRAY);
-
         CloudModule.executor().submit(() -> {
             try {
-                final com.worldshare.mod.sync.SyncEngine.PullResult result =
-                        com.worldshare.mod.sync.SyncEngine.pull(
-                                world.worldRoot, folderId, world.playerUuid);
+                final SyncEngine.PullResult result =
+                        SyncEngine.pull(world.worldRoot, folderId, world.playerUuid);
                 sendClientMessage("§a[WorldShare] Pull complete:");
                 sendClientMessage("§a  downloaded: " + result.downloaded + " files");
                 sendClientMessage("§7  failed: " + result.failed);
@@ -519,7 +669,7 @@ public final class WorldShareCommands {
         return Command.SINGLE_SUCCESS;
     }
 
-    // ----- M4: Live co-op command -----
+    // ----- M4 -----
 
     private static int runInvite(final CommandSourceStack source) {
         final Minecraft mc = Minecraft.getInstance();
@@ -535,7 +685,6 @@ public final class WorldShareCommands {
                     ChatFormatting.RED);
             return 0;
         }
-
         sendFeedback(source,
                 "Opening world to LAN via e4mc... waiting for relay domain.",
                 ChatFormatting.GREEN);
@@ -543,17 +692,76 @@ public final class WorldShareCommands {
         return Command.SINGLE_SUCCESS;
     }
 
+    private static int runModpackGenerate(final CommandSourceStack source) {
+        final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
+        if (ctx.isEmpty()) {
+            sendFeedback(source, "No world is currently loaded.", ChatFormatting.RED);
+            return 0;
+        }
+        final String folderId = WorldLink.readFolderId(ctx.get().worldRoot);
+        if (folderId == null) {
+            sendFeedback(source,
+                    "This world is not linked to Drive. Run /worldshare setDriveLink first.",
+                    ChatFormatting.RED);
+            return 0;
+        }
+
+        // NEW: require lock
+        if (!LockManager.weHoldLock()) {
+            sendFeedback(source,
+                    "You must hold the session lock to generate a modpack. "
+                            + "Run /worldshare lock first.",
+                    ChatFormatting.RED);
+            return 0;
+        }
+
+        sendFeedback(source, "Scanning mods and resolving Modrinth URLs...",
+                ChatFormatting.GRAY);
+
+        sendFeedback(source, "Scanning mods and resolving Modrinth URLs...",
+                ChatFormatting.GRAY);
+
+        CloudModule.executor().submit(() -> {
+            try {
+                final com.worldshare.mod.modmanager.ModManagerModule.GenerateResult result =
+                        com.worldshare.mod.modmanager.ModManagerModule.generateAndUpload(folderId);
+                sendClientMessage("§a[WorldShare] \u2705 modpack.json published to Drive:");
+                sendClientMessage("§a  total mods: " + result.total);
+                sendClientMessage("§7  auto-installable (on Modrinth): " + result.autoInstallable);
+                sendClientMessage("§7  manual install required: " + result.manualInstall);
+                if (result.total == 0) {
+                    sendClientMessage(
+                            "§e Note: no mods were published. This is expected in the");
+                    sendClientMessage(
+                            "§e dev environment - generate only works in production installs.");
+                }
+            } catch (final Throwable t) {
+                WorldShareMod.LOGGER.error("modpack generate failed", t);
+                sendClientMessage("§c[WorldShare] modpack generate failed: " + t.getMessage());
+            }
+        });
+        return Command.SINGLE_SUCCESS;
+    }
+
     // ----- Helpers -----
 
-    private static String requireFolderId(final CommandSourceStack source) {
-        final String folderId = WorldShareConfig.get().driveFolderId.get();
-        if (folderId == null || folderId.isBlank()) {
+    /**
+     * Gets the Drive folder ID for the currently-loaded world from its
+     * {@code worldshare-link.json}. If no world is loaded or no link exists,
+     * prints a helpful error and returns null.
+     */
+    private static String requireFolderIdForCurrentWorld(final CommandSourceStack source) {
+        final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
+        if (ctx.isEmpty()) {
+            sendFeedback(source, "No world is currently loaded.", ChatFormatting.RED);
+            return null;
+        }
+        final String folderId = WorldLink.readFolderId(ctx.get().worldRoot);
+        if (folderId == null) {
             sendFeedback(source,
-                    "No Drive folder configured. Run /worldshare setfolder <id> first.",
+                    "This world is not linked to a Drive folder. "
+                    + "Run /worldshare setDriveLink <url-or-id> to link it.",
                     ChatFormatting.RED);
-            sendFeedback(source,
-                    "Get the ID from the Drive URL: drive.google.com/drive/folders/<THIS PART>",
-                    ChatFormatting.GRAY);
             return null;
         }
         return folderId;
@@ -561,14 +769,12 @@ public final class WorldShareCommands {
 
     private static void printLockDetails(final SessionLock lock) {
         if (lock == null) return;
-        sendClientMessage("§7         holder:      " + lock.holderName);
-        sendClientMessage("§7         locked_at:   " + lock.lockedAt);
-        sendClientMessage("§7         expires_at:  " + lock.expiresAt);
-        sendClientMessage("§7         heartbeat:   " + lock.lastHeartbeatAt);
-        sendClientMessage("§7         players:     " + lock.playersOnline()
-                + " (cap " + lock.playerCap + ")");
+        sendClientMessage("§7         holder:    " + lock.holderName);
+        sendClientMessage("§7         locked_at: " + lock.lockedAt);
+        sendClientMessage("§7         expires:   " + lock.expiresAt);
+        sendClientMessage("§7         heartbeat: " + lock.lastHeartbeatAt);
         if (lock.relayAddress != null) {
-            sendClientMessage("§7         relay:       " + lock.relayAddress);
+            sendClientMessage("§7         relay:     " + lock.relayAddress);
         }
     }
 
@@ -583,8 +789,7 @@ public final class WorldShareCommands {
         long m = s / 60;
         if (m < 60) return m + "m";
         long h = m / 60;
-        long remM = m - h * 60;
-        return h + "h " + remM + "m";
+        return h + "h " + (m - h * 60) + "m";
     }
 
     private static void sendFeedback(final CommandSourceStack source,

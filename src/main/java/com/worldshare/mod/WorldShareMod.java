@@ -3,6 +3,7 @@ package com.worldshare.mod;
 import com.mojang.logging.LogUtils;
 import com.worldshare.mod.cloud.CloudModule;
 import com.worldshare.mod.command.WorldShareCommands;
+import com.worldshare.mod.config.SubscriptionStore;
 import com.worldshare.mod.config.WorldShareConfig;
 import com.worldshare.mod.modmanager.ModManagerModule;
 import com.worldshare.mod.relay.RelayModule;
@@ -24,19 +25,17 @@ import org.slf4j.Logger;
  *
  * <p>Wires up:
  * <ul>
- *   <li>The {@link WorldShareConfig} TOML config on CLIENT side</li>
- *   <li>Lifecycle dispatch to the four functional modules (cloud / relay / ui / modmanager)</li>
- *   <li>The {@code /worldshare} command tree, registered on every world load</li>
- *   <li>The {@link AutoSyncListener} for auto-push on Save and Quit</li>
+ *   <li>Config registration via injected {@link ModContainer}</li>
+ *   <li>{@link SubscriptionStore} initialisation (M5) — loads persisted
+ *       world subscriptions and migrates the legacy single-folder config</li>
+ *   <li>Lifecycle dispatch to cloud / relay / ui / modmanager modules</li>
+ *   <li>{@code /worldshare} command tree</li>
+ *   <li>{@link AutoSyncListener} for auto-push on quit</li>
  * </ul>
  *
- * <p>Note: {@code E4mcCoordinator} is NOT registered here. Its handlers are
- * client-only and must register from {@code FMLClientSetupEvent}, which is
- * done by {@link UiModule#init()}.
- *
- * <p>NeoForge 1.21.1 injects {@link ModContainer} into the constructor; we
- * use it for config registration. The older {@code ModLoadingContext.get()
- * .registerConfig(...)} pattern was removed in 1.21.1.
+ * <p>{@code E4mcCoordinator} and {@code TitleScreenButtonInjector} are
+ * registered in {@link UiModule#init()} during client setup because they
+ * are client-only event handlers.
  */
 @Mod(WorldShareMod.MOD_ID)
 public final class WorldShareMod {
@@ -47,7 +46,6 @@ public final class WorldShareMod {
     public WorldShareMod(final IEventBus modBus, final ModContainer container) {
         LOGGER.info("WorldShare mod constructing...");
 
-        // NeoForge 1.21.1: register config via the injected ModContainer.
         container.registerConfig(
                 ModConfig.Type.CLIENT,
                 WorldShareConfig.SPEC,
@@ -62,8 +60,6 @@ public final class WorldShareMod {
         // ⚠️ CRITICAL — DO NOT REMOVE.
         // AutoSyncListener uses STATIC @SubscribeEvent methods.
         // Must register the CLASS, not an instance.
-        // Removing this line silently breaks all auto-push functionality.
-        // This was discovered after hours of debugging (events fired, nothing received).
         NeoForge.EVENT_BUS.register(AutoSyncListener.class);
 
         LOGGER.info("WorldShare: registered AutoSyncListener on EVENT_BUS");
@@ -76,6 +72,11 @@ public final class WorldShareMod {
             CloudModule.init();
             RelayModule.init();
             ModManagerModule.init();
+
+            // M5: load subscription store, migrating legacy driveFolderId if present.
+            final String legacyFolder = WorldShareConfig.get().driveFolderId.get();
+            SubscriptionStore.get().load(legacyFolder);
+
             LOGGER.info("WorldShare common setup complete.");
         });
     }

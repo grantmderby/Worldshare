@@ -125,8 +125,19 @@ public final class DriveClient {
         if (localDestination.getParent() != null) {
             Files.createDirectories(localDestination.getParent());
         }
-        try (OutputStream out = Files.newOutputStream(localDestination)) {
-            drive.files().get(fileId).executeMediaAndDownloadTo(out);
+        final com.google.api.client.http.HttpResponse response =
+                drive.files().get(fileId).executeMedia();
+        try {
+            final java.io.InputStream in = response.getContent();
+            if (in != null) {
+                try (OutputStream out = Files.newOutputStream(localDestination)) {
+                    in.transferTo(out);
+                }
+            }
+            // If content is null, localDestination was already created by
+            // newOutputStream above (or doesn't exist yet — caller handles that).
+        } finally {
+            try { response.disconnect(); } catch (final IOException ignored) {}
         }
         WorldShareMod.LOGGER.debug("Downloaded drive file {} -> {}", fileId, localDestination);
     }
@@ -138,9 +149,15 @@ public final class DriveClient {
      * lock and world manifest, both of which are a few kilobytes at most.
      */
     public String readText(final String fileId) throws IOException {
-        final ByteArrayOutputStream buf = new ByteArrayOutputStream();
-        drive.files().get(fileId).executeMediaAndDownloadTo(buf);
-        return buf.toString(StandardCharsets.UTF_8);
+        final com.google.api.client.http.HttpResponse response =
+                drive.files().get(fileId).executeMedia();
+        try {
+            final java.io.InputStream in = response.getContent();
+            if (in == null) return "";
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        } finally {
+            try { response.disconnect(); } catch (final IOException ignored) {}
+        }
     }
 
     /**

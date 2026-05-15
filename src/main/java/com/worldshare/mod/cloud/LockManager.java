@@ -243,8 +243,12 @@ public final class LockManager {
         // Safety: if the lock has been taken over by someone else while we thought we
         // held it, don't clobber their lock. Log and stop the heartbeat.
         if (!current.isOwnedBy(MachineId.get())) {
-            WorldShareMod.LOGGER.warn("Heartbeat: lock is no longer owned by our machine "
+            WorldShareMod.LOGGER.warn("Heartbeat: lock no longer owned by us "
                     + "(current holder: {}). Stopping heartbeat.", current.holderName);
+            final String stealer = current.holderName != null ? current.holderName : "another player";
+            postChatMessage("§c[WorldShare] [!] Your session lock was overridden by " + stealer + ".");
+            postChatMessage("§c Your changes from this point on will NOT be saved to Drive.");
+            postChatMessage("§7 Save and quit to exit cleanly. Local files preserved.");
             stopHeartbeat();
             heldLockFileId = null;
             heldLockFolderId = null;
@@ -304,7 +308,7 @@ public final class LockManager {
                 offlineWarningShown = false;
                 WorldShareMod.LOGGER.info(
                         "Heartbeat recovered after {} consecutive failures", prevFailures);
-                postChatMessage("§a[WorldShare] ✅ Reconnected to Drive. "
+                postChatMessage("§a[WorldShare] [OK] Reconnected to Drive. "
                         + "Your changes will sync at session end.");
             }
         } catch (final Throwable t) {
@@ -317,12 +321,12 @@ public final class LockManager {
             // Surface to the user once we cross the threshold, then re-warn periodically.
             if (consecutiveHeartbeatFailures == OFFLINE_WARNING_THRESHOLD) {
                 offlineWarningShown = true;
-                postChatMessage("§e[WorldShare] ⚠ Can't reach Drive. Your changes will "
+                postChatMessage("§e[WorldShare] [!] Can't reach Drive. Your changes will "
                         + "sync when you reconnect.");
             } else if (consecutiveHeartbeatFailures > OFFLINE_WARNING_THRESHOLD
                     && (consecutiveHeartbeatFailures - OFFLINE_WARNING_THRESHOLD)
                     % OFFLINE_REWARN_EVERY == 0) {
-                postChatMessage("§e[WorldShare] ⚠ Still offline. "
+                postChatMessage("§e[WorldShare] [!] Still offline. "
                         + "Your changes will sync when you reconnect.");
             }
         }
