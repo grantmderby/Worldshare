@@ -34,17 +34,16 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Pushes/pulls a world to/from Drive.
  *
- * <p><b>M7 changes:</b>
+ * <p><b>M7:</b> pull accepts SyncProgress; strips level.dat Player tag every pull;
+ * push uploads in parallel (pool 4); per-file timing logs.
+ *
+ * <p><b>M8:</b>
  * <ul>
- *   <li>{@link #pull} accepts {@link SyncProgress} for live UI feedback,
- *       throws on partial failure (no silent inconsistent state)</li>
- *   <li>After successful pull, {@link #stripPlayerFromLevelDat} strips the
- *       host's Player tag — combined with TrackedPaths syncing all playerdata
- *       files, gives normal-server inventory behaviour</li>
- *   <li>{@link #push} uploads in parallel with pool size 4 — roughly 3x speedup
- *       on residential connections. Parent folders pre-created sequentially
- *       to avoid races.</li>
- *   <li>Per-file timing logs at INFO level for upload diagnosis</li>
+ *   <li>push uses {@link DirtyRegionTracker} to skip .mca files not written this session,
+ *       plus a local scan cache ({@value SCAN_CACHE_FILENAME}) for mtime pre-checks.</li>
+ *   <li>pull invalidates the scan cache and resets dirty tracking after download.</li>
+ *   <li>pull downloads in parallel (pool 4, largest-first) — mirrors push semantics.
+ *       Retry + 416 handling moved inside each worker.</li>
  * </ul>
  */
 public final class SyncEngine {
@@ -52,6 +51,13 @@ public final class SyncEngine {
     public static final String MANIFEST_FILENAME = "manifest.json";
     public static final String MANIFEST_PENDING_FILENAME = "manifest_pending.json";
     public static final String WORLD_SUBFOLDER = "world";
+
+    /**
+     * Local scan cache filename — stored in the world folder, excluded from sync.
+     * Persists SHA-256/size/mtime for files scanned on the last successful push so
+     * subsequent scans can skip SHA-256 for unchanged files.
+     */
+    static final String SCAN_CACHE_FILENAME = "worldshare-scan-cache.json";
 
     private SyncEngine() {}
 
@@ -89,6 +95,7 @@ public final class SyncEngine {
             return new PullResult(0, 0, 0L);
         }
 
+        // Full scan for pull comparison — no dirty filter (we need all local hashes).
         final WorldManifest local = WorldFileScanner.scan(worldRoot, ownUuid);
         final SyncDiff diff = SyncDiff.compute(local, driveManifest);
 
@@ -105,6 +112,16 @@ public final class SyncEngine {
         toDownload.addAll(diff.onlyOnDrive);
         toDownload.addAll(diff.different);
 
+        // M8: largest first — each worker grabs a big file ASAP rather than finishing
+        // small files and waiting on a single large file at the end.
+        toDownload.sort((a, b) -> {
+            final WorldManifest.Entry ea = driveManifest.get(a);
+            final WorldManifest.Entry eb = driveManifest.get(b);
+            final long sizeA = ea != null ? ea.size : 0L;
+            final long sizeB = eb != null ? eb.size : 0L;
+            return Long.compare(sizeB, sizeA); // descending
+        });
+
         long totalBytes = 0L;
         for (final String relPath : toDownload) {
             final WorldManifest.Entry e = driveManifest.get(relPath);
@@ -112,80 +129,29 @@ public final class SyncEngine {
         }
         progress.onStart(toDownload.size(), totalBytes);
 
-        int downloaded = 0;
-        int failed = 0;
-        long bytes = 0L;
+        final AtomicInteger downloadedRef = new AtomicInteger(0);
+        final AtomicInteger failedRef = new AtomicInteger(0);
+        final AtomicLong bytesRef = new AtomicLong(0);
 
-        for (final String relPath : toDownload) {
-            final WorldManifest.Entry expected = driveManifest.get(relPath);
-            boolean success = false;
-            IOException lastError = null;
-
-            // M7: retry transient download failures up to 3 attempts with backoff.
-            for (int attempt = 1; attempt <= 3 && !success; attempt++) {
-                try {
-                    downloadOne(client, driveWorldFolderId, relPath, worldRoot, expected);
-                    success = true;
-                    downloaded++;
-                    bytes += (expected == null ? 0L : expected.size);
-                    if (attempt > 1) {
-                        WorldShareMod.LOGGER.info(
-                                "pull: succeeded {} on retry attempt {}", relPath, attempt);
-                    }
-                } catch (final IOException e) {
-                    // M7: 416 means the file on Drive is empty or smaller than expected.
-                    // With direct downloads enabled in DriveClient this shouldn't happen,
-                    // but if it does, treat as a 0-byte file and don't retry.
-                    if (is416(e)) {
-                        WorldShareMod.LOGGER.info(
-                                "pull: {} returned 416, treating as 0-byte file", relPath);
-                        try {
-                            final Path target = worldRoot.resolve(relPath);
-                            if (target.getParent() != null) {
-                                Files.createDirectories(target.getParent());
-                            }
-                            Files.write(target, new byte[0]);
-                            success = true;
-                            downloaded++;
-                        } catch (final IOException writeErr) {
-                            WorldShareMod.LOGGER.warn(
-                                    "pull: couldn't create 0-byte placeholder for {}: {}",
-                                    relPath, writeErr.getMessage());
-                            lastError = writeErr;
-                        }
-                        break; // Don't retry — either we handled the 416 or we couldn't.
-                    }
-
-                    lastError = e;
-                    WorldShareMod.LOGGER.warn(
-                            "pull: attempt {} failed for {}: {}",
-                            attempt, relPath, e.getMessage());
-                    if (attempt < 3) {
-                        try {
-                            Thread.sleep(2000L * attempt);
-                        } catch (final InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                            failed++;
-                            progress.onFileProgress(downloaded + failed, toDownload.size(),
-                                    bytes, totalBytes, relPath);
-                            throw new IOException("Pull interrupted during retry", ie);
-                        }
-                    }
-                }
-            }
-
-            if (!success) {
-                WorldShareMod.LOGGER.error(
-                        "pull: gave up on {} after 3 attempts: {}",
-                        relPath, lastError != null ? lastError.getMessage() : "unknown");
-                failed++;
-            }
-            progress.onFileProgress(downloaded + failed, toDownload.size(),
-                    bytes, totalBytes, relPath);
+        if (!toDownload.isEmpty()) {
+            parallelDownload(client, driveWorldFolderId, toDownload, worldRoot,
+                    driveManifest, progress, totalBytes,
+                    downloadedRef, failedRef, bytesRef);
         }
+
+        final int downloaded = downloadedRef.get();
+        final int failed = failedRef.get();
+        final long bytes = bytesRef.get();
 
         // M7: strip Player tag — runs every pull, not just first time.
         stripPlayerFromLevelDat(worldRoot);
+
+        // M8: after pull, local matches Drive — invalidate scan cache and reset tracker.
+        // Downloaded files have current-time mtimes which would cause false cache hits.
+        try {
+            Files.deleteIfExists(worldRoot.resolve(SCAN_CACHE_FILENAME));
+        } catch (final IOException ignored) {}
+        DirtyRegionTracker.resetAfterPull();
 
         if (failed > 0) {
             progress.onError(new IOException(failed + " file(s) failed to download"));
@@ -199,6 +165,137 @@ public final class SyncEngine {
                 "pull complete: {} downloaded, {} bytes ({} MB), {} unchanged",
                 downloaded, bytes, bytes / (1024 * 1024), diff.identical.size());
         return new PullResult(downloaded, failed, bytes);
+    }
+
+    // ---- PARALLEL DOWNLOAD HELPER (M8) ----
+
+    private static void parallelDownload(final DriveClient client,
+                                         final String driveWorldFolderId,
+                                         final List<String> toDownload,
+                                         final Path worldRoot,
+                                         final WorldManifest driveManifest,
+                                         final SyncProgress progress,
+                                         final long totalBytes,
+                                         final AtomicInteger downloadedRef,
+                                         final AtomicInteger failedRef,
+                                         final AtomicLong bytesRef) throws IOException {
+        // M8: pool size 4 — matches upload pool, residential-friendly, Drive-polite.
+        final ExecutorService pool = Executors.newFixedThreadPool(4, r -> {
+            final Thread t = new Thread(r, "WorldShare-Download");
+            t.setDaemon(true);
+            return t;
+        });
+        final CompletionService<DownloadTaskResult> completion =
+                new ExecutorCompletionService<>(pool);
+
+        for (final String relPath : toDownload) {
+            final WorldManifest.Entry expected = driveManifest.get(relPath);
+            completion.submit(() -> {
+                // downloadWithRetry handles IOExceptions internally and returns a result.
+                // Outer Throwable catch matches parallelUpload — any unexpected RuntimeException
+                // or Error from downloadOne becomes a failed result rather than poisoning
+                // the CompletionService with an ExecutionException.
+                try {
+                    return downloadWithRetry(client, driveWorldFolderId,
+                            relPath, worldRoot, expected);
+                } catch (final Throwable t) {
+                    return new DownloadTaskResult(relPath, false, 0L,
+                            new IOException("Unexpected error: " + t.getMessage(), t));
+                }
+            });
+        }
+        pool.shutdown();
+
+        try {
+            for (int i = 0; i < toDownload.size(); i++) {
+                final DownloadTaskResult res = completion.take().get();
+                if (res.success) {
+                    final int done = downloadedRef.incrementAndGet();
+                    final long bytes = bytesRef.addAndGet(res.sizeDownloaded);
+                    progress.onFileProgress(done + failedRef.get(), toDownload.size(),
+                            bytes, totalBytes, res.relPath);
+                } else {
+                    final int failed = failedRef.incrementAndGet();
+                    WorldShareMod.LOGGER.error(
+                            "pull: gave up on {}: {}", res.relPath,
+                            res.error != null ? res.error.getMessage() : "unknown");
+                    progress.onFileProgress(downloadedRef.get() + failed, toDownload.size(),
+                            bytesRef.get(), totalBytes, res.relPath);
+                }
+            }
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            pool.shutdownNow();
+            throw new IOException("Pull interrupted", e);
+        } catch (final ExecutionException e) {
+            // Workers catch Throwable, so this is unreachable. Defensive.
+            throw new IOException("Unexpected download failure", e.getCause());
+        }
+    }
+
+    /**
+     * Downloads a single file with 3-attempt retry and 416 handling. Runs on a worker
+     * thread. Never throws checked exceptions — all IOExceptions are captured in the
+     * returned {@link DownloadTaskResult}. Only unchecked Throwables can propagate,
+     * which the submit lambda's outer catch handles.
+     */
+    private static DownloadTaskResult downloadWithRetry(final DriveClient client,
+                                                        final String driveWorldFolderId,
+                                                        final String relPath,
+                                                        final Path worldRoot,
+                                                        final WorldManifest.Entry expected) {
+        IOException lastError = null;
+
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                downloadOne(client, driveWorldFolderId, relPath, worldRoot, expected);
+                if (attempt > 1) {
+                    WorldShareMod.LOGGER.info(
+                            "pull: succeeded {} on retry attempt {}", relPath, attempt);
+                }
+                return new DownloadTaskResult(relPath, true,
+                        expected == null ? 0L : expected.size, null);
+            } catch (final IOException e) {
+                // M7: 416 = empty file on Drive (or smaller than expected).
+                // Direct downloads should prevent this, but if it slips through, treat as
+                // a 0-byte file and stop retrying — retries on this won't help.
+                if (is416(e)) {
+                    WorldShareMod.LOGGER.info(
+                            "pull: {} returned 416, treating as 0-byte file", relPath);
+                    try {
+                        final Path target = worldRoot.resolve(relPath);
+                        if (target.getParent() != null) {
+                            Files.createDirectories(target.getParent());
+                        }
+                        Files.write(target, new byte[0]);
+                        return new DownloadTaskResult(relPath, true, 0L, null);
+                    } catch (final IOException writeErr) {
+                        WorldShareMod.LOGGER.warn(
+                                "pull: couldn't create 0-byte placeholder for {}: {}",
+                                relPath, writeErr.getMessage());
+                        return new DownloadTaskResult(relPath, false, 0L, writeErr);
+                    }
+                }
+
+                lastError = e;
+                WorldShareMod.LOGGER.warn(
+                        "pull: attempt {} failed for {}: {}",
+                        attempt, relPath, e.getMessage());
+
+                if (attempt < 3) {
+                    try {
+                        // Backoff inside the worker — only blocks this thread.
+                        // Other workers continue downloading.
+                        Thread.sleep(2000L * attempt);
+                    } catch (final InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return new DownloadTaskResult(relPath, false, 0L,
+                                new IOException("Interrupted during retry", ie));
+                    }
+                }
+            }
+        }
+        return new DownloadTaskResult(relPath, false, 0L, lastError);
     }
 
     // ---- PUSH ----
@@ -216,10 +313,38 @@ public final class SyncEngine {
                                   final WorldManifest baseline,
                                   final SyncProgress progress) throws IOException {
         final DriveClient client = CloudModule.driveClient();
-        final WorldManifest local = WorldFileScanner.scan(worldRoot, ownUuid);
+
+        // Read Drive manifest first so we know whether this is first-time or incremental.
+        final WorldManifest drive = readDriveManifest(driveFolderId);
+
+        final WorldManifest local;
+        final WorldManifest scanCache; // kept for scan cache save after commit
+
+        if (drive == null) {
+            // First-time push — full scan, no dirty filter or mtime cache.
+            // We must upload everything; skipping any file leaves Drive incomplete.
+            WorldShareMod.LOGGER.info("push: no Drive manifest — first-time push, full scan");
+            local = WorldFileScanner.scan(worldRoot, ownUuid);
+            scanCache = null;
+        } else {
+            // Incremental push — dirty filter + mtime cache where available.
+            scanCache = WorldManifest.loadFromDisk(worldRoot.resolve(SCAN_CACHE_FILENAME));
+            final boolean filterRegions = DirtyRegionTracker.shouldFilterRegions();
+            final Set<String> dirtyPaths = filterRegions
+                    ? DirtyRegionTracker.getDirtyPaths()
+                    : null;
+
+            WorldShareMod.LOGGER.info(
+                    "push: incremental scan [dirtyFilter={}, dirtyPaths={}, cache={}]",
+                    filterRegions,
+                    dirtyPaths != null ? dirtyPaths.size() + " files" : "n/a",
+                    scanCache != null ? scanCache.size() + " entries" : "none");
+
+            local = WorldFileScanner.scan(worldRoot, ownUuid, scanCache, dirtyPaths, filterRegions);
+        }
+
         local.generatedByMachineId = MachineId.get();
 
-        final WorldManifest drive = readDriveManifest(driveFolderId);
         if (drive == null) {
             return pushFirstTime(client, worldRoot, driveFolderId, local, progress);
         }
@@ -243,19 +368,19 @@ public final class SyncEngine {
         }
         toUpload.addAll(diff.onlyLocal);
 
+        // Files only on Drive (not in local scan) — preserve their Drive entries in
+        // the manifest so we don't delete them. Includes non-dirty .mca files that
+        // were filtered out of the local scan.
         for (final String relPath : diff.onlyOnDrive) {
             local.put(relPath, drive.get(relPath));
         }
 
-        // M7: sort largest files first so each thread picks up a big file
-// immediately rather than finishing all small files and then waiting
-// on a single large file at the end.
         toUpload.sort((a, b) -> {
             final WorldManifest.Entry ea = local.get(a);
             final WorldManifest.Entry eb = local.get(b);
             final long sizeA = ea != null ? ea.size : 0L;
             final long sizeB = eb != null ? eb.size : 0L;
-            return Long.compare(sizeB, sizeA); // descending
+            return Long.compare(sizeB, sizeA);
         });
 
         final String driveWorldFolderId = ensureWorldSubfolder(driveFolderId, client, true);
@@ -279,9 +404,6 @@ public final class SyncEngine {
         final long bytes = bytesRef.get();
 
         if (failed == 0) {
-            // M7: verify we still hold the lock before committing the manifest.
-            // If our lock was overridden during upload, committing now would
-            // overwrite whatever the new lock-holder is about to do.
             if (!com.worldshare.mod.cloud.LockManager.weHoldLock()) {
                 WorldShareMod.LOGGER.error(
                         "push: lock no longer ours, aborting manifest commit. "
@@ -294,6 +416,10 @@ public final class SyncEngine {
                                 + "Coordinate with the other player and retry."));
             } else {
                 commitManifest(client, driveFolderId, local);
+                // M8: save scan cache after successful commit. Merge with old cache so
+                // non-dirty .mca files (not re-scanned this push) keep their local mtime.
+                saveScanCache(local, scanCache, worldRoot);
+                DirtyRegionTracker.resetAfterPush();
                 progress.onComplete();
             }
         } else {
@@ -313,7 +439,6 @@ public final class SyncEngine {
                                             final SyncProgress progress) throws IOException {
         final String driveWorldFolderId = ensureWorldSubfolder(driveFolderId, client, true);
         final List<String> toUpload = new ArrayList<>(local.files().keySet());
-// Largest files first — avoids one thread blocking on a big file at the end.
         toUpload.sort((a, b) -> {
             final WorldManifest.Entry ea = local.get(a);
             final WorldManifest.Entry eb = local.get(b);
@@ -337,9 +462,6 @@ public final class SyncEngine {
                 progress, totalBytes, uploadedRef, failedRef, bytesRef);
 
         if (failedRef.get() == 0) {
-            // M7: verify we still hold the lock before committing the manifest.
-            // If our lock was overridden during upload, committing now would
-            // overwrite whatever the new lock-holder is about to do.
             if (!com.worldshare.mod.cloud.LockManager.weHoldLock()) {
                 WorldShareMod.LOGGER.error(
                         "push: lock no longer ours, aborting manifest commit. "
@@ -352,6 +474,9 @@ public final class SyncEngine {
                                 + "Coordinate with the other player and retry."));
             } else {
                 commitManifest(client, driveFolderId, local);
+                // First-time push: save the full scan as cache (no old cache to merge).
+                WorldManifest.saveToDisk(local, worldRoot.resolve(SCAN_CACHE_FILENAME));
+                DirtyRegionTracker.resetAfterPush();
                 progress.onComplete();
             }
         } else {
@@ -481,6 +606,30 @@ public final class SyncEngine {
         }
     }
 
+    // ---- SCAN CACHE HELPERS ----
+
+    /**
+     * Saves the scan cache after a successful incremental push.
+     * Merges old cache (mtime for non-dirty .mca files not re-scanned) with fresh
+     * scan entries (mtime for everything scanned). Fresh entries win on conflict.
+     * For first-time push, oldCache is null and scannedLocal is saved directly.
+     */
+    private static void saveScanCache(final WorldManifest scannedLocal,
+                                      final WorldManifest oldCache,
+                                      final Path worldRoot) {
+        final WorldManifest cacheToSave;
+        if (oldCache != null && !oldCache.files().isEmpty()) {
+            cacheToSave = new WorldManifest();
+            cacheToSave.files.putAll(oldCache.files());
+            cacheToSave.files.putAll(scannedLocal.files());
+        } else {
+            cacheToSave = scannedLocal;
+        }
+        WorldManifest.saveToDisk(cacheToSave, worldRoot.resolve(SCAN_CACHE_FILENAME));
+        WorldShareMod.LOGGER.debug(
+                "SyncEngine: saved scan cache ({} entries)", cacheToSave.size());
+    }
+
     // ---- DRIVE / FILE HELPERS ----
 
     private static WorldManifest readDriveManifest(final String driveFolderId) throws IOException {
@@ -591,6 +740,21 @@ public final class SyncEngine {
         final Throwable error;
         UploadTaskResult(String r, UploadResult u, long ms, Throwable e) {
             this.relPath = r; this.upResult = u; this.elapsedMs = ms; this.error = e;
+        }
+    }
+
+    /** M8: result of a parallel download worker. Mirrors UploadTaskResult. */
+    private static final class DownloadTaskResult {
+        final String relPath;
+        final boolean success;
+        final long sizeDownloaded;
+        final IOException error;
+        DownloadTaskResult(final String relPath, final boolean success,
+                           final long sizeDownloaded, final IOException error) {
+            this.relPath = relPath;
+            this.success = success;
+            this.sizeDownloaded = sizeDownloaded;
+            this.error = error;
         }
     }
 

@@ -8,6 +8,7 @@ import com.worldshare.mod.config.WorldShareConfig;
 import com.worldshare.mod.modmanager.ModManagerModule;
 import com.worldshare.mod.relay.RelayModule;
 import com.worldshare.mod.sync.AutoSyncListener;
+import com.worldshare.mod.sync.DirtyRegionTracker;
 import com.worldshare.mod.ui.UiModule;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -31,6 +32,7 @@ import org.slf4j.Logger;
  *   <li>Lifecycle dispatch to cloud / relay / ui / modmanager modules</li>
  *   <li>{@code /worldshare} command tree</li>
  *   <li>{@link AutoSyncListener} for auto-push on quit</li>
+ *   <li>{@link DirtyRegionTracker} (M8) for .mca dirty tracking</li>
  * </ul>
  *
  * <p>{@code E4mcCoordinator} and {@code TitleScreenButtonInjector} are
@@ -62,7 +64,11 @@ public final class WorldShareMod {
         // Must register the CLASS, not an instance.
         NeoForge.EVENT_BUS.register(AutoSyncListener.class);
 
-        LOGGER.info("WorldShare: registered AutoSyncListener on EVENT_BUS");
+        // M8: DirtyRegionTracker hooks ChunkDataEvent.Save (server thread) and
+        // ServerStartedEvent. Static methods only — register the class.
+        NeoForge.EVENT_BUS.register(DirtyRegionTracker.class);
+
+        LOGGER.info("WorldShare: registered AutoSyncListener and DirtyRegionTracker on EVENT_BUS");
         LOGGER.info("WorldShare mod constructor complete.");
     }
 

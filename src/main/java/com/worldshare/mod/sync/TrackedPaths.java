@@ -10,6 +10,10 @@ import java.util.UUID;
  * of UUID. Combined with stripping level.dat Player on pull, this gives
  * dedicated-server-style behaviour where each player's character lives in
  * their own playerdata file and follows them between machines.
+ *
+ * <p><b>M8:</b> {@link #isMcaFile(String)} exposed for {@link WorldFileScanner}
+ * dirty-region filtering. {@code worldshare-scan-cache.json} excluded from sync
+ * (per-machine optimization file, not world state).
  */
 public final class TrackedPaths {
 
@@ -24,10 +28,21 @@ public final class TrackedPaths {
         final String rel = worldRoot.relativize(file).toString().replace('\\', '/');
         if (rel.isEmpty()) return false;
 
+        // ---- EXCLUDES ----
+
+        // Skip Distant Horizons LOD cache — client-side rendering data, not world state.
+        // Lives inside data/ which is otherwise fully tracked, so must be explicitly excluded.
+        // Exclude all three SQLite files (main db, write-ahead log, shared memory).
+        if (rel.endsWith(".sqlite")) return false;
+        if (rel.endsWith(".sqlite-wal")) return false;
+        if (rel.endsWith(".sqlite-shm")) return false;
+
         // Skip Minecraft's per-save session lock — local-only state.
         if (rel.equals("session.lock")) return false;
         // Skip WorldShare's own per-world link file — per-machine config.
         if (rel.equals("worldshare-link.json")) return false;
+        // Skip WorldShare's local scan cache — per-machine optimization, not world state.
+        if (rel.equals("worldshare-scan-cache.json")) return false;
         // Skip auto-generated world icon (regenerated each save).
         if (rel.equals("icon.png")) return false;
         // Skip log and crash files.
@@ -54,6 +69,15 @@ public final class TrackedPaths {
         if (rel.startsWith("v_data/")) return true;
 
         return false;
+    }
+
+    /**
+     * Returns true if the relative path is an .mca file (region, entities, or poi).
+     * Used by WorldFileScanner to apply the dirty-region filter only to .mca files —
+     * non-.mca tracked files are always included in the scan regardless of dirty state.
+     */
+    static boolean isMcaFile(final String rel) {
+        return rel.endsWith(".mca");
     }
 
     private static boolean matchesRegion(final String rel) {

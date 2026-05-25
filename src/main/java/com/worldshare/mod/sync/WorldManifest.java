@@ -3,6 +3,9 @@ package com.worldshare.mod.sync;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -18,6 +21,10 @@ import java.util.Objects;
  *   <li><b>Local manifest</b>: computed by walking the world folder.
  *       Compared to the Drive manifest to determine which files differ.</li>
  * </ul>
+ *
+ * <p>M8: {@link #loadFromDisk} / {@link #saveToDisk} support the local scan cache
+ * ({@code worldshare-scan-cache.json}), which lets WorldFileScanner skip SHA-256 for
+ * files whose mtime + size haven't changed since the last push.
  *
  * <p>Use {@link #put} when constructing; use {@link #files()} for read-only access.
  */
@@ -73,7 +80,7 @@ public final class WorldManifest {
         public String sha256;
         /** File size in bytes. */
         public long size;
-        /** Last modified time as ISO-8601 instant (advisory, not used for diffing). */
+        /** Last modified time as ISO-8601 instant. Used by scan cache for mtime pre-check. */
         public String mtime;
 
         public Entry() {} // for Gson
@@ -102,5 +109,35 @@ public final class WorldManifest {
             parsed.files = new LinkedHashMap<>();
         }
         return parsed;
+    }
+
+    // ----- Disk helpers (for local scan cache) -----
+
+    /**
+     * Load a manifest from a local file. Returns null if the file doesn't exist or
+     * is malformed — callers treat null as "no cache available".
+     */
+    public static WorldManifest loadFromDisk(final Path path) {
+        if (path == null || !Files.isRegularFile(path)) return null;
+        try {
+            return fromJson(Files.readString(path));
+        } catch (final Exception e) {
+            // Malformed or unreadable — not fatal, just means no cache this scan.
+            return null;
+        }
+    }
+
+    /**
+     * Save a manifest to a local file. Failures are non-fatal — next scan will just
+     * re-hash everything without a cache hit.
+     */
+    public static void saveToDisk(final WorldManifest manifest, final Path path) {
+        if (manifest == null || path == null) return;
+        try {
+            if (path.getParent() != null) Files.createDirectories(path.getParent());
+            Files.writeString(path, manifest.toJson());
+        } catch (final IOException ignored) {
+            // Not fatal.
+        }
     }
 }
