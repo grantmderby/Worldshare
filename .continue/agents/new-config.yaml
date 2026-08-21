@@ -1,0 +1,24 @@
+name: WorldShare Dev
+version: 1.0.0
+schema: v1
+
+models:
+  - name: qwen2.5-coder 32b
+    provider: ollama
+    model: qwen2.5-coder:32b
+    apiBase: http://192.168.6.88:11434
+
+  - name: qwen3 32b
+    provider: ollama
+    model: qwen3:32b
+    apiBase: http://192.168.6.88:11434
+
+tabAutocomplete:
+  model: qwen2.5-coder:32b
+  provider: ollama
+  apiBase: http://192.168.6.88:11434
+
+embeddingsProvider:
+  provider: ollama
+  model: nomic-embed-text
+  apiBase: http://192.168.6.88:11434

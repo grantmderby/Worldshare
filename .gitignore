@@ -53,3 +53,4 @@ client_secret.json
 src/main/resources/worldshare/oauth/client_secret*.json
 
 client_secret*.json
+.aider*
