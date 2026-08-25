@@ -1,0 +1,10 @@
+# Never commit real credentials from this throwaway GCP project
+client_secret*.json
+token_*.json
+folder_*.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
