@@ -2,6 +2,7 @@
 client_secret*.json
 token_*.json
 folder_*.json
+picked_file*.json
 
 # Python
 __pycache__/
