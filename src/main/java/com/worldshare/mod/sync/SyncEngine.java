@@ -1,11 +1,13 @@
 package com.worldshare.mod.sync;
 
-import com.google.gson.JsonSyntaxException;
 import com.worldshare.mod.WorldShareMod;
 import com.worldshare.mod.cloud.CloudModule;
+import com.worldshare.mod.cloud.ControlFile;
+import com.worldshare.mod.cloud.ControlFileClient;
 import com.worldshare.mod.cloud.DriveClient;
+import com.worldshare.mod.cloud.LockManager;
+import com.worldshare.mod.cloud.RemoteFileSet;
 import com.worldshare.mod.util.MachineId;
-import com.worldshare.mod.util.SHA256Util;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
@@ -13,321 +15,205 @@ import net.minecraft.nbt.NbtIo;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.CompletionService;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Pushes/pulls a world to/from Drive.
+ * Pushes and pulls a world to and from Drive, one bucket archive at a time.
  *
- * <p><b>M7:</b> pull accepts SyncProgress; strips level.dat Player tag every pull;
- * push uploads in parallel (pool 4); per-file timing logs.
+ * <p><b>What changed and why.</b> This engine used to mirror the world folder onto
+ * Drive file-for-file: walk the save, upload each changed {@code .mca} as its own
+ * Drive object, keep a {@code manifest.json} beside them. That design is
+ * incompatible with the {@code drive.file} OAuth scope the mod now uses, because a
+ * file the mod creates on one machine is invisible to the other player until they
+ * personally select it in Google's Picker - and new region files appear constantly
+ * as players explore. The remote side is therefore a fixed set of files, chosen
+ * once at setup: a control document plus N bucket archives (see
+ * {@link BucketLayout} for how files are assigned to buckets, and
+ * {@code docs/CLOUD_BACKEND_DECISION.md} for the testing that ruled out the
+ * alternatives).
  *
- * <p><b>M8:</b>
- * <ul>
- *   <li>push uses {@link DirtyRegionTracker} to skip .mca files not written this session,
- *       plus a local scan cache ({@value SCAN_CACHE_FILENAME}) for mtime pre-checks.</li>
- *   <li>pull invalidates the scan cache and resets dirty tracking after download.</li>
- *   <li>pull downloads in parallel (pool 4, largest-first) — mirrors push semantics.
- *       Retry + 416 handling moved inside each worker.</li>
- * </ul>
+ * <p><b>What that costs.</b> Sync granularity is now the bucket, not the file. A
+ * single changed chunk forces its whole bucket archive back across the network.
+ * The per-file scan machinery below - the mtime cache, the dirty-region tracker,
+ * the manifest diff - all survives and still matters, because it's what decides
+ * <em>which</em> buckets are dirty. It just no longer decides what gets uploaded
+ * byte-for-byte.
+ *
+ * <p><b>Threading:</b> every method here blocks on network and must not be called
+ * on the Minecraft main thread.
  */
 public final class SyncEngine {
 
-    public static final String MANIFEST_FILENAME = "manifest.json";
-    public static final String MANIFEST_PENDING_FILENAME = "manifest_pending.json";
-    public static final String WORLD_SUBFOLDER = "world";
-
     /**
-     * Local scan cache filename — stored in the world folder, excluded from sync.
+     * Local scan cache filename - stored in the world folder, excluded from sync.
      * Persists SHA-256/size/mtime for files scanned on the last successful push so
      * subsequent scans can skip SHA-256 for unchanged files.
      */
     static final String SCAN_CACHE_FILENAME = "worldshare-scan-cache.json";
 
+    /**
+     * How many bucket archives to transfer at once.
+     *
+     * <p>Lower than the old per-file pool of 4. Each unit of work is now a whole
+     * archive rather than one region file, so the same concurrency would mean
+     * several hundred megabytes in flight at once on a home connection, and each
+     * worker also needs scratch disk for its archive.
+     */
+    private static final int TRANSFER_THREADS = 2;
+
     private SyncEngine() {}
 
     // ---- STATUS ----
 
+    /**
+     * Compare the local world against what the control file says is on Drive.
+     * Reads no bucket archives, so it's cheap enough for a status command.
+     */
     public static SyncDiff status(final Path worldRoot,
-                                  final String driveFolderId,
+                                  final RemoteFileSet remote,
                                   final UUID ownUuid) throws IOException {
+        final ControlFile control = ControlFileClient.read(requireComplete(remote).controlFileId);
         final WorldManifest local = WorldFileScanner.scan(worldRoot, ownUuid);
-        final WorldManifest drive = readDriveManifest(driveFolderId);
-        return SyncDiff.compute(local, drive);
+        final WorldManifest driveManifest =
+                (control == null) ? new WorldManifest() : control.manifestOrEmpty();
+        return SyncDiff.compute(local, driveManifest);
     }
 
     // ---- PULL ----
 
     public static PullResult pull(final Path worldRoot,
-                                  final String driveFolderId,
+                                  final RemoteFileSet remote,
                                   final UUID ownUuid) throws IOException {
-        return pull(worldRoot, driveFolderId, ownUuid, SyncProgress.NOOP);
+        return pull(worldRoot, remote, ownUuid, SyncProgress.NOOP);
     }
 
     public static PullResult pull(final Path worldRoot,
-                                  final String driveFolderId,
+                                  final RemoteFileSet remote,
                                   final UUID ownUuid,
                                   final SyncProgress progress) throws IOException {
         Files.createDirectories(worldRoot);
+        requireComplete(remote);
 
-        final DriveClient client = CloudModule.driveClient();
-        final WorldManifest driveManifest = readDriveManifest(driveFolderId);
-
-        if (driveManifest == null) {
-            WorldShareMod.LOGGER.info("pull: no Drive manifest yet (first sync); nothing to pull");
+        final ControlFile control = ControlFileClient.read(remote.controlFileId);
+        if (control == null) {
+            WorldShareMod.LOGGER.info("pull: control file is empty (first sync); nothing to pull");
             progress.onStart(0, 0L);
             progress.onComplete();
             return new PullResult(0, 0, 0L);
         }
+        final BucketLayout layout = requireMatchingLayout(control, remote);
 
-        // Full scan for pull comparison — no dirty filter (we need all local hashes).
+        // Full scan - no dirty filter, because pull needs every local hash to know
+        // what it can safely leave alone.
         final WorldManifest local = WorldFileScanner.scan(worldRoot, ownUuid);
+        final WorldManifest driveManifest = control.manifestOrEmpty();
         final SyncDiff diff = SyncDiff.compute(local, driveManifest);
 
-        final String driveWorldFolderId = ensureWorldSubfolder(driveFolderId, client, false);
-        if (driveWorldFolderId == null) {
-            WorldShareMod.LOGGER.warn(
-                    "pull: Drive manifest exists but no world/ subfolder; nothing to pull");
+        final Set<String> wantedPaths = new LinkedHashSet<>();
+        wantedPaths.addAll(diff.onlyOnDrive);
+        wantedPaths.addAll(diff.different);
+
+        if (wantedPaths.isEmpty()) {
+            WorldShareMod.LOGGER.info("pull: already up to date ({} files match)",
+                    diff.identical.size());
             progress.onStart(0, 0L);
             progress.onComplete();
             return new PullResult(0, 0, 0L);
         }
 
-        final List<String> toDownload = new ArrayList<>();
-        toDownload.addAll(diff.onlyOnDrive);
-        toDownload.addAll(diff.different);
-
-        // M8: largest first — each worker grabs a big file ASAP rather than finishing
-        // small files and waiting on a single large file at the end.
-        toDownload.sort((a, b) -> {
-            final WorldManifest.Entry ea = driveManifest.get(a);
-            final WorldManifest.Entry eb = driveManifest.get(b);
-            final long sizeA = ea != null ? ea.size : 0L;
-            final long sizeB = eb != null ? eb.size : 0L;
-            return Long.compare(sizeB, sizeA); // descending
-        });
+        // Group the files we need by the bucket that holds them, so each archive is
+        // fetched exactly once no matter how many wanted files live inside it.
+        final Map<Integer, Set<String>> pathsByBucket =
+                groupByBucket(layout, wantedPaths);
 
         long totalBytes = 0L;
-        for (final String relPath : toDownload) {
+        for (final String relPath : wantedPaths) {
             final WorldManifest.Entry e = driveManifest.get(relPath);
             if (e != null) totalBytes += e.size;
         }
-        progress.onStart(toDownload.size(), totalBytes);
 
-        final AtomicInteger downloadedRef = new AtomicInteger(0);
-        final AtomicInteger failedRef = new AtomicInteger(0);
-        final AtomicLong bytesRef = new AtomicLong(0);
+        WorldShareMod.LOGGER.info("pull: {} file(s) across {} bucket(s), {} MB",
+                wantedPaths.size(), pathsByBucket.size(), totalBytes / (1024 * 1024));
+        progress.onStart(wantedPaths.size(), totalBytes);
 
-        if (!toDownload.isEmpty()) {
-            parallelDownload(client, driveWorldFolderId, toDownload, worldRoot,
-                    driveManifest, progress, totalBytes,
-                    downloadedRef, failedRef, bytesRef);
-        }
+        final TransferResult transfer = transferBuckets(
+                pathsByBucket, remote, worldRoot, driveManifest, false, progress,
+                wantedPaths.size(), totalBytes);
 
-        final int downloaded = downloadedRef.get();
-        final int failed = failedRef.get();
-        final long bytes = bytesRef.get();
+        final int downloaded = transfer.filesOk;
+        final int failed = transfer.bucketsFailed;
+        final long bytes = transfer.bytesMoved;
 
-        // M7: strip Player tag — runs every pull, not just first time.
         stripPlayerFromLevelDat(worldRoot);
 
-        // M8: after pull, local matches Drive — invalidate scan cache and reset tracker.
-        // Downloaded files have current-time mtimes which would cause false cache hits.
+        // Local now matches Drive - invalidate the scan cache and reset dirty
+        // tracking. Downloaded files carry fresh mtimes that would otherwise look
+        // like cache hits on the next scan.
         try {
             Files.deleteIfExists(worldRoot.resolve(SCAN_CACHE_FILENAME));
         } catch (final IOException ignored) {}
         DirtyRegionTracker.resetAfterPull();
 
         if (failed > 0) {
-            progress.onError(new IOException(failed + " file(s) failed to download"));
-            WorldShareMod.LOGGER.error(
-                    "pull: {} downloaded, {} FAILED, {} bytes", downloaded, failed, bytes);
-            throw new IOException(failed + " file(s) failed to download. Retry pull.");
+            progress.onError(new IOException(failed + " bucket(s) failed to download"));
+            WorldShareMod.LOGGER.error("pull: {} files restored, {} bucket(s) FAILED, {} bytes",
+                    downloaded, failed, bytes);
+            throw new IOException(failed + " bucket(s) failed to download. Retry pull.");
         }
 
         progress.onComplete();
-        WorldShareMod.LOGGER.info(
-                "pull complete: {} downloaded, {} bytes ({} MB), {} unchanged",
-                downloaded, bytes, bytes / (1024 * 1024), diff.identical.size());
+        WorldShareMod.LOGGER.info("pull complete: {} file(s) restored, {} bytes ({} MB)",
+                downloaded, bytes, bytes / (1024 * 1024));
         return new PullResult(downloaded, failed, bytes);
-    }
-
-    // ---- PARALLEL DOWNLOAD HELPER (M8) ----
-
-    private static void parallelDownload(final DriveClient client,
-                                         final String driveWorldFolderId,
-                                         final List<String> toDownload,
-                                         final Path worldRoot,
-                                         final WorldManifest driveManifest,
-                                         final SyncProgress progress,
-                                         final long totalBytes,
-                                         final AtomicInteger downloadedRef,
-                                         final AtomicInteger failedRef,
-                                         final AtomicLong bytesRef) throws IOException {
-        // M8: pool size 4 — matches upload pool, residential-friendly, Drive-polite.
-        final ExecutorService pool = Executors.newFixedThreadPool(4, r -> {
-            final Thread t = new Thread(r, "WorldShare-Download");
-            t.setDaemon(true);
-            return t;
-        });
-        final CompletionService<DownloadTaskResult> completion =
-                new ExecutorCompletionService<>(pool);
-
-        for (final String relPath : toDownload) {
-            final WorldManifest.Entry expected = driveManifest.get(relPath);
-            completion.submit(() -> {
-                // downloadWithRetry handles IOExceptions internally and returns a result.
-                // Outer Throwable catch matches parallelUpload — any unexpected RuntimeException
-                // or Error from downloadOne becomes a failed result rather than poisoning
-                // the CompletionService with an ExecutionException.
-                try {
-                    return downloadWithRetry(client, driveWorldFolderId,
-                            relPath, worldRoot, expected);
-                } catch (final Throwable t) {
-                    return new DownloadTaskResult(relPath, false, 0L,
-                            new IOException("Unexpected error: " + t.getMessage(), t));
-                }
-            });
-        }
-        pool.shutdown();
-
-        try {
-            for (int i = 0; i < toDownload.size(); i++) {
-                final DownloadTaskResult res = completion.take().get();
-                if (res.success) {
-                    final int done = downloadedRef.incrementAndGet();
-                    final long bytes = bytesRef.addAndGet(res.sizeDownloaded);
-                    progress.onFileProgress(done + failedRef.get(), toDownload.size(),
-                            bytes, totalBytes, res.relPath);
-                } else {
-                    final int failed = failedRef.incrementAndGet();
-                    WorldShareMod.LOGGER.error(
-                            "pull: gave up on {}: {}", res.relPath,
-                            res.error != null ? res.error.getMessage() : "unknown");
-                    progress.onFileProgress(downloadedRef.get() + failed, toDownload.size(),
-                            bytesRef.get(), totalBytes, res.relPath);
-                }
-            }
-        } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-            pool.shutdownNow();
-            throw new IOException("Pull interrupted", e);
-        } catch (final ExecutionException e) {
-            // Workers catch Throwable, so this is unreachable. Defensive.
-            throw new IOException("Unexpected download failure", e.getCause());
-        }
-    }
-
-    /**
-     * Downloads a single file with 3-attempt retry and 416 handling. Runs on a worker
-     * thread. Never throws checked exceptions — all IOExceptions are captured in the
-     * returned {@link DownloadTaskResult}. Only unchecked Throwables can propagate,
-     * which the submit lambda's outer catch handles.
-     */
-    private static DownloadTaskResult downloadWithRetry(final DriveClient client,
-                                                        final String driveWorldFolderId,
-                                                        final String relPath,
-                                                        final Path worldRoot,
-                                                        final WorldManifest.Entry expected) {
-        IOException lastError = null;
-
-        for (int attempt = 1; attempt <= 3; attempt++) {
-            try {
-                downloadOne(client, driveWorldFolderId, relPath, worldRoot, expected);
-                if (attempt > 1) {
-                    WorldShareMod.LOGGER.info(
-                            "pull: succeeded {} on retry attempt {}", relPath, attempt);
-                }
-                return new DownloadTaskResult(relPath, true,
-                        expected == null ? 0L : expected.size, null);
-            } catch (final IOException e) {
-                // M7: 416 = empty file on Drive (or smaller than expected).
-                // Direct downloads should prevent this, but if it slips through, treat as
-                // a 0-byte file and stop retrying — retries on this won't help.
-                if (is416(e)) {
-                    WorldShareMod.LOGGER.info(
-                            "pull: {} returned 416, treating as 0-byte file", relPath);
-                    try {
-                        final Path target = worldRoot.resolve(relPath);
-                        if (target.getParent() != null) {
-                            Files.createDirectories(target.getParent());
-                        }
-                        Files.write(target, new byte[0]);
-                        return new DownloadTaskResult(relPath, true, 0L, null);
-                    } catch (final IOException writeErr) {
-                        WorldShareMod.LOGGER.warn(
-                                "pull: couldn't create 0-byte placeholder for {}: {}",
-                                relPath, writeErr.getMessage());
-                        return new DownloadTaskResult(relPath, false, 0L, writeErr);
-                    }
-                }
-
-                lastError = e;
-                WorldShareMod.LOGGER.warn(
-                        "pull: attempt {} failed for {}: {}",
-                        attempt, relPath, e.getMessage());
-
-                if (attempt < 3) {
-                    try {
-                        // Backoff inside the worker — only blocks this thread.
-                        // Other workers continue downloading.
-                        Thread.sleep(2000L * attempt);
-                    } catch (final InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        return new DownloadTaskResult(relPath, false, 0L,
-                                new IOException("Interrupted during retry", ie));
-                    }
-                }
-            }
-        }
-        return new DownloadTaskResult(relPath, false, 0L, lastError);
     }
 
     // ---- PUSH ----
 
     public static PushResult push(final Path worldRoot,
-                                  final String driveFolderId,
+                                  final RemoteFileSet remote,
                                   final UUID ownUuid,
                                   final WorldManifest baseline) throws IOException {
-        return push(worldRoot, driveFolderId, ownUuid, baseline, SyncProgress.NOOP);
+        return push(worldRoot, remote, ownUuid, baseline, SyncProgress.NOOP);
     }
 
     public static PushResult push(final Path worldRoot,
-                                  final String driveFolderId,
+                                  final RemoteFileSet remote,
                                   final UUID ownUuid,
                                   final WorldManifest baseline,
                                   final SyncProgress progress) throws IOException {
-        final DriveClient client = CloudModule.driveClient();
+        requireComplete(remote);
 
-        // Read Drive manifest first so we know whether this is first-time or incremental.
-        final WorldManifest drive = readDriveManifest(driveFolderId);
+        final ControlFile control =
+                ControlFileClient.readOrInitial(remote.controlFileId, remote.bucketCount);
+        final BucketLayout layout = requireMatchingLayout(control, remote);
+        final WorldManifest driveManifest = control.manifestOrEmpty();
+        final boolean firstPush = driveManifest.files().isEmpty();
 
         final WorldManifest local;
-        final WorldManifest scanCache; // kept for scan cache save after commit
+        final WorldManifest scanCache;
 
-        if (drive == null) {
-            // First-time push — full scan, no dirty filter or mtime cache.
-            // We must upload everything; skipping any file leaves Drive incomplete.
-            WorldShareMod.LOGGER.info("push: no Drive manifest — first-time push, full scan");
+        if (firstPush) {
+            // Nothing on Drive yet: scan everything. Skipping any file here would
+            // leave a bucket permanently missing content nobody re-dirties.
+            WorldShareMod.LOGGER.info("push: control file has no manifest - first-time push, full scan");
             local = WorldFileScanner.scan(worldRoot, ownUuid);
             scanCache = null;
         } else {
-            // Incremental push — dirty filter + mtime cache where available.
             scanCache = WorldManifest.loadFromDisk(worldRoot.resolve(SCAN_CACHE_FILENAME));
             final boolean filterRegions = DirtyRegionTracker.shouldFilterRegions();
             final Set<String> dirtyPaths = filterRegions
@@ -345,244 +231,354 @@ public final class SyncEngine {
 
         local.generatedByMachineId = MachineId.get();
 
-        if (drive == null) {
-            return pushFirstTime(client, worldRoot, driveFolderId, local, progress);
-        }
+        final SyncDiff diff = SyncDiff.compute(local, driveManifest);
 
-        final SyncDiff diff = SyncDiff.compute(local, drive);
-        final List<String> toUpload = new ArrayList<>();
+        // Paths whose bytes actually need to reach Drive.
+        final Set<String> changedPaths = new LinkedHashSet<>();
         int skippedStale = 0;
 
         for (final String relPath : diff.different) {
             if (baseline != null) {
+                // The file differs from Drive, but our copy is byte-identical to what
+                // we started the session with - so the difference is the *other*
+                // player's newer work, not ours. Keep theirs.
                 final WorldManifest.Entry baseEntry = baseline.get(relPath);
                 final WorldManifest.Entry localEntry = local.get(relPath);
                 if (baseEntry != null && baseEntry.sha256 != null
+                        && localEntry != null
                         && baseEntry.sha256.equals(localEntry.sha256)) {
                     skippedStale++;
-                    local.put(relPath, drive.get(relPath));
+                    local.put(relPath, driveManifest.get(relPath));
                     continue;
                 }
             }
-            toUpload.add(relPath);
+            changedPaths.add(relPath);
         }
-        toUpload.addAll(diff.onlyLocal);
+        changedPaths.addAll(diff.onlyLocal);
 
-        // Files only on Drive (not in local scan) — preserve their Drive entries in
-        // the manifest so we don't delete them. Includes non-dirty .mca files that
-        // were filtered out of the local scan.
+        // Files present on Drive but absent from our scan. Either somebody else's
+        // work, or - far more commonly - a region file the dirty filter skipped
+        // scanning. Carry the Drive entry forward so the new manifest doesn't drop it.
         for (final String relPath : diff.onlyOnDrive) {
-            local.put(relPath, drive.get(relPath));
+            local.put(relPath, driveManifest.get(relPath));
         }
 
-        toUpload.sort((a, b) -> {
-            final WorldManifest.Entry ea = local.get(a);
-            final WorldManifest.Entry eb = local.get(b);
-            final long sizeA = ea != null ? ea.size : 0L;
-            final long sizeB = eb != null ? eb.size : 0L;
-            return Long.compare(sizeB, sizeA);
-        });
+        if (changedPaths.isEmpty()) {
+            WorldShareMod.LOGGER.info("push: nothing changed ({} file(s) left to the other player)",
+                    skippedStale);
+            progress.onStart(0, 0L);
+            progress.onComplete();
+            return new PushResult(0, skippedStale, 0, 0L);
+        }
 
-        final String driveWorldFolderId = ensureWorldSubfolder(driveFolderId, client, true);
+        // A bucket is dirty if any of its files changed. Rebuilding it means packing
+        // *every* file assigned to it, not just the changed ones, because the upload
+        // replaces the archive wholesale.
+        final Set<Integer> dirtyBuckets = new TreeSet<>();
+        for (final String relPath : changedPaths) {
+            dirtyBuckets.add(layout.indexFor(relPath));
+        }
+        final Map<Integer, Set<String>> membersByBucket =
+                groupByBucket(layout, local.files().keySet());
 
         long totalBytes = 0L;
-        for (final String relPath : toUpload) {
-            final WorldManifest.Entry entry = local.get(relPath);
-            if (entry != null) totalBytes += entry.size;
-        }
-        progress.onStart(toUpload.size(), totalBytes);
-
-        final AtomicInteger uploadedRef = new AtomicInteger(0);
-        final AtomicInteger failedRef = new AtomicInteger(0);
-        final AtomicLong bytesRef = new AtomicLong(0);
-
-        parallelUpload(client, driveWorldFolderId, toUpload, worldRoot, local,
-                progress, totalBytes, uploadedRef, failedRef, bytesRef);
-
-        final int uploaded = uploadedRef.get();
-        final int failed = failedRef.get();
-        final long bytes = bytesRef.get();
-
-        if (failed == 0) {
-            if (!com.worldshare.mod.cloud.LockManager.weHoldLock()) {
-                WorldShareMod.LOGGER.error(
-                        "push: lock no longer ours, aborting manifest commit. "
-                                + "{} files were uploaded but manifest is unchanged.",
-                        uploaded);
-                progress.onError(new IOException(
-                        "Your session lock was overridden during upload. "
-                                + "Files were uploaded but the manifest was NOT updated. "
-                                + "Your changes are still saved locally. "
-                                + "Coordinate with the other player and retry."));
-            } else {
-                commitManifest(client, driveFolderId, local);
-                // M8: save scan cache after successful commit. Merge with old cache so
-                // non-dirty .mca files (not re-scanned this push) keep their local mtime.
-                saveScanCache(local, scanCache, worldRoot);
-                DirtyRegionTracker.resetAfterPush();
-                progress.onComplete();
+        for (final int bucket : dirtyBuckets) {
+            for (final String relPath : membersByBucket.getOrDefault(bucket, Set.of())) {
+                final WorldManifest.Entry entry = local.get(relPath);
+                if (entry != null) totalBytes += entry.size;
             }
-        } else {
-            progress.onError(new IOException(failed + " upload(s) failed; manifest not updated"));
         }
 
         WorldShareMod.LOGGER.info(
-                "push complete: {} uploaded, {} skipped, {} failed, {} bytes",
-                uploaded, skippedStale, failed, bytes);
-        return new PushResult(uploaded, skippedStale, failed, bytes);
+                "push: {} changed file(s) dirty {} of {} bucket(s); repacking {} MB",
+                changedPaths.size(), dirtyBuckets.size(), layout.bucketCount(),
+                totalBytes / (1024 * 1024));
+        progress.onStart(changedPaths.size(), totalBytes);
+
+        final Map<Integer, Set<String>> toUpload = new TreeMap<>();
+        for (final int bucket : dirtyBuckets) {
+            toUpload.put(bucket, membersByBucket.getOrDefault(bucket, Set.of()));
+        }
+
+        final TransferResult transfer = transferBuckets(
+                toUpload, remote, worldRoot, local, true, progress,
+                changedPaths.size(), totalBytes);
+
+        final int failed = transfer.bucketsFailed;
+        final long bytes = transfer.bytesMoved;
+
+        if (failed > 0) {
+            progress.onError(new IOException(
+                    failed + " bucket upload(s) failed; the world's control file was NOT updated"));
+            WorldShareMod.LOGGER.error("push: {} bucket(s) failed; control file not committed", failed);
+            return new PushResult(transfer.bucketsOk, skippedStale, failed, bytes);
+        }
+
+        // Only now, with every dirty archive safely on Drive, does the manifest that
+        // describes them become the published truth.
+        if (!LockManager.weHoldLock()) {
+            WorldShareMod.LOGGER.error(
+                    "push: lock no longer ours, aborting control-file commit. "
+                            + "{} bucket(s) were uploaded but the manifest is unchanged.",
+                    transfer.bucketsOk);
+            progress.onError(new IOException(
+                    "Your session lock was overridden during upload. "
+                            + "Bucket archives were uploaded but the manifest was NOT updated. "
+                            + "Your changes are still saved locally. "
+                            + "Coordinate with the other player and retry."));
+            return new PushResult(transfer.bucketsOk, skippedStale, 0, bytes);
+        }
+
+        commitControl(remote, control, local);
+        saveScanCache(local, scanCache, worldRoot);
+        DirtyRegionTracker.resetAfterPush();
+        progress.onComplete();
+
+        WorldShareMod.LOGGER.info(
+                "push complete: {} bucket(s) uploaded, {} file(s) left to other player, {} bytes",
+                transfer.bucketsOk, skippedStale, bytes);
+        return new PushResult(transfer.bucketsOk, skippedStale, 0, bytes);
     }
 
-    private static PushResult pushFirstTime(final DriveClient client,
-                                            final Path worldRoot,
-                                            final String driveFolderId,
-                                            final WorldManifest local,
-                                            final SyncProgress progress) throws IOException {
-        final String driveWorldFolderId = ensureWorldSubfolder(driveFolderId, client, true);
-        final List<String> toUpload = new ArrayList<>(local.files().keySet());
-        toUpload.sort((a, b) -> {
-            final WorldManifest.Entry ea = local.get(a);
-            final WorldManifest.Entry eb = local.get(b);
-            final long sizeA = ea != null ? ea.size : 0L;
-            final long sizeB = eb != null ? eb.size : 0L;
-            return Long.compare(sizeB, sizeA);
-        });
+    // ---- BUCKET TRANSFER ----
 
-        long totalBytes = 0L;
-        for (final String relPath : toUpload) {
-            final WorldManifest.Entry e = local.get(relPath);
-            if (e != null) totalBytes += e.size;
-        }
-        progress.onStart(toUpload.size(), totalBytes);
-
-        final AtomicInteger uploadedRef = new AtomicInteger(0);
-        final AtomicInteger failedRef = new AtomicInteger(0);
-        final AtomicLong bytesRef = new AtomicLong(0);
-
-        parallelUpload(client, driveWorldFolderId, toUpload, worldRoot, local,
-                progress, totalBytes, uploadedRef, failedRef, bytesRef);
-
-        if (failedRef.get() == 0) {
-            if (!com.worldshare.mod.cloud.LockManager.weHoldLock()) {
-                WorldShareMod.LOGGER.error(
-                        "push: lock no longer ours, aborting manifest commit. "
-                                + "{} files were uploaded but manifest is unchanged.",
-                        uploadedRef.get());
-                progress.onError(new IOException(
-                        "Your session lock was overridden during upload. "
-                                + "Files were uploaded but the manifest was NOT updated. "
-                                + "Your changes are still saved locally. "
-                                + "Coordinate with the other player and retry."));
-            } else {
-                commitManifest(client, driveFolderId, local);
-                // First-time push: save the full scan as cache (no old cache to merge).
-                WorldManifest.saveToDisk(local, worldRoot.resolve(SCAN_CACHE_FILENAME));
-                DirtyRegionTracker.resetAfterPush();
-                progress.onComplete();
-            }
-        } else {
-            progress.onError(new IOException(failedRef.get() + " upload(s) failed; manifest not updated"));
-        }
-        return new PushResult(uploadedRef.get(), 0, failedRef.get(), bytesRef.get());
-    }
-
-    // ---- PARALLEL UPLOAD HELPER ----
-
-    private static void parallelUpload(final DriveClient client,
-                                       final String driveWorldFolderId,
-                                       final List<String> toUpload,
-                                       final Path worldRoot,
-                                       final WorldManifest local,
-                                       final SyncProgress progress,
-                                       final long totalBytes,
-                                       final AtomicInteger uploadedRef,
-                                       final AtomicInteger failedRef,
-                                       final AtomicLong bytesRef) throws IOException {
-        if (toUpload.isEmpty()) return;
-
-        // Phase 1: pre-create all parent folders sequentially.
-        final Map<String, String> folderIdCache = new ConcurrentHashMap<>();
-        folderIdCache.put("", driveWorldFolderId);
-
-        final Set<String> parentPaths = new LinkedHashSet<>();
-        for (final String relPath : toUpload) {
-            final String[] parts = relPath.split("/");
-            final StringBuilder pathSoFar = new StringBuilder();
-            for (int i = 0; i < parts.length - 1; i++) {
-                if (i > 0) pathSoFar.append("/");
-                pathSoFar.append(parts[i]);
-                parentPaths.add(pathSoFar.toString());
-            }
-        }
-        final List<String> sortedParents = new ArrayList<>(parentPaths);
-        sortedParents.sort(Comparator.comparingInt(s -> s.split("/").length));
-
-        for (final String parentPath : sortedParents) {
-            final int lastSlash = parentPath.lastIndexOf('/');
-            final String parent = lastSlash >= 0 ? parentPath.substring(0, lastSlash) : "";
-            final String name = lastSlash >= 0 ? parentPath.substring(lastSlash + 1) : parentPath;
-            final String parentId = folderIdCache.get(parent);
-            String childId = client.findFileByName(name, parentId);
-            if (childId == null) childId = client.createFolder(name, parentId);
-            folderIdCache.put(parentPath, childId);
+    /**
+     * Upload or download a set of buckets in parallel.
+     *
+     * <p>Push and pull differ only in what happens to each archive once a worker
+     * has it - pack-and-upload versus download-and-unpack - so the pool, the
+     * largest-first ordering and the progress accounting are shared here and the
+     * direction arrives as an explicit flag rather than being inferred.
+     *
+     * @param manifestForSizes the manifest to read entry sizes from when ordering
+     *                         work and reporting progress: the local one on push,
+     *                         the remote one on pull
+     * @param uploading        true to pack and upload, false to download and unpack
+     */
+    private static TransferResult transferBuckets(final Map<Integer, Set<String>> pathsByBucket,
+                                                  final RemoteFileSet remote,
+                                                  final Path worldRoot,
+                                                  final WorldManifest manifestForSizes,
+                                                  final boolean uploading,
+                                                  final SyncProgress progress,
+                                                  final int totalFiles,
+                                                  final long totalBytes) throws IOException {
+        if (pathsByBucket.isEmpty()) {
+            return new TransferResult(0, 0, 0, 0L);
         }
 
-        // Phase 2: parallel uploads.
-        final ExecutorService pool = Executors.newFixedThreadPool(4, r -> {
-            final Thread t = new Thread(r, "WorldShare-Upload");
+        final ExecutorService pool = Executors.newFixedThreadPool(TRANSFER_THREADS, r -> {
+            final Thread t = new Thread(r, "WorldShare-Bucket");
             t.setDaemon(true);
             return t;
         });
-        final CompletionService<UploadTaskResult> completion = new ExecutorCompletionService<>(pool);
+        final CompletionService<BucketTaskResult> completion = new ExecutorCompletionService<>(pool);
 
-        for (final String relPath : toUpload) {
-            final int lastSlash = relPath.lastIndexOf('/');
-            final String parentPath = lastSlash >= 0 ? relPath.substring(0, lastSlash) : "";
-            final String fileName = lastSlash >= 0 ? relPath.substring(lastSlash + 1) : relPath;
-            final String parentFolderId = folderIdCache.get(parentPath);
+        // Biggest buckets first, so a worker grabs the long job immediately instead
+        // of finishing small ones and then waiting on it alone at the end.
+        final List<Integer> order = new ArrayList<>(pathsByBucket.keySet());
+        order.sort(Comparator.comparingLong(
+                (Integer b) -> bytesOf(pathsByBucket.get(b), manifestForSizes)).reversed());
 
+        for (final int bucket : order) {
+            final Set<String> paths = pathsByBucket.get(bucket);
             completion.submit(() -> {
                 final long start = System.currentTimeMillis();
                 try {
-                    final UploadResult upRes = uploadOneToFolder(
-                            client, parentFolderId, fileName, worldRoot.resolve(relPath));
-                    return new UploadTaskResult(relPath, upRes,
+                    final long moved = uploading
+                            ? uploadBucket(remote, bucket, worldRoot, paths)
+                            : downloadBucket(remote, bucket, worldRoot, paths);
+                    return new BucketTaskResult(bucket, paths.size(), moved,
                             System.currentTimeMillis() - start, null);
                 } catch (final Throwable t) {
-                    return new UploadTaskResult(relPath, null,
+                    return new BucketTaskResult(bucket, paths.size(), 0L,
                             System.currentTimeMillis() - start, t);
                 }
             });
         }
         pool.shutdown();
 
+        int bucketsOk = 0;
+        int bucketsFailed = 0;
+        int filesOk = 0;
+        long bytesMoved = 0L;
         try {
-            for (int i = 0; i < toUpload.size(); i++) {
-                final UploadTaskResult res = completion.take().get();
+            for (int i = 0; i < order.size(); i++) {
+                final BucketTaskResult res = completion.take().get();
+                final String archiveName = BucketLayout.bucketFilename(res.bucketIndex);
                 if (res.error == null) {
-                    final int done = uploadedRef.incrementAndGet();
-                    final long bytes = bytesRef.addAndGet(res.upResult.size);
-                    local.put(res.relPath, new WorldManifest.Entry(
-                            res.upResult.sha256, res.upResult.size, Instant.now().toString()));
-                    WorldShareMod.LOGGER.info(
-                            "push: uploaded {} | {} bytes | {}ms",
-                            res.relPath, res.upResult.size, res.elapsedMs);
-                    progress.onFileProgress(done + failedRef.get(), toUpload.size(),
-                            bytes, totalBytes, res.relPath);
+                    bucketsOk++;
+                    filesOk += res.fileCount;
+                    bytesMoved += res.bytesMoved;
+                    WorldShareMod.LOGGER.info("{}: {} | {} file(s) | {} bytes | {}ms",
+                            uploading ? "push" : "pull", archiveName,
+                            res.fileCount, res.bytesMoved, res.elapsedMs);
                 } else {
-                    final int failed = failedRef.incrementAndGet();
-                    WorldShareMod.LOGGER.error(
-                            "push: failed {}: {}", res.relPath, res.error.getMessage());
-                    progress.onFileProgress(uploadedRef.get() + failed, toUpload.size(),
-                            bytesRef.get(), totalBytes, res.relPath);
+                    bucketsFailed++;
+                    WorldShareMod.LOGGER.error("{}: failed {}: {}",
+                            uploading ? "push" : "pull", archiveName, res.error.getMessage());
                 }
+                // Report after either outcome so the bar still advances when a bucket
+                // fails; filesOk deliberately counts only work that actually landed.
+                progress.onFileProgress(filesOk, totalFiles, bytesMoved, totalBytes, archiveName);
             }
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             pool.shutdownNow();
-            throw new IOException("Upload interrupted", e);
+            throw new IOException("Sync interrupted", e);
         } catch (final ExecutionException e) {
-            throw new IOException("Unexpected upload failure", e.getCause());
+            // Workers catch Throwable, so this is unreachable. Defensive.
+            throw new IOException("Unexpected bucket transfer failure", e.getCause());
         }
+
+        return new TransferResult(bucketsOk, bucketsFailed, filesOk, bytesMoved);
+    }
+
+    /**
+     * Pack a bucket's files and replace its archive on Drive.
+     *
+     * @return bytes uploaded (the archive's compressed size)
+     */
+    private static long uploadBucket(final RemoteFileSet remote,
+                                     final int bucketIndex,
+                                     final Path worldRoot,
+                                     final Set<String> paths) throws IOException {
+        final Path archive = Files.createTempFile(
+                "worldshare-bucket-" + bucketIndex + "-", ".zip");
+        try {
+            BucketArchive.build(worldRoot, paths, archive);
+            final long size = Files.size(archive);
+
+            final String fileId = remote.bucketFileId(bucketIndex);
+            if (fileId == null) {
+                throw new IOException("No Drive file ID for "
+                        + BucketLayout.bucketFilename(bucketIndex)
+                        + " - this world's setup is incomplete.");
+            }
+            CloudModule.driveClient().updateFile(fileId, archive);
+            return size;
+        } finally {
+            try { Files.deleteIfExists(archive); } catch (final IOException ignored) {}
+        }
+    }
+
+    /**
+     * Fetch a bucket's archive and extract only the files we actually need.
+     *
+     * @return bytes downloaded (the archive's compressed size)
+     */
+    private static long downloadBucket(final RemoteFileSet remote,
+                                       final int bucketIndex,
+                                       final Path worldRoot,
+                                       final Set<String> wantedPaths) throws IOException {
+        final Path archive = Files.createTempFile(
+                "worldshare-bucket-" + bucketIndex + "-", ".zip");
+        try {
+            final String fileId = remote.bucketFileId(bucketIndex);
+            if (fileId == null) {
+                throw new IOException("No Drive file ID for "
+                        + BucketLayout.bucketFilename(bucketIndex)
+                        + " - this world's setup is incomplete.");
+            }
+            CloudModule.driveClient().downloadFile(fileId, archive);
+            final long size = Files.size(archive);
+            if (size == 0L) {
+                // A placeholder nobody has pushed to yet. Nothing to extract, and
+                // definitely not an error worth failing the whole pull over.
+                WorldShareMod.LOGGER.debug("pull: {} is an empty placeholder, skipping",
+                        BucketLayout.bucketFilename(bucketIndex));
+                return 0L;
+            }
+            BucketArchive.extract(archive, worldRoot, wantedPaths);
+            return size;
+        } finally {
+            try { Files.deleteIfExists(archive); } catch (final IOException ignored) {}
+        }
+    }
+
+    // ---- HELPERS ----
+
+    /** Partition relative paths by the bucket they belong to. */
+    private static Map<Integer, Set<String>> groupByBucket(final BucketLayout layout,
+                                                           final Set<String> paths) {
+        final Map<Integer, Set<String>> byBucket = new TreeMap<>();
+        for (final String relPath : paths) {
+            byBucket.computeIfAbsent(layout.indexFor(relPath), k -> new LinkedHashSet<>())
+                    .add(relPath);
+        }
+        return byBucket;
+    }
+
+    private static long bytesOf(final Set<String> paths, final WorldManifest manifest) {
+        long total = 0L;
+        for (final String relPath : paths) {
+            final WorldManifest.Entry entry = manifest.get(relPath);
+            if (entry != null) total += entry.size;
+        }
+        return total;
+    }
+
+    /**
+     * Write the new manifest and the current lock state to Drive in one call.
+     *
+     * <p>Re-reads the lock from the live control file rather than reusing the copy
+     * loaded at the start of the push: a heartbeat may have updated it in the
+     * meantime, and clobbering that with a stale snapshot would make our own lock
+     * look expired to the other player.
+     */
+    private static void commitControl(final RemoteFileSet remote,
+                                      final ControlFile control,
+                                      final WorldManifest manifest) throws IOException {
+        manifest.generatedAt = Instant.now().toString();
+        if (manifest.generatedByMachineId == null) {
+            manifest.generatedByMachineId = MachineId.get();
+        }
+
+        final ControlFile fresh = ControlFileClient.read(remote.controlFileId);
+        if (fresh != null) {
+            control.lock = fresh.lockOrUnlocked();
+        }
+        control.manifest = manifest;
+        control.bucketCount = remote.bucketCount;
+
+        ControlFileClient.write(remote.controlFileId, control);
+        WorldShareMod.LOGGER.info("commitControl: published manifest with {} entries", manifest.size());
+    }
+
+    private static RemoteFileSet requireComplete(final RemoteFileSet remote) throws IOException {
+        if (remote == null) {
+            throw new IOException("This world isn't linked to Drive yet. Run WorldShare setup for it.");
+        }
+        if (!remote.isComplete()) {
+            final List<String> missing = remote.missingFilenames();
+            throw new IOException("This world's Drive setup is incomplete - "
+                    + missing.size() + " file(s) still need to be picked: "
+                    + String.join(", ", missing.subList(0, Math.min(4, missing.size())))
+                    + (missing.size() > 4 ? ", ..." : "")
+                    + ". Re-run WorldShare setup to select them.");
+        }
+        return remote;
+    }
+
+    /**
+     * Refuse to sync when the remote layout and ours disagree on bucket count.
+     *
+     * <p>This is the one mismatch that must never be papered over. The same path
+     * hashes to a different bucket under a different count, so proceeding would
+     * scatter files into archives the other player never reads back - a silent,
+     * gradual corruption rather than an error anyone would notice.
+     */
+    private static BucketLayout requireMatchingLayout(final ControlFile control,
+                                                      final RemoteFileSet remote)
+            throws IOException {
+        if (control.bucketCount != remote.bucketCount) {
+            throw new IOException(String.format(
+                    "Bucket layout mismatch: this world is set up locally for %d bucket(s) "
+                            + "but Drive says %d. Syncing anyway would corrupt the world. "
+                            + "Re-run WorldShare setup for this world to match.",
+                    remote.bucketCount, control.bucketCount));
+        }
+        return control.layout();
     }
 
     // ---- LEVEL.DAT PLAYER STRIP ----
@@ -609,10 +605,9 @@ public final class SyncEngine {
     // ---- SCAN CACHE HELPERS ----
 
     /**
-     * Saves the scan cache after a successful incremental push.
-     * Merges old cache (mtime for non-dirty .mca files not re-scanned) with fresh
-     * scan entries (mtime for everything scanned). Fresh entries win on conflict.
-     * For first-time push, oldCache is null and scannedLocal is saved directly.
+     * Saves the scan cache after a successful push. Merges the old cache (which
+     * still holds mtimes for non-dirty files this push never re-scanned) with the
+     * fresh scan; fresh entries win.
      */
     private static void saveScanCache(final WorldManifest scannedLocal,
                                       final WorldManifest oldCache,
@@ -630,139 +625,52 @@ public final class SyncEngine {
                 "SyncEngine: saved scan cache ({} entries)", cacheToSave.size());
     }
 
-    // ---- DRIVE / FILE HELPERS ----
-
-    private static WorldManifest readDriveManifest(final String driveFolderId) throws IOException {
-        final DriveClient client = CloudModule.driveClient();
-        final String manifestId = client.findFileByName(MANIFEST_FILENAME, driveFolderId);
-        if (manifestId == null) return null;
-        try {
-            return WorldManifest.fromJson(client.readText(manifestId));
-        } catch (final JsonSyntaxException e) {
-            throw new IOException("manifest.json on Drive is malformed: " + e.getMessage(), e);
-        }
-    }
-
-    private static String ensureWorldSubfolder(final String parentFolderId,
-                                               final DriveClient client,
-                                               final boolean create) throws IOException {
-        final String existing = client.findFileByName(WORLD_SUBFOLDER, parentFolderId);
-        if (existing != null) return existing;
-        if (!create) return null;
-        return client.createFolder(WORLD_SUBFOLDER, parentFolderId);
-    }
-
-    private static UploadResult uploadOneToFolder(final DriveClient client,
-                                                  final String parentFolderId,
-                                                  final String fileName,
-                                                  final Path local) throws IOException {
-        if (!Files.isRegularFile(local)) {
-            throw new IOException("Local file missing: " + local);
-        }
-        final Path snapshot = Files.createTempFile("worldshare-upload-", ".snap");
-        try {
-            Files.copy(local, snapshot, StandardCopyOption.REPLACE_EXISTING);
-            final long size = Files.size(snapshot);
-            final String sha256 = SHA256Util.hashFile(snapshot);
-            final String existingId = client.findFileByName(fileName, parentFolderId);
-            if (existingId != null) client.updateFile(existingId, snapshot);
-            else client.uploadFile(snapshot, fileName, parentFolderId);
-            return new UploadResult(sha256, size);
-        } finally {
-            try { Files.deleteIfExists(snapshot); } catch (final IOException ignored) {}
-        }
-    }
-
-    private static void downloadOne(final DriveClient client,
-                                    final String driveWorldFolderId,
-                                    final String relPath,
-                                    final Path worldRoot,
-                                    final WorldManifest.Entry expected) throws IOException {
-        final String[] parts = relPath.split("/");
-        String currentFolder = driveWorldFolderId;
-        for (int i = 0; i < parts.length - 1; i++) {
-            final String childId = client.findFileByName(parts[i], currentFolder);
-            if (childId == null) throw new IOException("Drive folder structure missing: " + relPath);
-            currentFolder = childId;
-        }
-        final String fileName = parts[parts.length - 1];
-        final String fileId = client.findFileByName(fileName, currentFolder);
-        if (fileId == null) throw new IOException("Drive file missing: " + relPath);
-
-        final Path destination = worldRoot.resolve(relPath);
-        Files.createDirectories(destination.getParent());
-        final Path tmp = destination.resolveSibling(destination.getFileName() + ".worldshare-tmp");
-        try {
-            client.downloadFile(fileId, tmp);
-            try {
-                Files.move(tmp, destination,
-                        StandardCopyOption.REPLACE_EXISTING,
-                        StandardCopyOption.ATOMIC_MOVE);
-            } catch (final java.nio.file.AtomicMoveNotSupportedException ame) {
-                Files.move(tmp, destination, StandardCopyOption.REPLACE_EXISTING);
-            }
-        } catch (final IOException e) {
-            try { Files.deleteIfExists(tmp); } catch (final IOException ignored) {}
-            throw e;
-        }
-    }
-
-    private static void commitManifest(final DriveClient client,
-                                       final String driveFolderId,
-                                       final WorldManifest manifest) throws IOException {
-        manifest.generatedAt = Instant.now().toString();
-        if (manifest.generatedByMachineId == null) {
-            manifest.generatedByMachineId = MachineId.get();
-        }
-        final String json = manifest.toJson();
-        final String existingId = client.findFileByName(MANIFEST_FILENAME, driveFolderId);
-        client.writeText(existingId, MANIFEST_FILENAME, driveFolderId, json,
-                DriveClient.MIME_TYPE_JSON);
-        final String stalePending = client.findFileByName(MANIFEST_PENDING_FILENAME, driveFolderId);
-        if (stalePending != null) {
-            try { client.deleteFile(stalePending); } catch (final IOException ignored) {}
-        }
-        WorldShareMod.LOGGER.info("commitManifest: wrote {} entries", manifest.size());
-    }
-
     // ---- VALUE TYPES ----
 
-    private static final class UploadResult {
-        final String sha256;
-        final long size;
-        UploadResult(String s, long sz) { this.sha256 = s; this.size = sz; }
-    }
+    /** Tally of one push or pull's bucket transfers. */
+    private static final class TransferResult {
+        /** Bucket archives that transferred successfully. */
+        final int bucketsOk;
+        /** Bucket archives that failed. */
+        final int bucketsFailed;
+        /** World files covered by the successful archives. */
+        final int filesOk;
+        /** Archive bytes actually moved over the network. */
+        final long bytesMoved;
 
-    private static final class UploadTaskResult {
-        final String relPath;
-        final UploadResult upResult;
-        final long elapsedMs;
-        final Throwable error;
-        UploadTaskResult(String r, UploadResult u, long ms, Throwable e) {
-            this.relPath = r; this.upResult = u; this.elapsedMs = ms; this.error = e;
+        TransferResult(final int bucketsOk, final int bucketsFailed,
+                       final int filesOk, final long bytesMoved) {
+            this.bucketsOk = bucketsOk;
+            this.bucketsFailed = bucketsFailed;
+            this.filesOk = filesOk;
+            this.bytesMoved = bytesMoved;
         }
     }
 
-    /** M8: result of a parallel download worker. Mirrors UploadTaskResult. */
-    private static final class DownloadTaskResult {
-        final String relPath;
-        final boolean success;
-        final long sizeDownloaded;
-        final IOException error;
-        DownloadTaskResult(final String relPath, final boolean success,
-                           final long sizeDownloaded, final IOException error) {
-            this.relPath = relPath;
-            this.success = success;
-            this.sizeDownloaded = sizeDownloaded;
+    private static final class BucketTaskResult {
+        final int bucketIndex;
+        final int fileCount;
+        final long bytesMoved;
+        final long elapsedMs;
+        final Throwable error;
+
+        BucketTaskResult(final int bucketIndex, final int fileCount, final long bytesMoved,
+                         final long elapsedMs, final Throwable error) {
+            this.bucketIndex = bucketIndex;
+            this.fileCount = fileCount;
+            this.bytesMoved = bytesMoved;
+            this.elapsedMs = elapsedMs;
             this.error = error;
         }
     }
 
     public static final class PushResult {
+        /** Number of bucket archives rewritten on Drive. */
         public final int uploaded;
         public final int skippedSomeoneElsesEdit;
         public final int failed;
         public final long bytes;
+
         PushResult(int u, int s, int f, long b) {
             this.uploaded = u; this.skippedSomeoneElsesEdit = s;
             this.failed = f; this.bytes = b;
@@ -770,28 +678,11 @@ public final class SyncEngine {
     }
 
     public static final class PullResult {
+        /** Number of world files restored from bucket archives. */
         public final int downloaded;
         public final int failed;
         public final long bytes;
-        PullResult(int d, int f, long b) { this.downloaded = d; this.failed = f; this.bytes = b; }
-    }
 
-    /**
-     * Detect HTTP 416 "Requested Range Not Satisfiable" errors. Walks the
-     * exception cause chain checking both the exception type and the message.
-     */
-    private static boolean is416(final Throwable t) {
-        Throwable cur = t;
-        while (cur != null) {
-            if (cur instanceof com.google.api.client.http.HttpResponseException hre) {
-                if (hre.getStatusCode() == 416) return true;
-            }
-            final String msg = cur.getMessage();
-            if (msg != null && msg.contains("Range Not Satisfiable")) {
-                return true;
-            }
-            cur = cur.getCause();
-        }
-        return false;
+        PullResult(int d, int f, long b) { this.downloaded = d; this.failed = f; this.bytes = b; }
     }
 }

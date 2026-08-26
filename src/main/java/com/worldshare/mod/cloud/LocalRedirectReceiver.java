@@ -11,7 +11,10 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -53,6 +56,12 @@ public final class LocalRedirectReceiver implements VerificationCodeReceiver {
     private int port;
     private String capturedCode;
     private String capturedError;
+    /**
+     * Comma-joined Drive file IDs the user selected in the Picker, when the
+     * authorization URL carried {@code trigger_onepick=true}. Null on a plain
+     * consent flow, or if the user dismissed the Picker without selecting.
+     */
+    private String capturedPickedFileIds;
 
     // Released once the redirect arrives (or the server is asked to stop).
     private final Semaphore gotRedirect = new Semaphore(0);
@@ -113,6 +122,28 @@ public final class LocalRedirectReceiver implements VerificationCodeReceiver {
         gotRedirect.release();
     }
 
+    /**
+     * Drive file IDs the user picked during the consent screen's Picker step,
+     * in selection order. Empty if the flow didn't trigger the Picker, or the
+     * user selected nothing.
+     *
+     * <p>Only meaningful after {@link #waitForCode()} has returned — the value
+     * arrives on the same redirect as the authorization code.
+     */
+    public List<String> pickedFileIds() {
+        if (capturedPickedFileIds == null || capturedPickedFileIds.isBlank()) {
+            return List.of();
+        }
+        final List<String> ids = new ArrayList<>();
+        for (final String raw : capturedPickedFileIds.split(",")) {
+            final String id = raw.trim();
+            if (!id.isEmpty()) {
+                ids.add(id);
+            }
+        }
+        return Collections.unmodifiableList(ids);
+    }
+
     /** @return the redirect URI if started, or null. Public for tests/debugging. */
     public String getListeningUri() {
         return server == null ? null : "http://127.0.0.1:" + port + "/";
@@ -127,6 +158,7 @@ public final class LocalRedirectReceiver implements VerificationCodeReceiver {
                 final Map<String, String> params = parseQuery(exchange.getRequestURI().getRawQuery());
                 capturedCode = params.get("code");
                 capturedError = params.get("error");
+                capturedPickedFileIds = params.get("picked_file_ids");
 
                 final String body;
                 if (capturedError != null) {
