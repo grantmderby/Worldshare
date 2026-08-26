@@ -1,0 +1,93 @@
+# WorldShare Cloud Backend: Decision Report
+
+*Prepared 2026-08-26. Covers the investigation into why WorldShare's Google Drive integration breaks past 100 users, what was tested to find a fix, why the obvious fixes don't work, and the design direction chosen instead. Written to be readable standalone — by a future session, by a collaborator, or by Grant's brother — without needing the rest of this conversation.*
+
+## The problem, in one paragraph
+
+WorldShare currently authenticates to Google Drive with the full `https://www.googleapis.com/auth/drive` scope (see `OAuthHelper.java`), which Google classifies as **restricted**. Restricted scopes are capped at 100 manually-added test users with 7-day token expiry until the app passes Google's verification process — and for a restricted scope specifically, that process includes a mandatory **CASA security assessment**: a paid third-party audit, realistically **$540–$1,800/year**, recurring annually, with no exemption for hobby or non-commercial projects. That cost is a hard no for this project. Everything below is about finding a way to publish WorldShare on Modrinth without paying it.
+
+## What was tried first, and why it didn't work
+
+The obvious fix looked like dropping to `drive.file` (Google's "non-sensitive" scope — no CASA, no restricted-app warning screen, just a lightweight brand-verification step) combined with the Google Picker API, which Google's own documentation says covers "files... that the user shares with an app while using the Google Picker API." That documentation is real, but it doesn't say what happens to files added to a shared folder *after* the Picker grant — and that gap turned out to matter.
+
+This was tested directly, with two real Google accounts and a throwaway GCP project (`worldshare-picker-test`), rather than trusted on documentation alone — a full record of the test scripts is in `tools/oauth-picker-prototype/` in this repo. Findings, in the order they were discovered:
+
+1. **First attempt failed across the board.** Picking a shared folder via a `PickerBuilder` JS widget (fed an access token via `setOAuthToken()`) and then checking whether a file added afterward by another account was visible: it wasn't. Empty folder listing, 404 on direct file-ID lookup — and this also failed for the folder's *own owner* checking their *own* file, which ruled out "cross-account sharing" as the specific cause.
+2. **Root cause found**: that first attempt used the *web-app* Picker integration pattern. Desktop/CLI apps are supposed to use a different, officially documented flow ([Google's desktop/mobile Picker guide](https://developers.google.com/workspace/drive/picker/guides/desktop-mobile-picker)): the Picker is triggered as part of the OAuth consent screen itself via `trigger_onepick=true` on the authorization URL, and the redirect returns both the auth code and a `picked_file_ids` list together, in one transaction.
+3. **Re-tested with the correct flow, picking one specific file** (not a folder): access granted, real metadata returned.
+4. **Re-tested after another account edited that file's content** (same file ID): still visible, `modifiedTime` updated. **`drive.file` access to an individually-picked file survives future content edits by someone else — confirmed.**
+5. **Re-tested folder-level picking using the correct flow** (`allow_folder_selection=true`), then had another account add a new file directly inside the folder: still invisible, even under the corrected integration. **Folder-level access never extends to files added afterward, regardless of how the folder is picked — confirmed, not assumed.**
+6. **Extended the content-persistence test to a plain binary file** (a `.zip`, updated via `drive.files().update(media_body=...)` — the exact call `DriveClient.updateFile()` already makes): same positive result. This isn't a Google Docs-specific quirk; it holds for ordinary file uploads.
+7. **Tested a rename** (metadata-only update, same file ID, done by the file's owner) against another account's separate persistent grant on that file: the rename was visible immediately, same file ID, no re-picking needed. This is the mechanism that makes embedding session-lock state in a filename actually work.
+
+Net result: `drive.file` gives durable, persistent access to a file a user *individually* selects — surviving future content and metadata changes to that exact file — but never to a folder's future contents, no matter the integration approach. WorldShare's current sync (`SyncEngine.java`/`DriveClient.java`) walks the whole world directory and uploads/downloads only the individual files that changed, each as its own independent Drive object, with new files appearing constantly as players explore (new `.mca` region files) or as state changes. That's exactly the shape `drive.file` can't support without a redesign.
+
+## Other cloud providers considered
+
+Before committing to a `drive.file` redesign, three alternatives were checked, since "leave Google entirely" is also on the table:
+
+- **Dropbox.** Its narrow "App Folder" scope is *more* restrictive than `drive.file` — Dropbox staff confirmed on their own forum that app folders can't even contain or be nested inside a shared folder, at all. The only way to support two accounts sharing a folder is "Full Dropbox" access (their equivalent of Google's broad `drive` scope). The upside: getting that broad access into production doesn't appear to require anything like a paid CASA audit — development mode allows 50–500 linked accounts before needing to apply, and forum reports describe approval as "a few business days" with no cost mentioned. Downsides: Dropbox's free tier is 2GB versus Google Drive's 15GB (a real ceiling for a well-explored modded world), and less of the target audience already has a Dropbox account versus a Google account.
+- **Microsoft OneDrive / Graph API.** `Files.ReadWrite.All` is a normal delegated permission, works on personal Microsoft accounts, and does cover files shared by others — no `drive.file`-style per-file restriction at all, and Microsoft doesn't have Google's sensitive/restricted scope tiers. But avoiding Microsoft's own "unverified publisher" warning (which can block consent outright, not just warn) requires **Publisher Verification**, which is free in dollars but requires enrolling in the Microsoft AI Cloud Partner Program — historically expects a registered business entity and an Entra work/school tenant, not a personal account. Likely swaps Google's money-tax for a business-registration-tax that may be just as blocking for a solo hobbyist.
+- **Bring-your-own storage (S3-compatible: Cloudflare R2, Backblaze B2, etc.).** Architecturally different: the mod isn't an OAuth-broker app that any provider has to review at all — it's a plain S3 API client using an access key the *user* generates for their *own* account. No consent screen, no publisher verification, no CASA, because there's no "app trustworthiness" relationship to review. Cloudflare R2's free tier is 10GB with zero egress fees, fully self-service. The cost is entirely on setup friction: each pair of players needs to create a storage account and paste in an access key, more steps than "Sign in with Google," though for an audience already comfortable installing Java mods this may be a smaller lift than for a general consumer app.
+- **Peer-to-peer** (reusing the existing e4mc relay) was considered and ruled out as a full replacement: it needs both players online simultaneously, defeating the actual use case (push now, the other player pulls later whenever they're free).
+
+## Decision
+
+**Option A (stay on full `drive` scope, pay for CASA) is off the table** — not a proportionate cost for a hobby mod.
+
+**Chosen direction: Option B — redesign around `drive.file`**, using a small, fixed set of individually-picked files instead of a free-form shared folder. Dropbox/OneDrive/BYO-storage remain documented as fallback options (see above) if the `drive.file` redesign proves more painful in practice than expected, but are not the current plan.
+
+## The redesign: fixed-bucket file layout
+
+The core constraint driving this design: `drive.file` needs a small, *known-in-advance* set of files, each individually picked once (via Picker's multi-select, `--allow-multiple`) during initial world setup — never a file created dynamically later without a human re-picking it. Two consequences fall out of that constraint directly:
+
+**The lock file can never be deleted-and-recreated.** `LockManager.release()` currently deletes `session.lock` outright, and `acquire()` creates a fresh one next time. Under `drive.file`, a freshly-created file is a *new* file ID, invisible to the other player's existing grant until they re-pick it — which would break "pick once, works forever" on every single lock cycle. Fix: the lock (and everything else) must always be updated in place, never deleted. A `status: "unlocked"` value replaces outright deletion.
+
+**One archive, one bucket at a time, isn't good enough for bandwidth** — but a single monolithic world archive is the simplest version of this design, so it's worth naming clearly as the floor: pick one `world.zip`, always overwrite in place, done. It works, mechanically (confirmed above). The problem is Drive's `files.update()` always replaces a file's *entire* content — there's no partial/delta upload — so the whole archive's compressed size crosses the network on every single sync, no matter how little actually changed. Compression doesn't rescue this either: the bulk of a world's size is region files and NBT data, which Minecraft already compresses internally (zlib per-chunk, gzip for `level.dat`/playerdata), so re-zipping them saves almost nothing. Only small plain-JSON files (stats, advancements) compress further, and those are a negligible fraction of total world size.
+
+**The actual design: fixed-count buckets.**
+
+- `control.json` — one file, never deleted, always updated in place via `files.update()`. Replaces the current pair of `manifest.json` + `session.lock` with a single JSON blob: the per-relative-path manifest (sha256/size/mtime, same fields as today's `WorldManifest`) plus lock state (holder name, machine ID, e4mc relay address, players online, lock/heartbeat timestamps — everything `SessionLock.java` already tracks). Tiny regardless of world size, so syncing it costs nothing.
+- `bucket_00.zip` … `bucket_NN.zip` — a fixed count *N* (a reasonable starting point is 16, tunable), each holding a deterministic slice of the world's files. Every file gets assigned to a bucket by a stable rule fixed at world-setup time — e.g. `bucketIndex = hash(regionX, regionZ) % N` for region files, with small always-present files (playerdata, `level.dat`) distributed similarly or given their own reserved bucket. The same file must always land in the same bucket on every future sync, or diffing breaks.
+- **Push**: compute the manifest as today (`WorldFileScanner`/`SyncDiff` stay largely as-is), determine which files changed, map each to its bucket, rebuild and re-upload *only* the buckets containing at least one changed file, then update `control.json`.
+- **Pull**: read `control.json`, diff local vs. remote manifest as today, map differing files to buckets, download and unpack only the buckets that contain something different.
+- **One-time setup**: each player picks all `N+1` fixed files once, in a single Picker multi-select screen (already supported in the tested prototype via `--allow-multiple`) — not a per-file flow.
+
+This restores a meaningful fraction of today's per-file incremental-sync benefit (a session spent in one corner of the map touches maybe 1 of 16 buckets, not the whole world) while staying within `drive.file`'s hard requirement of a small, fixed, pre-known file set. It's still coarser than today's true per-file granularity — a session with scattered changes across the map could still touch most buckets — and *N* is a real tuning knob: too few buckets and each one is large (less benefit); too many and setup/API-call overhead grows.
+
+Neither the lock's race-safety nor the concurrency model gets worse under this design than it is today: `LockManager.acquire()` is currently a plain check-then-overwrite with no atomic compare-and-swap either — the actual safety net is the 15-minute heartbeat detecting after the fact that another machine ID took over and warning the loser their changes won't sync. Whatever gets built here just needs to match that bar, not exceed it.
+
+## What needs to change in the codebase
+
+- `OAuthHelper.java`: scope changes from `DriveScopes.DRIVE` to `DriveScopes.DRIVE_FILE`; OAuth flow needs to trigger the Picker (`trigger_onepick=true`) as part of consent, not as a separate step — the loopback-redirect pattern `LocalRedirectReceiver` already implements is reusable, but the authorization URL construction and redirect-parameter handling change (see `tools/oauth-picker-prototype/authorize_and_pick.py` for a working reference implementation).
+- `DriveClient.java`: interface itself likely doesn't need to change much (upload/update/rename/read/write text all already map cleanly to what's needed) — but every caller needs to stop assuming arbitrary file discovery via `findFileByName` for anything outside the fixed set, since `drive.file` can't see files it wasn't granted.
+- `LockManager.java` / `SessionLock.java`: `release()` must stop deleting the lock file; needs an "unlocked" status value instead. Folding into `control.json` alongside the manifest, as proposed above, is one option; keeping it separate (one more fixed, always-updated file) is the other.
+- `SyncEngine.java`: `push`/`pull` need bucket-awareness layered in — mapping changed relative paths to bucket indices, building/extracting zip archives per bucket, uploading/downloading only touched buckets instead of individual files.
+- New: a bucketing module (deterministic path → bucket-index function) and a one-time setup flow that walks a player through picking all fixed files via Picker's multi-select.
+- `GOOGLE_CLOUD_SETUP.md` / `README.md`: need rewriting once the above lands.
+
+## Open questions for whoever picks this up next
+
+- What's a good default for *N* (bucket count)? Worth sizing against Grant's actual world's file count/size distribution rather than guessing.
+- Migration path: existing full-`drive`-scope users (currently just Grant + his brother) need a one-time re-auth + re-pick flow when this ships — worth deciding whether that's a manual one-off or something the mod walks them through.
+- Whether `control.json`'s lock+manifest combination is the right call, versus keeping them as two separate always-present files (one more fixed pick, but cleaner separation of concerns).
+- Real end-to-end testing with the actual mod (not the standalone prototype) — the prototype in `tools/oauth-picker-prototype/` proves the underlying Drive API behavior, not that the mod's integration of it works correctly.
+
+## Sources
+
+- [Choose Google Drive API scopes](https://developers.google.com/workspace/drive/api/guides/api-specific-auth) — non-sensitive/sensitive/restricted classification, `drive.file` + Picker wording
+- [Integrate the Google Picker into desktop and mobile apps](https://developers.google.com/workspace/drive/picker/guides/desktop-mobile-picker) — the `trigger_onepick=true` flow confirmed correct by direct testing
+- [Restricted scope verification](https://developers.google.com/identity/protocols/oauth2/production-readiness/restricted-scope-verification)
+- [Brand verification](https://developers.google.com/identity/protocols/oauth2/production-readiness/brand-verification) — timeline: automated in minutes, manual review 2–3 business days
+- [Unverified apps](https://support.google.com/cloud/answer/7454865?hl=en) — confirms warning screen + 100-user cap triggered by sensitive/restricted scopes specifically
+- CASA cost accounts: [a developer's real $540/yr Tier 2 experience](https://yurudeep.com/posts/aicoding/2026/20260717/en/), [DeepStrike's CASA tier breakdown](https://deepstrike.io/blog/google-casa-security-assessment-2025)
+- [Dropbox scoped-app folder incompatibility with shared folders — Dropbox staff response](https://community.dropbox.com/en/discussion/714008/dropbox-scoped-app-folder-visibility-of-uploaded-files-to-other-users)
+- [Dropbox developer/production mode limits](https://community.dropbox.com/en/discussion/198724/developer-vs-production), [production approval turnaround](https://community.dropbox.com/en/discussion/11597/how-quickly-does-an-app-get-approved-for-production-status)
+- [OneDrive/Files permission scopes reference](https://learn.microsoft.com/en-us/onedrive/developer/rest-api/concepts/permissions_reference?view=odsp-graph-online)
+- [Microsoft publisher verification overview](https://learn.microsoft.com/en-us/entra/identity-platform/publisher-verification-overview) — free but requires Cloud Partner Program enrollment
+- [Cloudflare R2 free tier](https://r2drop.com/blog/cloudflare-r2-free-tier-guide) — 10GB free, $0 egress, self-service
+- [Modrinth Content Rules](https://modrinth.com/legal/rules)
+
+## Prototype artifacts
+
+Everything referenced in "What was tried" is real, runnable code in `tools/oauth-picker-prototype/` in this repo: `authorize.py`/`pick_folder.py`/`pick_file.py` (the initial, incorrect web-app-style integration, kept for reference since they demonstrate the failure mode clearly), `authorize_and_pick.py` (the corrected desktop flow), `check_access.py` (the verification tool used throughout), and `owner_upload.py` (simulates `DriveClient`'s actual create/update/rename calls). All committed to `main` locally; not yet pushed to `origin`.
