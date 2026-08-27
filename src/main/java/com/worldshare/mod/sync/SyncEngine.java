@@ -19,6 +19,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -281,6 +282,44 @@ public final class SyncEngine {
         final Map<Integer, Set<String>> membersByBucket =
                 groupByBucket(layout, local.files().keySet());
 
+        // Reconcile the manifest against what's actually on disk, for the buckets
+        // about to be rewritten.
+        //
+        // The diff deliberately carries Drive-only entries forward (see above) so a
+        // dirty-filtered scan doesn't drop files it never looked at. But that also
+        // preserves entries for files genuinely deleted locally. Repacking their
+        // bucket would then silently omit them - BucketArchive.build skips paths
+        // that aren't on disk - while the manifest went on claiming they exist.
+        //
+        // The next player to pull would diff those files as missing, download the
+        // bucket, find no such entries in it, be told the pull succeeded, and still
+        // not have the files. Every subsequent pull would repeat that forever. The
+        // old per-file layout couldn't produce this: a manifest entry named a real
+        // Drive object or a 404.
+        //
+        // Only dirty buckets need checking. Clean ones aren't rewritten, so their
+        // existing archives still match their manifest entries.
+        int vanished = 0;
+        for (final int bucket : dirtyBuckets) {
+            final Set<String> members = membersByBucket.get(bucket);
+            if (members == null) continue;
+            final Iterator<String> it = members.iterator();
+            while (it.hasNext()) {
+                final String relPath = it.next();
+                if (!Files.isRegularFile(worldRoot.resolve(relPath))) {
+                    it.remove();
+                    local.files().remove(relPath);
+                    vanished++;
+                }
+            }
+        }
+        if (vanished > 0) {
+            WorldShareMod.LOGGER.info(
+                    "push: {} file(s) in dirty buckets no longer exist locally; "
+                    + "dropping them from the manifest so it matches the archives",
+                    vanished);
+        }
+
         long totalBytes = 0L;
         for (final int bucket : dirtyBuckets) {
             for (final String relPath : membersByBucket.getOrDefault(bucket, Set.of())) {
@@ -388,7 +427,11 @@ public final class SyncEngine {
                     final long moved = uploading
                             ? uploadBucket(remote, bucket, worldRoot, paths)
                             : downloadBucket(remote, bucket, worldRoot, paths);
-                    return new BucketTaskResult(bucket, paths.size(), moved,
+                    // A pull that found an empty placeholder moved no bytes and
+                    // restored nothing; counting its expected files as restored
+                    // would report a success that didn't happen.
+                    final int handled = (!uploading && moved == 0L) ? 0 : paths.size();
+                    return new BucketTaskResult(bucket, handled, moved,
                             System.currentTimeMillis() - start, null);
                 } catch (final Throwable t) {
                     return new BucketTaskResult(bucket, paths.size(), 0L,
