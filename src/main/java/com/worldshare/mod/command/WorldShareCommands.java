@@ -99,6 +99,10 @@ public final class WorldShareCommands {
                                 .executes(ctx -> runHeartbeat(ctx.getSource())))
                         .then(Commands.literal("status")
                                 .executes(ctx -> runStatus(ctx.getSource())))
+                        .then(Commands.literal("doctor")
+                                .executes(ctx -> runDoctor(ctx.getSource(), false))
+                                .then(Commands.literal("full")
+                                        .executes(ctx -> runDoctor(ctx.getSource(), true))))
                         .then(Commands.literal("push")
                                 .executes(ctx -> runPush(ctx.getSource())))
                         .then(Commands.literal("invite")
@@ -638,6 +642,195 @@ public final class WorldShareCommands {
                 ChatFormatting.GREEN);
         E4mcCoordinator.startHosting();
         return Command.SINGLE_SUCCESS;
+    }
+
+    /**
+     * Dump everything known about the current world's sync state, in one place.
+     *
+     * <p>Exists because diagnosing a sync problem otherwise means correlating half
+     * a dozen log lines across two machines. Every value here is already available
+     * through some other command or buried in a log; the point is having them
+     * together, in an order that makes the usual failures obvious, and phrased so
+     * the output can be pasted at somebody rather than summarised.
+     *
+     * <p>Read-only. It never writes to Drive or to the world.
+     *
+     * @param full also fetch per-bucket metadata from Drive and scan the world for
+     *             a local-vs-remote comparison. Costs a full world scan plus one
+     *             API call per bucket, hence opt-in.
+     */
+    private static int runDoctor(final CommandSourceStack source, final boolean full) {
+        final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
+        if (ctx.isEmpty()) {
+            sendFeedback(source, "No world is currently loaded.", ChatFormatting.RED);
+            return 0;
+        }
+        final WorldContext.CurrentWorld world = ctx.get();
+
+        sendFeedback(source, "Collecting diagnostics" + (full ? " (full scan)" : "") + "...",
+                ChatFormatting.GRAY);
+
+        CloudModule.executor().submit(() -> {
+            final java.util.List<String> report = new java.util.ArrayList<>();
+            try {
+                buildDoctorReport(report, world, full);
+            } catch (final Throwable t) {
+                report.add("§cDiagnostics aborted: " + t.getClass().getSimpleName()
+                        + ": " + t.getMessage());
+                WorldShareMod.LOGGER.error("doctor: failed", t);
+            }
+            // Chat for reading, log for pasting - a dozen coloured chat lines are
+            // painful to copy out of the game.
+            WorldShareMod.LOGGER.info("=== /worldshare doctor ===");
+            for (final String line : report) {
+                sendClientMessage(line);
+                WorldShareMod.LOGGER.info("  {}", line.replaceAll("\u00a7.", ""));
+            }
+        });
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static void buildDoctorReport(final java.util.List<String> out,
+                                          final WorldContext.CurrentWorld world,
+                                          final boolean full) {
+        out.add("§b=== WorldShare doctor ===");
+        out.add("§7World: §f" + world.name);
+
+        // ---- local link ----
+        final WorldLink link = WorldLink.read(world.worldRoot);
+        if (link == null) {
+            out.add("§eNot set up for sharing. Run /worldshare setup.");
+            return;
+        }
+        if (link.isLegacy()) {
+            out.add("§eLinked under the old full-Drive scope (folder "
+                    + link.driveFolderId + ").");
+            out.add("§eRun /worldshare setup again to pick this world's files.");
+            return;
+        }
+        final RemoteFileSet remote = link.remote;
+        if (remote == null) {
+            out.add("§cLink file exists but names no Drive files. Re-run setup.");
+            return;
+        }
+        if (!remote.isComplete()) {
+            out.add("§cSetup incomplete - still missing: §f"
+                    + WorldSetup.describeMissing(remote));
+            out.add("§7Re-run Add World and select the missing files.");
+            return;
+        }
+        out.add("§aLink OK §7- " + remote.bucketCount + " buckets, "
+                + remote.layout().remoteFileCount() + " remote files");
+        out.add("§7  control:  §f" + remote.controlFileId);
+        out.add("§7  presence: §f" + remote.presenceFileId);
+
+        // ---- remote control file ----
+        final com.worldshare.mod.cloud.ControlFile control;
+        try {
+            control = com.worldshare.mod.cloud.ControlFileClient.read(remote.controlFileId);
+        } catch (final Exception e) {
+            out.add("§cControl file unreadable: §f" + e.getMessage());
+            out.add("§7Check the folder is still shared with this Google account.");
+            return;
+        }
+        if (control == null) {
+            out.add("§eControl file is still an empty placeholder - nobody has pushed yet.");
+        } else {
+            out.add("§aControl file OK §7- schema v" + control.schemaVersion
+                    + ", " + control.bucketCount + " buckets, "
+                    + control.manifestOrEmpty().size() + " files, "
+                    + (control.manifestOrEmpty().totalBytes() / (1024 * 1024)) + " MB");
+            if (control.bucketCount != remote.bucketCount) {
+                out.add("§c!! Bucket layout mismatch: local " + remote.bucketCount
+                        + " vs Drive " + control.bucketCount + ". Syncing is blocked.");
+            }
+            if (control.modpack != null) {
+                out.add("§7  modpack published: §fyes");
+            }
+        }
+
+        // ---- lock ----
+        try {
+            final LockManager.LockStatus status = LockManager.readStatus(remote);
+            final SessionLock lock = status.lock;
+            final StringBuilder line = new StringBuilder("§7Lock: §f" + status.state);
+            if (lock != null && !lock.isUnlocked()) {
+                line.append(" §7held by §f").append(lock.holderName);
+                final java.time.Duration left = java.time.Duration.between(
+                        java.time.Instant.now(), lock.expiresAtInstant());
+                line.append(left.isNegative()
+                        ? " §c(expired)"
+                        : " §7(expires in " + left.toHours() + "h" + (left.toMinutes() % 60) + "m)");
+            }
+            out.add(line.toString());
+        } catch (final Exception e) {
+            out.add("§cCouldn't read the lock: §f" + e.getMessage());
+        }
+        out.add("§7This machine holds the lock: §f" + LockManager.weHoldLock()
+                + " §8(machine " + MachineId.get() + ")");
+
+        // ---- presence ----
+        try {
+            final com.worldshare.mod.relay.PresenceFile presence =
+                    com.worldshare.mod.relay.PresenceFile.read(remote);
+            if (presence == null || presence.isStale()) {
+                out.add("§7Live session: §fnone");
+            } else {
+                out.add("§aLive session: §f" + presence.host + " §7at " + presence.e4mc_link);
+            }
+        } catch (final Exception e) {
+            out.add("§7Live session: §funknown (" + e.getMessage() + ")");
+        }
+        out.add("§7e4mc installed: §f" + E4mcCoordinator.isAvailable());
+
+        if (!full) {
+            out.add("§8Run /worldshare doctor full for bucket sizes and a local diff.");
+            return;
+        }
+
+        // ---- per-bucket metadata ----
+        try {
+            final DriveClient client = CloudModule.driveClient();
+            long total = 0;
+            int empty = 0;
+            int largestIndex = -1;
+            long largest = -1;
+            for (int i = 0; i < remote.bucketCount; i++) {
+                final com.google.api.services.drive.model.File meta =
+                        client.getFileMeta(remote.bucketFileId(i));
+                final long size = (meta == null || meta.getSize() == null) ? 0L : meta.getSize();
+                total += size;
+                if (size == 0L) empty++;
+                if (size > largest) { largest = size; largestIndex = i; }
+            }
+            out.add("§7Buckets: §f" + (remote.bucketCount - empty) + "/" + remote.bucketCount
+                    + " with content§7, total §f" + (total / (1024 * 1024)) + " MB");
+            if (largestIndex >= 0) {
+                out.add("§7  largest: §f" + BucketLayout.bucketFilename(largestIndex)
+                        + " (" + (largest / (1024 * 1024)) + " MB)");
+            }
+            if (empty > 0) {
+                out.add("§7  " + empty + " empty placeholder(s) - normal before a first push");
+            }
+        } catch (final Exception e) {
+            out.add("§cCouldn't read bucket metadata: §f" + e.getMessage());
+        }
+
+        // ---- local vs remote ----
+        try {
+            final SyncDiff diff = SyncEngine.status(world.worldRoot, remote, world.playerUuid);
+            if (diff.isEmpty()) {
+                out.add("§aLocal matches Drive §7(" + diff.identical.size() + " files)");
+            } else {
+                out.add("§eLocal differs from Drive:");
+                out.add("§7  identical §f" + diff.identical.size()
+                        + " §7| changed §f" + diff.different.size()
+                        + " §7| only here §f" + diff.onlyLocal.size()
+                        + " §7| only on Drive §f" + diff.onlyOnDrive.size());
+            }
+        } catch (final Exception e) {
+            out.add("§cCouldn't compare local to Drive: §f" + e.getMessage());
+        }
     }
 
     private static int runModpackGenerate(final CommandSourceStack source) {

@@ -51,6 +51,24 @@ runs {
         systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
     }
 
+    // A second client, for testing the two-player flows on one machine.
+    //
+    // This works because everything that distinguishes two WorldShare users lives
+    // under the game directory: the Google token store, the subscription list, and
+    // machine_id - which is what SessionLock.isOwnedBy() compares. A separate
+    // gameDir therefore reads as a genuinely different machine, so stale-lock
+    // override and the per-player inventory behaviour can both be exercised here
+    // rather than needing a second PC.
+    //
+    // The username matters too: offline UUIDs are derived from it, so without this
+    // both clients would be the same player and playerdata/<uuid>.dat would collide.
+    clientTwo {
+        configure 'client'
+        workingDirectory project.file('run2')
+        programArguments.addAll '--username', 'Player2'
+        systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+    }
+
     server {
         systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
         programArgument '--nogui'
