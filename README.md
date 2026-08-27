@@ -16,7 +16,9 @@ Built for **NeoForge 1.21.1**.
 
 - Not a server replacement. If you want 5+ players online 24/7, get a real server.
 - Not a backup tool. WorldShare uploads your latest state — there's no version history beyond what's on Drive right now.
-- Not for huge worlds. The first upload of a multi-GB world takes a while. Subsequent syncs are fast (only changes upload).
+- Not built for huge worlds. The first upload of a multi-GB world takes a while.
+  Later syncs only re-upload the archives you actually touched, so a session in
+  one corner of the map is quick — but a session that ranges everywhere isn't.
 
 ## Requirements
 
@@ -24,31 +26,55 @@ Built for **NeoForge 1.21.1**.
 - NeoForge 21.1.x (any 21.1 version works)
 - Java 21
 - A Google account with Drive access
-- The [e4mc mod](https://modrinth.com/mod/e4mc) installed (used for live co-op)
+- Optionally, the [e4mc mod](https://modrinth.com/mod/e4mc) — only needed for
+  live co-op. Everything else works without it.
 
 ## Setup — Host
 
-The "host" is whoever creates the world. You only do this once.
+The "host" is whoever creates the world. You only do this once per world.
 
-1. **Install the mod.** Drop `worldshare-0.1.0.jar` and `e4mc-neoforge-6.1.0.jar` into your NeoForge 1.21.1 mods folder.
-2. **Create a folder in Google Drive** for your world. Name it whatever you want — it'll show up in the Contributor Worlds tab.
-3. **Share the folder** with your friend(s) by email. **Set their permission to Editor**, not Viewer. They cannot sync without write access.
-4. **Copy the folder URL** from your browser's address bar.
-5. **Launch Minecraft.** Open or create the world you want to share.
-6. **Run `/worldshare setDriveLink <url>`** — paste the URL you copied. Sign in with Google when prompted.
-7. That's it. The world is now linked to Drive. WorldShare also automatically generates `modpack.json` so your friend's client knows which mods they need.
+1. **Install the mod.** Drop `worldshare-0.1.0.jar` into your NeoForge 1.21.1
+   mods folder. Add `e4mc` too if you want live co-op.
+2. **Launch Minecraft** and open the world you want to share.
+3. **Run `/worldshare setup`.** Your browser opens; sign in with Google and pick
+   (or create) a Drive folder to keep the world in.
+4. WorldShare creates ten files in that folder — a settings file, a presence
+   file, and eight world archives — and publishes your mod list so your friend's
+   game knows what it needs.
+5. **Share that Drive folder** with your friend by email. **Set their permission
+   to Editor**, not Viewer; they cannot sync without write access.
+
+> **Why ten files rather than one?** Google Drive replaces a file's entire
+> contents on every write — there's no way to update part of one. Splitting the
+> world across several archives means a session spent in one area re-uploads one
+> or two of them instead of the whole world. See
+> [the backend decision report](docs/CLOUD_BACKEND_DECISION.md) if you want the
+> long version.
 
 ## Setup — Guest
 
 The "guest" is anyone joining a host's world.
 
-1. **Install the same mods the host has.** WorldShare will help with this — install just `worldshare-0.1.0.jar` and `e4mc-neoforge-6.1.0.jar` to start.
-2. **Launch Minecraft** to the title screen.
-3. **Click "Contributor Worlds"** (the button below Multiplayer).
-4. **Click "+ Add World"** and paste the Drive folder URL the host shared with you.
-5. **Sign in with Google** when prompted (separate from your Minecraft account).
-6. The world appears in your Contributor Worlds list. Click **Download**.
-7. If the host has more mods than you, a **Modpack Sync** screen will appear automatically when you click Open. Click **Install**, then restart Minecraft. WorldShare downloads the missing mods directly from Modrinth.
+1. **Install the mod.** Just `worldshare-0.1.0.jar` to start — WorldShare will
+   tell you which other mods the world needs and fetch them for you.
+2. **Accept the host's Drive share** (check your email) so the folder appears in
+   your own Drive.
+3. **Launch Minecraft** to the title screen.
+4. **Click "Contributor Worlds"** (the button below Multiplayer), then
+   **"+ Add World"**.
+5. **Sign in with Google** when prompted — this is separate from your Minecraft
+   account. Google will then ask which files WorldShare may use.
+6. **Open the shared folder and select all ten `worldshare-*` files inside it.**
+
+   > Selecting the folder itself will *not* work, and this catches everyone out
+   > the first time. Google only grants access to files you pick individually —
+   > a folder grants nothing about its contents. You do this once; it's
+   > remembered from then on, even if you sign out or reinstall.
+
+7. The world appears in your Contributor Worlds list. Click **Download**.
+8. If the host has mods you don't, a **Modpack Sync** screen appears when you
+   click Open. Click **Install**, then restart. WorldShare downloads them from
+   Modrinth.
 
 ## Daily Use
 
@@ -83,7 +109,7 @@ Worlds set up with WorldShare should be loaded from the singleplayer tab only fo
 
 | Command | What it does |
 |---|---|
-| `/worldshare setDriveLink <url>` | Link the current world to a Drive folder |
+| `/worldshare setup` | Set the current world up for sharing (creates its Drive files) |
 | `/worldshare clearDriveLink` | Unlink the current world (releases the lock and unsubscribes) |
 | `/worldshare lock` | Acquire the session lock (host control) |
 | `/worldshare unlock` | Release the session lock |
@@ -98,7 +124,11 @@ Worlds set up with WorldShare should be loaded from the singleplayer tab only fo
 
 ## How it works (briefly)
 
-- **Drive folder** holds your world files plus a `manifest.json` (file hashes), `session.lock` (current player), `presence.json` (live session info), and `modpack.json` (mod list).
+- **Drive folder** holds a fixed set of ten files: `worldshare-control.json`
+  (file hashes, session lock state, and the mod list),
+  `worldshare-presence.json` (live session info), and eight
+  `worldshare-bucket_NN.zip` archives holding the world itself. The set never
+  grows, which is what lets each player grant access to it once and never again.
 - **Session lock** is a JSON file on Drive. Acquiring it writes your machine ID and a heartbeat timestamp. Other players see "Locked by <name>" in the Contributor tab.
 - **Sync** uses SHA-256 hashes — only files that actually changed get uploaded. Initial upload is a few MB to several hundred. Subsequent syncs are usually a few hundred KB to a few MB.
 - **Live co-op** uses [e4mc](https://modrinth.com/mod/e4mc) for hole-punched relay connections. Your friend doesn't need to know your IP, set up port forwarding, or use Hamachi.
