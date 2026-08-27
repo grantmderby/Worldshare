@@ -6,20 +6,51 @@ with standalone Python against the Drive API — which proves Drive behaves as
 assumed, **not** that the mod's use of it is correct. This document is the bridge.
 
 **Record results as you go.** When something fails, the useful report is the step
-number, what you expected, what happened, and the relevant lines from
-`run/logs/latest.log`. "It didn't work" costs a round trip to localise.
+number, what you expected, what happened, and the output of **`/worldshare
+doctor`** — which dumps link state, control file contents, lock holder, bucket
+sizes and a local-vs-remote diff in one go, to chat and to `latest.log`. Most
+"check the log for X" steps below collapse into reading that.
+
+Use `/worldshare doctor full` when a step involves bucket sizes or a
+local-vs-remote comparison; it adds a world scan and one API call per bucket, so
+it's slower.
 
 ---
 
 ## What you need
 
-- Two machines, or one machine with two Minecraft installations.
-- Two Google accounts. Call them **A** (creator) and **B** (joiner).
-- A dev build installed on both: `./gradlew build`, then the jar from
-  `build/libs/worldshare-<version>.jar` (the plain one, not `-slim`).
-- `client_secret.json` present on both — see `docs/GOOGLE_CLOUD_SETUP.md`.
-- e4mc installed on both **only if** you're doing Phase 5. It's now an optional
-  dependency, so the game will launch without it.
+**Two Google accounts.** Call them **A** (creator) and **B** (joiner). This is the
+one thing that can't be faked — the whole design turns on files being shared
+between two Drive accounts.
+
+**One machine is enough.** Run two dev clients side by side:
+
+```
+./gradlew runClient        # player A, game dir run/
+./gradlew runClientTwo     # player B, game dir run2/
+```
+
+They are genuinely independent, not just two windows. Everything WorldShare uses
+to tell players apart lives under the game directory:
+
+| `run/config/worldshare/` | what it separates |
+|---|---|
+| `tokens/StoredCredential` | which Google account is signed in |
+| `subscriptions.json` | which worlds are subscribed |
+| `machine_id` | **lock ownership** — what `SessionLock.isOwnedBy()` compares |
+
+That last one is why stale-lock override can be tested here at all. `runClientTwo`
+also passes `--username Player2`, so the two clients get different offline UUIDs
+and therefore separate `playerdata/<uuid>.dat` files — without which the
+per-player inventory behaviour couldn't be observed.
+
+**e4mc** only matters for Phase 5. It's an optional dependency now, so the game
+launches fine without it.
+
+> Testing the *shipped artifact* instead is also valid, and stricter: build with
+> `./gradlew build` and install `build/libs/worldshare-<version>.jar` (the plain
+> one, not `-slim`) into two Prism/MultiMC instances. Slower to iterate, but it
+> catches packaging problems the dev runtime hides.
 
 Set logging to catch what matters:
 
@@ -27,8 +58,13 @@ Set logging to catch what matters:
 run/config/worldshare-client.toml
 ```
 
-Confirm `logLevel` (or the Forge logging config) is at least `INFO` — every
-assertion below relies on a log line the mod actually emits.
+Confirm `logLevel` (or the Forge logging config) is at least `INFO` — several
+assertions below rely on a log line the mod emits.
+
+Before starting, sanity-check the harness itself: run `/worldshare doctor` in a
+world that has **never** been set up. It should report "Not set up for sharing"
+cleanly rather than throwing. If that misbehaves, fix it before trusting anything
+it says later.
 
 ---
 
