@@ -68,7 +68,7 @@ public final class WorldSetup {
      * <p>If the chosen folder already holds a WorldShare world that this user
      * created, it is adopted rather than duplicated - so this doubles as the
      * recovery path for a creator who lost their local link file, and they get
-     * their world back by picking one folder rather than ten files.
+     * their world back by picking one folder rather than every file.
      *
      * @param urlPresenter how to show the user the authorization URL
      * @param bucketCount  how many bucket archives to create; frozen for this

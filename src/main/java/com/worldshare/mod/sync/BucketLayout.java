@@ -51,23 +51,36 @@ public final class BucketLayout {
      * many and the joining player has more files to hand-pick during setup, plus
      * more API calls per sync.
      *
-     * <p>Note that one of these is the reserved {@link #HOT_BUCKET}, so eight
-     * buckets means seven region buckets plus one for everything else.
+     * <p>One of these is the reserved {@link #HOT_BUCKET}, so sixteen buckets
+     * means fifteen region buckets plus one for everything else.
      *
-     * <p><b>Eight, not sixteen, and the reason is measured rather than guessed.</b>
-     * Testing established that a Picker folder grant conveys no access to the
-     * folder's contents - not to files added afterwards, and not even to files
-     * already sitting in it when it was picked (the folder itself resolves, a
-     * listing returns nothing, and every child 404s). So there is no "just pick
-     * the folder" shortcut: a joining player must select every remote file by
-     * hand, and the count of those is {@code bucketCount + 2}. Eight keeps that
-     * to ten selections. See {@code tools/oauth-picker-prototype/preexisting_folder_test.py}
-     * for the test and {@code docs/CLOUD_BACKEND_DECISION.md} for the write-up.
+     * <p><b>Why sixteen.</b> A joining player must select every remote file by hand
+     * - {@code bucketCount + 2} of them - because a Picker folder grant conveys no
+     * access to the folder's contents. That made the count look like it was bounded
+     * by patience, and it was set to 8 on that basis. Then the picker's selection
+     * behaviour was actually checked: files toggle on a plain click, with no
+     * modifier key, so eighteen selections is a few seconds of clicking in a single
+     * dialog rather than a chore.
      *
-     * <p>Changing this value does not migrate existing worlds - the count is
-     * frozen per world at setup time and carried in the control file.
+     * <p>With that constraint gone, the measured cost decides it. As a share of the
+     * world's region bytes re-uploaded for a session covering a 3x3 region area:
+     *
+     * <pre>
+     *   buckets   selections   average    worst case
+     *      4          6         53.8%        -
+     *      8         10         34.0%       66.4%
+     *     12         14         19.5%       44.0%
+     *     16         18         16.2%       36.4%
+     *     24         26         11.5%        -
+     * </pre>
+     *
+     * <p>Sixteen roughly halves both the average and the worst case against eight,
+     * for eight more clicks once. Returns flatten after that. The count is frozen
+     * per world at setup and carried in the control file, so erring high is the
+     * recoverable direction: too many buckets costs a one-time handful of clicks,
+     * too few costs bandwidth for the life of the world.
      */
-    public static final int DEFAULT_BUCKET_COUNT = 8;
+    public static final int DEFAULT_BUCKET_COUNT = 16;
 
     /**
      * Lower bound on bucket count. One bucket is legal - it means "one big archive".

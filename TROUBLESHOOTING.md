@@ -21,8 +21,9 @@ from the Contributor Worlds tab, selecting the files again.
 **Cause:** In Google's file picker you selected the shared *folder* rather than
 the files inside it. This is the single most common setup mistake.
 
-**Fix:** Run Add World again, **open** the folder in the picker, and select all
-ten `worldshare-*` files within it.
+**Fix:** Run Add World again, **open** the folder in the picker, and select every
+`worldshare-*` file within it. They toggle on a single click — no ctrl or shift
+needed.
 
 **Why it works this way:** Google grants access per file, and a folder is just
 another file — being given a folder tells Google nothing about what's inside it.
@@ -35,8 +36,8 @@ and not for anyone else.
 **Cause:** You selected some but not all of the world's files. WorldShare needs
 every one of them — a missing archive is a missing slice of the world.
 
-**Fix:** Run Add World again and select all ten. The named files in the message
-are exactly the ones that were absent.
+**Fix:** Run Add World again and select all of them. The named files in the
+message are exactly the ones that were absent.
 
 You don't lose anything by re-running it: grants accumulate, so files you already
 picked stay picked.

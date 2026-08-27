@@ -38,13 +38,13 @@ The "host" is whoever creates the world. You only do this once per world.
 2. **Launch Minecraft** and open the world you want to share.
 3. **Run `/worldshare setup`.** Your browser opens; sign in with Google and pick
    (or create) a Drive folder to keep the world in.
-4. WorldShare creates ten files in that folder — a settings file, a presence
-   file, and eight world archives — and publishes your mod list so your friend's
-   game knows what it needs.
+4. WorldShare creates eighteen files in that folder — a settings file, a
+   presence file, and sixteen world archives — and publishes your mod list so
+   your friend's game knows what it needs.
 5. **Share that Drive folder** with your friend by email. **Set their permission
    to Editor**, not Viewer; they cannot sync without write access.
 
-> **Why ten files rather than one?** Google Drive replaces a file's entire
+> **Why so many files rather than one?** Google Drive replaces a file's entire
 > contents on every write — there's no way to update part of one. Splitting the
 > world across several archives means a session spent in one area re-uploads one
 > or two of them instead of the whole world. See
@@ -64,7 +64,7 @@ The "guest" is anyone joining a host's world.
    **"+ Add World"**.
 5. **Sign in with Google** when prompted — this is separate from your Minecraft
    account. Google will then ask which files WorldShare may use.
-6. **Open the shared folder and select all ten `worldshare-*` files inside it.**
+6. **Open the shared folder and select every `worldshare-*` file inside it.**
 
    > Selecting the folder itself will *not* work, and this catches everyone out
    > the first time. Google only grants access to files you pick individually —
@@ -124,9 +124,9 @@ Worlds set up with WorldShare should be loaded from the singleplayer tab only fo
 
 ## How it works (briefly)
 
-- **Drive folder** holds a fixed set of ten files: `worldshare-control.json`
-  (file hashes, session lock state, and the mod list),
-  `worldshare-presence.json` (live session info), and eight
+- **Drive folder** holds a fixed set of eighteen files:
+  `worldshare-control.json` (file hashes, session lock state, and the mod list),
+  `worldshare-presence.json` (live session info), and sixteen
   `worldshare-bucket_NN.zip` archives holding the world itself. The set never
   grows, which is what lets each player grant access to it once and never again.
 - **Session lock** is a JSON file on Drive. Acquiring it writes your machine ID and a heartbeat timestamp. Other players see "Locked by <name>" in the Contributor tab.
