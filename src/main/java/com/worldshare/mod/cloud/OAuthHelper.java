@@ -91,6 +91,18 @@ public final class OAuthHelper {
     /** Authorization-URL parameter allowing multi-select in the Picker step. */
     private static final String PARAM_ALLOW_MULTIPLE = "allow_multiple";
 
+    /**
+     * Authorization-URL parameter letting the Picker select folders.
+     *
+     * <p>Used by the world <em>creator</em>, who needs a folder to create the fixed
+     * file set inside. Note what this does and doesn't buy: a folder grant lets the
+     * app create files in that folder, and files an app creates are always
+     * reachable by that app for that user - but it does not extend to files another
+     * account adds later. That limitation is exactly why the file set is fixed and
+     * created up front.
+     */
+    private static final String PARAM_ALLOW_FOLDER_SELECTION = "allow_folder_selection";
+
     private OAuthHelper() {
         // utility class
     }
@@ -133,7 +145,7 @@ public final class OAuthHelper {
         }
 
         WorldShareMod.LOGGER.info("Starting OAuth authorization for user '{}'", USER_ID);
-        return runBrowserFlow(flow, urlPresenter, false, false).credential();
+        return runBrowserFlow(flow, urlPresenter, false, false, false).credential();
     }
 
     /**
@@ -159,10 +171,29 @@ public final class OAuthHelper {
     public static PickerAuthResult authorizeWithPicker(final Consumer<String> urlPresenter,
                                                        final boolean allowMultiple)
             throws IOException, GeneralSecurityException {
+        return authorizeWithPicker(urlPresenter, allowMultiple, false);
+    }
+
+    /**
+     * As {@link #authorizeWithPicker(Consumer, boolean)}, but able to offer folders
+     * in the Picker.
+     *
+     * @param allowFolderSelection whether folders are selectable. World creation
+     *                             wants {@code true} (it needs somewhere to create
+     *                             the fixed file set); joining an existing world
+     *                             depends on whether a folder grant reaches files
+     *                             already inside it.
+     */
+    public static PickerAuthResult authorizeWithPicker(final Consumer<String> urlPresenter,
+                                                       final boolean allowMultiple,
+                                                       final boolean allowFolderSelection)
+            throws IOException, GeneralSecurityException {
         final GoogleAuthorizationCodeFlow flow = buildFlow();
-        WorldShareMod.LOGGER.info("Starting OAuth authorization WITH Picker (allowMultiple={})",
-                allowMultiple);
-        final PickerAuthResult result = runBrowserFlow(flow, urlPresenter, true, allowMultiple);
+        WorldShareMod.LOGGER.info(
+                "Starting OAuth authorization WITH Picker (allowMultiple={}, allowFolders={})",
+                allowMultiple, allowFolderSelection);
+        final PickerAuthResult result =
+                runBrowserFlow(flow, urlPresenter, true, allowMultiple, allowFolderSelection);
         WorldShareMod.LOGGER.info("Picker flow complete: {} file(s) granted",
                 result.pickedFileIds().size());
         return result;
@@ -207,7 +238,8 @@ public final class OAuthHelper {
     private static PickerAuthResult runBrowserFlow(final GoogleAuthorizationCodeFlow flow,
                                                    final Consumer<String> urlPresenter,
                                                    final boolean triggerPicker,
-                                                   final boolean allowMultiple)
+                                                   final boolean allowMultiple,
+                                                   final boolean allowFolderSelection)
             throws IOException {
         final LocalRedirectReceiver receiver = new LocalRedirectReceiver();
         try {
@@ -219,6 +251,9 @@ public final class OAuthHelper {
                 authUrl.set(PARAM_TRIGGER_PICKER, "true");
                 if (allowMultiple) {
                     authUrl.set(PARAM_ALLOW_MULTIPLE, "true");
+                }
+                if (allowFolderSelection) {
+                    authUrl.set(PARAM_ALLOW_FOLDER_SELECTION, "true");
                 }
             }
 

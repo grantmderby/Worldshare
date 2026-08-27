@@ -5,6 +5,7 @@ import com.worldshare.mod.WorldShareMod;
 
 import java.io.IOException;
 import java.time.Instant;
+import java.util.function.Consumer;
 
 /**
  * Reads and writes a world's {@link ControlFile} on Drive.
@@ -96,7 +97,51 @@ public final class ControlFileClient {
         return existing != null ? existing : ControlFile.initial(bucketCount, Instant.now());
     }
 
+    /**
+     * Read the control file, apply a change to it, and write it back - with no
+     * other thread in this JVM able to interleave its own read-modify-write.
+     *
+     * <p><b>Why this exists.</b> Folding the manifest and the session lock into one
+     * remote document bought atomicity between them, but it created a hazard the
+     * old two-file layout didn't have: the heartbeat thread and the sync thread now
+     * write the <em>same</em> file. A heartbeat that read the control file just
+     * before a push committed would write its stale copy back afterwards and
+     * silently erase the manifest that push had just published - losing the record
+     * of every bucket it uploaded.
+     *
+     * <p>A single JVM-wide monitor closes that window, and it is sufficient rather
+     * than merely convenient: the only writers of a given world's control file are
+     * the machine holding its session lock. The other player cannot push without
+     * the lock, and cannot heartbeat a lock they do not hold. Cross-machine
+     * conflicts still resolve the way they always have - last writer wins, with the
+     * heartbeat's ownership check catching a takeover after the fact.
+     *
+     * @param controlFileId Drive file ID of the control file
+     * @param bucketCount   layout to assume if the remote file is still an empty
+     *                      placeholder
+     * @param mutator       applied to the freshly-read control file; whatever it
+     *                      leaves behind is what gets written
+     * @return the control file as written
+     */
+    public static ControlFile update(final String controlFileId,
+                                     final int bucketCount,
+                                     final Consumer<ControlFile> mutator) throws IOException {
+        requireId(controlFileId);
+        synchronized (WRITE_MONITOR) {
+            final ControlFile control = readOrInitial(controlFileId, bucketCount);
+            mutator.accept(control);
+            write(controlFileId, control);
+            return control;
+        }
+    }
+
     // -----------------------------------------------------------------
+
+    /**
+     * Guards every read-modify-write cycle on a control file. See {@link #update}
+     * for why one process-wide monitor is the right granularity here.
+     */
+    private static final Object WRITE_MONITOR = new Object();
 
     /**
      * Name passed to {@code writeText} on the update path. Drive ignores it when a

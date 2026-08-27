@@ -68,6 +68,18 @@ public final class BucketLayout {
      */
     public static final String CONTROL_FILENAME = "worldshare-control.json";
 
+    /**
+     * Name of the live-presence file on Drive.
+     *
+     * <p>Kept out of the control file on purpose. Presence is rewritten every 60
+     * seconds while somebody is hosting, and the control file carries the whole
+     * world manifest - folding them together would mean re-uploading a manifest
+     * that can run to hundreds of kilobytes, once a minute, to communicate a relay
+     * address that changes almost never. One extra file to pick is the cheaper
+     * trade.
+     */
+    public static final String PRESENCE_FILENAME = "worldshare-presence.json";
+
     /** Filename prefix shared by every bucket archive. */
     public static final String BUCKET_PREFIX = "worldshare-bucket_";
 
@@ -149,12 +161,18 @@ public final class BucketLayout {
      * user selected - anything fewer means setup is incomplete.
      */
     public String[] allRemoteFilenames() {
-        final String[] names = new String[bucketCount + 1];
+        final String[] names = new String[bucketCount + 2];
         names[0] = CONTROL_FILENAME;
+        names[1] = PRESENCE_FILENAME;
         for (int i = 0; i < bucketCount; i++) {
-            names[i + 1] = bucketFilename(i);
+            names[i + 2] = bucketFilename(i);
         }
         return names;
+    }
+
+    /** How many remote files a world of this layout needs in total. */
+    public int remoteFileCount() {
+        return bucketCount + 2;
     }
 
     /**

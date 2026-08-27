@@ -1,6 +1,7 @@
 package com.worldshare.mod.ui;
 
 import com.worldshare.mod.WorldShareMod;
+import com.worldshare.mod.cloud.RemoteFileSet;
 import com.worldshare.mod.cloud.CloudModule;
 import com.worldshare.mod.cloud.LockManager;
 import com.worldshare.mod.config.WorldLink;
@@ -200,11 +201,11 @@ public final class SaveAndUploadScreen extends Screen {
     // ---- Flow orchestration ----
 
     private void startSyncFlow() {
-        // M5: read Drive folder from the world's link file, not the global config.
-        // This supports multiple worlds each linked to their own Drive folder.
-        final String folderId = WorldLink.readFolderId(worldRoot);
-        if (folderId == null || folderId.isBlank()) {
-            stage = "(world is not linked to Drive - skipping upload)";
+        // Read the Drive file set from the world's own link file, so several
+        // worlds can each sync to their own set of files.
+        final RemoteFileSet remote = WorldLink.readRemote(worldRoot);
+        if (remote == null) {
+            stage = "(world is not set up for sharing - skipping upload)";
             done = true;
             return;
         }
@@ -231,7 +232,7 @@ public final class SaveAndUploadScreen extends Screen {
 
                 stage = "Checking connection to Drive...";
 
-                final OnlineChecker.Result online = OnlineChecker.check(folderId);
+                final OnlineChecker.Result online = OnlineChecker.check(remote);
                 if (online == OnlineChecker.Result.OFFLINE) {
                     errorMessage = "Drive is unreachable. Local changes are preserved; "
                             + "they'll upload next time you have internet.";
@@ -270,7 +271,7 @@ public final class SaveAndUploadScreen extends Screen {
                 CloudModule.executor().submit(() -> {
                     try {
                         final SyncEngine.PushResult r = SyncEngine.push(
-                                worldRoot, folderId, playerUuid, null, prog);
+                                worldRoot, remote, playerUuid, null, prog);
                         pushFuture.complete(r);
                     } catch (final Throwable t) {
                         pushFuture.completeExceptionally(t);

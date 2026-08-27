@@ -47,6 +47,13 @@ public final class RemoteFileSet {
     public String controlFileId;
 
     /**
+     * Drive file ID of the live-presence file, or null if setup never completed.
+     * Separate from the control file because it is rewritten once a minute while
+     * hosting - see {@link BucketLayout#PRESENCE_FILENAME}.
+     */
+    public String presenceFileId;
+
+    /**
      * Drive file IDs of the bucket archives, indexed by bucket number. Slots may
      * be null while setup is partway through; a complete set has none.
      */
@@ -117,6 +124,9 @@ public final class RemoteFileSet {
         if (controlFileId == null || controlFileId.isBlank()) {
             return false;
         }
+        if (presenceFileId == null || presenceFileId.isBlank()) {
+            return false;
+        }
         if (bucketFileIds == null || bucketFileIds.size() < bucketCount) {
             return false;
         }
@@ -155,6 +165,9 @@ public final class RemoteFileSet {
         if (controlFileId == null || controlFileId.isBlank()) {
             names.add(BucketLayout.CONTROL_FILENAME);
         }
+        if (presenceFileId == null || presenceFileId.isBlank()) {
+            names.add(BucketLayout.PRESENCE_FILENAME);
+        }
         for (final int index : missingBucketIndices()) {
             names.add(BucketLayout.bucketFilename(index));
         }
@@ -184,6 +197,7 @@ public final class RemoteFileSet {
     public Map<String, String> asNameToIdMap() {
         final Map<String, String> map = new LinkedHashMap<>();
         map.put(BucketLayout.CONTROL_FILENAME, controlFileId);
+        map.put(BucketLayout.PRESENCE_FILENAME, presenceFileId);
         for (int i = 0; i < bucketCount; i++) {
             map.put(BucketLayout.bucketFilename(i), bucketFileId(i));
         }
@@ -214,6 +228,11 @@ public final class RemoteFileSet {
             }
             if (BucketLayout.CONTROL_FILENAME.equals(name)) {
                 controlFileId = id;
+                filled++;
+                continue;
+            }
+            if (BucketLayout.PRESENCE_FILENAME.equals(name)) {
+                presenceFileId = id;
                 filled++;
                 continue;
             }

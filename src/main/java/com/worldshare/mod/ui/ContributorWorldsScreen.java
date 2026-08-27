@@ -1,6 +1,7 @@
 package com.worldshare.mod.ui;
 
 import com.worldshare.mod.WorldShareMod;
+import com.worldshare.mod.cloud.RemoteFileSet;
 import com.worldshare.mod.cloud.CloudModule;
 import com.worldshare.mod.cloud.LockManager;
 import com.worldshare.mod.config.SubscriptionStore;
@@ -395,11 +396,11 @@ public final class ContributorWorldsScreen extends Screen {
      * First-time download flow with folder collision detection.
      */
     private void onDownload(final WorldStateResolver.ResolvedWorld world) {
-        final String folderId = world.subscription.driveFolderId;
+        final RemoteFileSet remote = world.subscription.remote;
         final String displayName = world.displayName();
         final String preferred = sanitizeFolderName(displayName);
 
-        final String folderName = resolveDownloadFolderName(preferred, folderId);
+        final String folderName = resolveDownloadFolderName(preferred, remote);
         final Path localWorld = WorldSharePaths.gameDir().resolve("saves").resolve(folderName);
 
         final boolean renamedFromPreferred = !folderName.equals(preferred);
@@ -419,9 +420,9 @@ public final class ContributorWorldsScreen extends Screen {
         CloudModule.executor().submit(() -> {
             try {
                 Files.createDirectories(localWorld);
-                SubscriptionStore.get().linkWorldToFolder(
-                        localWorld, folderName, folderId, displayName);
-                SyncEngine.pull(localWorld, folderId, playerUuid, makeProgress());
+                SubscriptionStore.get().linkWorldToRemote(
+                        localWorld, folderName, remote, displayName);
+                SyncEngine.pull(localWorld, remote, playerUuid, makeProgress());
                 if (renamedFromPreferred) {
                     WorldShareMod.LOGGER.info(
                             "ContributorWorlds: downloaded as '{}' to avoid collision",
@@ -450,7 +451,7 @@ public final class ContributorWorldsScreen extends Screen {
      */
     private void acquireLockThenPullThenOpen(final WorldStateResolver.ResolvedWorld world,
                                              final boolean skipPull) {
-        final String folderId = world.subscription.driveFolderId;
+        final RemoteFileSet remote = world.subscription.remote;
         final String localFolderName = world.subscription.localFolderName;
         if (localFolderName == null) {
             onDownload(world);
@@ -467,7 +468,7 @@ public final class ContributorWorldsScreen extends Screen {
                 // Modpack check before lock or pull.
                 final com.worldshare.mod.modmanager.ModManagerModule.ModCheckResult modCheck =
                         com.worldshare.mod.modmanager.ModManagerModule
-                                .checkGuestMissingMods(folderId);
+                                .checkGuestMissingMods(remote);
                 if (modCheck.hasIssues()) {
                     WorldShareMod.LOGGER.info(
                             "ContributorWorlds: modpack issues for '{}': "
@@ -483,7 +484,7 @@ public final class ContributorWorldsScreen extends Screen {
                     return;
                 }
 
-                LockManager.acquire(folderId);
+                LockManager.acquire(remote);
                 lockAcquired = true;
 
                 if (skipPull) {
@@ -492,7 +493,7 @@ public final class ContributorWorldsScreen extends Screen {
                                     + "skipping pull, local files are authoritative",
                             world.displayName());
                 } else {
-                    SyncEngine.pull(localWorld, folderId, playerUuid, makeProgress());
+                    SyncEngine.pull(localWorld, remote, playerUuid, makeProgress());
                 }
                 openWorldLocally(localFolderName);
             } catch (final Throwable t) {
@@ -585,13 +586,18 @@ public final class ContributorWorldsScreen extends Screen {
     }
 
     private static String resolveDownloadFolderName(final String preferred,
-                                                    final String driveFolderId) {
+                                                    final RemoteFileSet remote) {
         final Path savesDir = WorldSharePaths.gameDir().resolve("saves");
 
         if (!Files.exists(savesDir.resolve(preferred))) return preferred;
 
+        // A folder of this name already exists. Reuse it only if it holds the very
+        // same shared world; otherwise take a suffixed name, so one world's pull can
+        // never land on top of another's save.
         final WorldLink existingLink = WorldLink.read(savesDir.resolve(preferred));
-        if (existingLink != null && driveFolderId.equals(existingLink.driveFolderId)) {
+        if (existingLink != null && existingLink.remote != null && remote != null
+                && remote.controlFileId != null
+                && remote.controlFileId.equals(existingLink.remote.controlFileId)) {
             return preferred;
         }
 

@@ -1,6 +1,7 @@
 package com.worldshare.mod.ui;
 
 import com.worldshare.mod.WorldShareMod;
+import com.worldshare.mod.cloud.RemoteFileSet;
 import com.worldshare.mod.cloud.CloudModule;
 import com.worldshare.mod.cloud.LockManager;
 import com.worldshare.mod.config.SubscriptionStore;
@@ -265,7 +266,7 @@ public final class ConflictResolutionScreen extends Screen {
         this.clearWidgets();
         this.init();
 
-        final String folderId = resolved.subscription.driveFolderId;
+        final RemoteFileSet remote = resolved.subscription.remote;
         final String localFolderName = resolved.subscription.localFolderName;
         final Path localWorld = WorldSharePaths.gameDir()
                 .resolve("saves").resolve(localFolderName);
@@ -285,7 +286,7 @@ public final class ConflictResolutionScreen extends Screen {
                 workingMessage = "Overriding stale lock...";
                 CloudModule.executor().submit(() -> {
                     try {
-                        LockManager.acquire(folderId);
+                        LockManager.acquire(remote);
                     } catch (final IOException e) {
                         throw new RuntimeException(e);
                     }
@@ -295,7 +296,7 @@ public final class ConflictResolutionScreen extends Screen {
                 workingMessage = "Pulling world from Drive...";
                 CloudModule.executor().submit(() -> {
                     try {
-                        SyncEngine.pull(localWorld, folderId, playerUuid);
+                        SyncEngine.pull(localWorld, remote, playerUuid);
                     } catch (final IOException e) {
                         throw new RuntimeException(e);
                     }

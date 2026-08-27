@@ -2,6 +2,7 @@ package com.worldshare.mod.cloud;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonSyntaxException;
 import com.worldshare.mod.sync.BucketLayout;
 import com.worldshare.mod.sync.WorldManifest;
@@ -60,6 +61,22 @@ public final class ControlFile {
      * {@link SessionLock#STATUS_UNLOCKED}, not by absence.
      */
     public SessionLock lock;
+
+    /**
+     * The world's modpack manifest, or null if the host never published one.
+     *
+     * <p>Held as a raw {@link JsonElement} rather than a typed
+     * {@code ModpackManifest} on purpose: this package sits underneath the mod
+     * manager, and giving the cloud layer a compile-time dependency on it just to
+     * carry the field through would invert that. The mod manager owns the schema
+     * and does the parsing; the control file only ferries it.
+     *
+     * <p>It lives here rather than in its own picked file because it changes
+     * rarely - only when the host's mod list does - so the cost of rewriting the
+     * manifest alongside it is negligible. Presence, which changes every minute,
+     * gets its own file for exactly the opposite reason.
+     */
+    public JsonElement modpack;
 
     /** No-arg constructor required by Gson. */
     public ControlFile() {}

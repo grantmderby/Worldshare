@@ -329,7 +329,7 @@ public final class SyncEngine {
             return new PushResult(transfer.bucketsOk, skippedStale, 0, bytes);
         }
 
-        commitControl(remote, control, local);
+        commitControl(remote, local);
         saveScanCache(local, scanCache, worldRoot);
         DirtyRegionTracker.resetAfterPush();
         progress.onComplete();
@@ -519,29 +519,29 @@ public final class SyncEngine {
     }
 
     /**
-     * Write the new manifest and the current lock state to Drive in one call.
+     * Publish the new manifest to the control file.
      *
-     * <p>Re-reads the lock from the live control file rather than reusing the copy
-     * loaded at the start of the push: a heartbeat may have updated it in the
-     * meantime, and clobbering that with a stale snapshot would make our own lock
-     * look expired to the other player.
+     * <p>Goes through {@link ControlFileClient#update} rather than a plain write so
+     * the read-modify-write happens under the same monitor the heartbeat uses. That
+     * matters for a reason specific to this design: the lock now lives in the same
+     * document as the manifest, and the push may have taken minutes, during which
+     * the heartbeat will have refreshed the lock's expiry. Re-reading inside the
+     * monitor and replacing only the manifest keeps that refresh instead of
+     * stamping a minutes-old lock back over it - which would make our own live
+     * session look expired to the other player.
      */
     private static void commitControl(final RemoteFileSet remote,
-                                      final ControlFile control,
                                       final WorldManifest manifest) throws IOException {
         manifest.generatedAt = Instant.now().toString();
         if (manifest.generatedByMachineId == null) {
             manifest.generatedByMachineId = MachineId.get();
         }
 
-        final ControlFile fresh = ControlFileClient.read(remote.controlFileId);
-        if (fresh != null) {
-            control.lock = fresh.lockOrUnlocked();
-        }
-        control.manifest = manifest;
-        control.bucketCount = remote.bucketCount;
+        ControlFileClient.update(remote.controlFileId, remote.bucketCount, control -> {
+            control.manifest = manifest;
+            control.bucketCount = remote.bucketCount;
+        });
 
-        ControlFileClient.write(remote.controlFileId, control);
         WorldShareMod.LOGGER.info("commitControl: published manifest with {} entries", manifest.size());
     }
 

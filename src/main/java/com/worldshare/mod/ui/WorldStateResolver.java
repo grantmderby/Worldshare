@@ -12,6 +12,9 @@ import com.worldshare.mod.sync.WorldFileScanner;
 import com.worldshare.mod.sync.WorldManifest;
 import com.worldshare.mod.util.WorldSharePaths;
 import com.worldshare.mod.WorldShareMod;
+import com.worldshare.mod.cloud.RemoteFileSet;
+import com.worldshare.mod.cloud.ControlFileClient;
+import com.worldshare.mod.cloud.ControlFile;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -112,9 +115,16 @@ public final class WorldStateResolver {
         }
 
         public String displayName() {
-            return subscription.displayName != null
-                    ? subscription.displayName
-                    : subscription.driveFolderId;
+            if (subscription.displayName != null && !subscription.displayName.isBlank()) {
+                return subscription.displayName;
+            }
+            // Fall back to the local folder, then to a generic label. The Drive
+            // folder ID is deliberately not used: whoever joined by picking files
+            // never had one, so it would render blank for exactly the players most
+            // likely to be looking at this list.
+            return subscription.hasLocalFolder()
+                    ? subscription.localFolderName
+                    : "Shared World";
         }
     }
 
@@ -159,22 +169,23 @@ public final class WorldStateResolver {
     private static ResolvedWorld resolveOne(final DriveClient client,
                                             final WorldSubscription sub,
                                             final UUID playerUuid) {
-        final String folderId = sub.driveFolderId;
+        final RemoteFileSet remote = sub.remote;
+        if (remote == null || !remote.isComplete()) {
+            // Carried over from before the drive.file migration, or setup never
+            // finished. Nothing about it is reachable until the player re-picks its
+            // files, so report it as needing download rather than guessing a state.
+            return ResolvedWorld.of(sub, State.NOT_DOWNLOADED, null, null, null);
+        }
         try {
-            // 1. Check for live session (presence.json).
-            final String presenceFileId = client.findFileByName(
-                    PresenceFile.FILENAME, folderId);
-            if (presenceFileId != null) {
-                final PresenceFile presence = PresenceFile.fromJson(
-                        client.readText(presenceFileId));
-                if (!presence.isStale()) {
-                    return ResolvedWorld.of(sub, State.LIVE, null, null, presence);
-                }
-                // Stale presence = fall through to lock check (treat as offline)
+            // 1. Check for live session.
+            final PresenceFile presence = PresenceFile.read(remote);
+            if (presence != null && !presence.isStale()) {
+                return ResolvedWorld.of(sub, State.LIVE, null, null, presence);
             }
+            // Stale or absent presence = fall through to the lock check.
 
             // 2. Read manifest (needed for conflict detection).
-            final WorldManifest driveManifest = readManifest(client, folderId);
+            final WorldManifest driveManifest = readManifest(remote);
 
             // 3. No local folder yet.
             if (!sub.hasLocalFolder()) {
@@ -187,7 +198,7 @@ public final class WorldStateResolver {
             }
 
             // 4. Read lock.
-            final LockManager.LockStatus status = LockManager.readStatus(folderId);
+            final LockManager.LockStatus status = LockManager.readStatus(remote);
 
             switch (status.state) {
                 case FREE:
@@ -288,14 +299,17 @@ public final class WorldStateResolver {
         }
     }
 
-    private static WorldManifest readManifest(final DriveClient client,
-                                              final String folderId) {
+    /**
+     * Read a world's manifest out of its control file.
+     *
+     * <p>Returns null both when nobody has pushed yet and when the read fails.
+     * Callers treat either as "we can't compare, assume local is newer", which errs
+     * toward an unnecessary upload rather than silently overwriting somebody's work.
+     */
+    private static WorldManifest readManifest(final RemoteFileSet remote) {
         try {
-            final String manifestId = client.findFileByName(
-                    SyncEngine.MANIFEST_FILENAME, folderId);
-            if (manifestId == null) return null;
-            final String json = client.readText(manifestId);
-            return WorldManifest.fromJson(json);
+            final ControlFile control = ControlFileClient.read(remote.controlFileId);
+            return control == null ? null : control.manifestOrEmpty();
         } catch (final Exception e) {
             WorldShareMod.LOGGER.debug("WorldStateResolver: couldn't read manifest: {}",
                     e.getMessage());

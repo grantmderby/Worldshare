@@ -1,6 +1,5 @@
 package com.worldshare.mod.cloud;
 
-import com.google.gson.JsonSyntaxException;
 import com.worldshare.mod.WorldShareMod;
 import com.worldshare.mod.config.WorldShareConfig;
 import com.worldshare.mod.util.MachineId;
@@ -14,39 +13,49 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Manages the {@code session.lock} file on Drive for one shared world.
+ * Manages the session lock for one shared world.
  *
- * <p>The lock file lives at {@code <driveFolder>/session.lock}. Its presence
- * indicates "someone is using this world right now, don't load it." Its
- * absence means "world is free."
+ * <p>The lock says "someone is using this world right now, don't load it." It
+ * used to be its own Drive file, {@code session.lock}, whose mere presence meant
+ * "taken" and whose deletion meant "free". Both halves of that had to change
+ * under the {@code drive.file} scope:
+ *
+ * <ul>
+ *   <li><b>It can't be found by name.</b> A narrow-scope token can't list a
+ *       folder, so the lock is now a field inside the world's
+ *       {@link ControlFile}, reached by the Drive file ID the user picked.</li>
+ *   <li><b>It can't be deleted.</b> Deleting and recreating would mint a new
+ *       Drive file ID that the other player's grant doesn't cover, silently
+ *       cutting them off from the world. So releasing writes
+ *       {@link SessionLock#STATUS_UNLOCKED} instead - absence is no longer a
+ *       state the schema can express.</li>
+ * </ul>
  *
  * <p><b>Typical flow for a session:</b>
  * <pre>
- *   LockManager.LockStatus status = LockManager.readStatus(folderId);
+ *   LockManager.LockStatus status = LockManager.readStatus(remote);
  *   if (status.canAcquire()) {
- *       SessionLock ours = LockManager.acquire(folderId);
+ *       SessionLock ours = LockManager.acquire(remote);
  *       // ... play the world ...
  *       LockManager.release();
  *   } else {
- *       // someone else has it - prompt "Wait & Retry"
+ *       // someone else has it - prompt "Wait &amp; Retry"
  *   }
  * </pre>
  *
- * <p><b>Threading:</b> All methods block on network. They must not be called
- * on the Minecraft main thread. Dispatch via {@link CloudModule#executor()}.
+ * <p><b>Threading:</b> All methods block on network. They must not be called on
+ * the Minecraft main thread. Dispatch via {@link CloudModule#executor()}.
  *
  * <p>The heartbeat runs on a private scheduled executor; it is started by
  * {@link #acquire} and stopped by {@link #release}.
  */
 public final class LockManager {
 
-    /** Filename used on Drive for the lock. */
-    public static final String LOCK_FILENAME = "session.lock";
-
-    /** How often we refresh the lock's expires_at field while we hold it. */
+    /** How often we refresh the lock's expiry while we hold it. */
     private static final Duration HEARTBEAT_INTERVAL = Duration.ofMinutes(15);
 
     /**
@@ -74,12 +83,13 @@ public final class LockManager {
     private static ScheduledFuture<?> activeHeartbeat;
 
     /**
-     * Cached state: Drive file ID of the lock we currently hold (or null if
-     * we don't hold one). We track this so the heartbeat and release don't
-     * need to do another findFileByName() call each time.
+     * The world whose lock we currently hold, or null if we hold none.
+     *
+     * <p>Replaces the old pair of lock-file ID and folder ID. We keep the whole
+     * {@link RemoteFileSet} because the heartbeat needs both the control file ID
+     * and the bucket count to write through {@link ControlFileClient#update}.
      */
-    private static volatile String heldLockFileId;
-    private static volatile String heldLockFolderId;
+    private static volatile RemoteFileSet heldWorld;
 
     private LockManager() {
         // utility class
@@ -90,14 +100,15 @@ public final class LockManager {
     /**
      * Query the current lock state of a shared world without modifying it.
      *
-     * @param driveFolderId Drive folder ID of the shared world
+     * @param remote the world's Drive file set
      * @return the current {@link LockStatus}
      */
-    public static LockStatus readStatus(final String driveFolderId) throws IOException {
-        final SessionLock lock = readLock(driveFolderId);
-        if (lock == null) {
-            return new LockStatus(LockState.FREE, null);
+    public static LockStatus readStatus(final RemoteFileSet remote) throws IOException {
+        final SessionLock lock = readLock(remote);
+        if (lock == null || lock.isUnlocked()) {
+            return new LockStatus(LockState.FREE, lock);
         }
+
         final Instant now = Instant.now();
         final boolean expired = lock.isExpired(now);
         final boolean ours = lock.isOwnedBy(MachineId.get());
@@ -112,23 +123,15 @@ public final class LockManager {
     }
 
     /**
-     * Read the lock file, returning its parsed contents or null if it doesn't exist.
+     * Read the lock out of the world's control file.
      *
-     * @return the SessionLock, or null if no lock file is present on Drive
+     * @return the SessionLock, or null if nobody has pushed to this world yet
+     *         (the control file is still an empty placeholder)
      */
-    public static SessionLock readLock(final String driveFolderId) throws IOException {
-        Objects.requireNonNull(driveFolderId, "driveFolderId");
-        final DriveClient client = CloudModule.driveClient();
-        final String fileId = client.findFileByName(LOCK_FILENAME, driveFolderId);
-        if (fileId == null) {
-            return null;
-        }
-        final String json = client.readText(fileId);
-        try {
-            return SessionLock.fromJson(json);
-        } catch (final JsonSyntaxException e) {
-            throw new IOException("session.lock on Drive is malformed: " + e.getMessage(), e);
-        }
+    public static SessionLock readLock(final RemoteFileSet remote) throws IOException {
+        Objects.requireNonNull(remote, "remote");
+        final ControlFile control = ControlFileClient.read(remote.controlFileId);
+        return (control == null) ? null : control.lockOrUnlocked();
     }
 
     /**
@@ -143,9 +146,8 @@ public final class LockManager {
      *
      * @return the SessionLock we just wrote
      */
-    public static SessionLock acquire(final String driveFolderId) throws IOException {
-        Objects.requireNonNull(driveFolderId, "driveFolderId");
-        final DriveClient client = CloudModule.driveClient();
+    public static SessionLock acquire(final RemoteFileSet remote) throws IOException {
+        Objects.requireNonNull(remote, "remote");
 
         final String holderName = resolveHolderName();
         final String machineId = MachineId.get();
@@ -157,114 +159,118 @@ public final class LockManager {
         final SessionLock lock = SessionLock.newAcquired(
                 holderName, machineId, now, expiresAfter, cap);
 
-        // Overwrite existing lock file if present, else create a new one.
-        final String existingId = client.findFileByName(LOCK_FILENAME, driveFolderId);
-        final String fileId = client.writeText(
-                existingId,
-                LOCK_FILENAME,
-                driveFolderId,
-                lock.toJson(),
-                DriveClient.MIME_TYPE_JSON);
+        // Writes through the same monitor the heartbeat and the sync commit use, so
+        // taking the lock can't race with a manifest write already in flight.
+        ControlFileClient.update(remote.controlFileId, remote.bucketCount,
+                control -> control.lock = lock);
 
-        heldLockFileId = fileId;
-        heldLockFolderId = driveFolderId;
+        heldWorld = remote;
         // Reset offline tracking for the new session.
         consecutiveHeartbeatFailures = 0;
         offlineWarningShown = false;
         startHeartbeat();
 
-        WorldShareMod.LOGGER.info("Acquired session.lock (drive id {}) as '{}' on machine {}",
-                fileId, holderName, machineId);
+        WorldShareMod.LOGGER.info("Acquired session lock in control file {} as '{}' on machine {}",
+                remote.controlFileId, holderName, machineId);
         return lock;
     }
 
     /**
-     * Release the lock we hold. Stops the heartbeat and deletes the lock
-     * file from Drive. No-op if we don't currently hold one.
+     * Release the lock we hold: stop the heartbeat and mark the world unlocked.
+     * No-op if we don't currently hold one.
+     *
+     * <p>Note this <em>writes</em> rather than deletes. See the class note - a
+     * deleted control file would come back with a Drive ID nobody else can reach.
      */
     public static void release() throws IOException {
         stopHeartbeat();
 
-        final String fileId = heldLockFileId;
-        final String folderId = heldLockFolderId;
-        heldLockFileId = null;
-        heldLockFolderId = null;
+        final RemoteFileSet remote = heldWorld;
+        heldWorld = null;
 
-        if (fileId == null) {
+        if (remote == null) {
             WorldShareMod.LOGGER.debug("release() called but we don't hold a lock");
             return;
         }
 
-        final DriveClient client = CloudModule.driveClient();
         try {
-            client.deleteFile(fileId);
-            WorldShareMod.LOGGER.info("Released session.lock (drive id {}) from folder {}",
-                    fileId, folderId);
+            ControlFileClient.update(remote.controlFileId, remote.bucketCount, control -> {
+                // Only stand down if it's still ours. Somebody may have overridden a
+                // lock they believed was stale; stamping "unlocked" over their live
+                // session would hand the world to a third party mid-play.
+                final SessionLock current = control.lockOrUnlocked();
+                if (current.isUnlocked() || current.isOwnedBy(MachineId.get())) {
+                    control.lock = SessionLock.unlocked(Instant.now());
+                } else {
+                    WorldShareMod.LOGGER.warn(
+                            "release: lock now held by '{}', leaving it alone", current.holderName);
+                }
+            });
+            WorldShareMod.LOGGER.info("Released session lock in control file {}",
+                    remote.controlFileId);
         } catch (final IOException e) {
-            // The file might have been deleted by someone overriding a stale lock.
-            // Log and swallow - from our perspective, the lock is gone either way.
-            WorldShareMod.LOGGER.warn(
-                    "Could not delete session.lock (drive id {}) during release: {}",
-                    fileId, e.getMessage());
+            // Losing the release is survivable: the lock carries an expiry, and the
+            // other player's staleness check will free it. Worth a warning, not a throw.
+            WorldShareMod.LOGGER.warn("Could not release session lock in control file {}: {}",
+                    remote.controlFileId, e.getMessage());
         }
     }
 
     /** @return true if we currently hold a lock. */
     public static boolean weHoldLock() {
-        return heldLockFileId != null;
+        return heldWorld != null;
     }
 
     // ----- Heartbeat -----
 
     /**
-     * Refresh {@code expires_at} and {@code last_heartbeat_at} on the Drive lock.
+     * Refresh the lock's expiry and heartbeat timestamps in the control file.
      * Called automatically by the heartbeat scheduler; exposed for tests and the
      * {@code /worldshare heartbeat} debug command.
      */
     public static void heartbeat() throws IOException {
-        final String folderId = heldLockFolderId;
-        final String fileId = heldLockFileId;
-        if (folderId == null || fileId == null) {
+        final RemoteFileSet remote = heldWorld;
+        if (remote == null) {
             return;
         }
 
-        final DriveClient client = CloudModule.driveClient();
-        // Re-read to preserve any fields we don't manage (e.g. relay_address, players_online)
-        // that may have been written by other modules (M4).
-        final SessionLock current;
-        try {
-            final String json = client.readText(fileId);
-            current = SessionLock.fromJson(json);
-        } catch (final IOException | JsonSyntaxException e) {
-            WorldShareMod.LOGGER.warn("Heartbeat: couldn't re-read lock file; skipping", e);
-            return;
-        }
+        // Set from inside the mutator when we discover the lock isn't ours any more.
+        // The mutator can't abort the write on its own, so it signals out instead and
+        // leaves the other player's lock untouched.
+        final AtomicBoolean lostIt = new AtomicBoolean(false);
+        final String[] stealer = new String[1];
 
-        // Safety: if the lock has been taken over by someone else while we thought we
-        // held it, don't clobber their lock. Log and stop the heartbeat.
-        if (!current.isOwnedBy(MachineId.get())) {
-            WorldShareMod.LOGGER.warn("Heartbeat: lock no longer owned by us "
-                    + "(current holder: {}). Stopping heartbeat.", current.holderName);
-            final String stealer = current.holderName != null ? current.holderName : "another player";
-            postChatMessage("§c[WorldShare] [!] Your session lock was overridden by " + stealer + ".");
+        ControlFileClient.update(remote.controlFileId, remote.bucketCount, control -> {
+            final SessionLock current = control.lockOrUnlocked();
+            if (!current.isOwnedBy(MachineId.get())) {
+                lostIt.set(true);
+                stealer[0] = current.holderName;
+                return; // leave control.lock exactly as read
+            }
+
+            final Instant now = Instant.now();
+            final Duration expiresAfter = Duration.ofMinutes(
+                    WorldShareConfig.get().lockExpiryMinutes.get());
+            current.lastHeartbeatAt = now.toString();
+            current.expiresAt = now.plus(expiresAfter).toString();
+            control.lock = current;
+        });
+
+        if (lostIt.get()) {
+            final String who = stealer[0] != null ? stealer[0] : "another player";
+            WorldShareMod.LOGGER.warn(
+                    "Heartbeat: lock no longer owned by us (current holder: {}). Stopping heartbeat.",
+                    who);
+            postChatMessage("§c[WorldShare] [!] Your session lock was overridden by " + who + ".");
             postChatMessage("§c Your changes from this point on will NOT be saved to Drive.");
             postChatMessage("§7 Save and quit to exit cleanly. Local files preserved.");
             stopHeartbeat();
-            heldLockFileId = null;
-            heldLockFolderId = null;
+            heldWorld = null;
             return;
         }
 
-        final Instant now = Instant.now();
-        final Duration expiresAfter = Duration.ofMinutes(
-                WorldShareConfig.get().lockExpiryMinutes.get());
-        current.lastHeartbeatAt = now.toString();
-        current.expiresAt = now.plus(expiresAfter).toString();
-
-        client.writeText(fileId, LOCK_FILENAME, folderId, current.toJson(),
-                DriveClient.MIME_TYPE_JSON);
-        WorldShareMod.LOGGER.debug("Heartbeat refreshed session.lock expires_at -> {}",
-                current.expiresAt);
+        WorldShareMod.LOGGER.debug("Heartbeat refreshed session lock in control file {}",
+                remote.controlFileId);
     }
 
     private static void startHeartbeat() {
@@ -390,7 +396,7 @@ public final class LockManager {
 
     /** Discrete states a lock can be in from our perspective. */
     public enum LockState {
-        /** No lock file exists. World is available. */
+        /** Nobody holds the lock. World is available. */
         FREE,
         /** Lock held by us and not expired. Normal case when we're playing. */
         HELD_BY_US,
@@ -405,7 +411,12 @@ public final class LockManager {
     /** Combined state + data, returned by {@link #readStatus}. */
     public static final class LockStatus {
         public final LockState state;
-        /** The parsed lock, or null if state is FREE. */
+        /**
+         * The parsed lock. Unlike the old two-file layout this is usually non-null
+         * even when the state is {@link LockState#FREE}, since "free" is now an
+         * explicit {@code unlocked} record rather than a missing file. It is still
+         * null for a world nobody has ever pushed to.
+         */
         public final SessionLock lock;
 
         LockStatus(final LockState state, final SessionLock lock) {

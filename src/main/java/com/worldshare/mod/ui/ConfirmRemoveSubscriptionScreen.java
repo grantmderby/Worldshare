@@ -84,7 +84,7 @@ public final class ConfirmRemoveSubscriptionScreen extends Screen {
     protected void renderBlurredBackground(final float partialTick) {}
 
     private void doRemove() {
-        final boolean ok = SubscriptionStore.get().unsubscribe(subscription.driveFolderId);
+        final boolean ok = SubscriptionStore.get().unsubscribe(subscription.controlFileId());
         if (ok) {
             WorldShareMod.LOGGER.info(
                     "ConfirmRemoveSubscription: removed '{}'", subscription.displayName);

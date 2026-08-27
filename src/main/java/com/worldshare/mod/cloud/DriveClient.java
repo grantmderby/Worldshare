@@ -16,6 +16,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
@@ -219,6 +220,41 @@ public final class DriveClient {
 
         final List<File> files = result.getFiles();
         return (files == null || files.isEmpty()) ? null : files.get(0).getId();
+    }
+
+    /**
+     * List the files directly inside a folder.
+     *
+     * <p>Under the {@code drive.file} scope this listing is filtered to what the
+     * app is actually allowed to see, which makes an empty result meaningful
+     * rather than exceptional: it means the user's grant doesn't reach this
+     * folder's contents. Callers must treat empty as data, not as failure.
+     *
+     * <p>Folders themselves are included; filter by {@link #MIME_TYPE_FOLDER} if
+     * that matters to the caller.
+     *
+     * @param folderId Drive folder ID to list
+     * @return the visible children, possibly empty, never null
+     */
+    public List<File> listFolderChildren(final String folderId) throws IOException {
+        final List<File> all = new ArrayList<>();
+        String pageToken = null;
+        do {
+            final FileList page = drive.files().list()
+                    .setQ("'" + folderId + "' in parents and trashed = false")
+                    .setFields("nextPageToken, files(id, name, mimeType, size)")
+                    .setPageSize(200)
+                    .setPageToken(pageToken)
+                    .execute();
+            final List<File> files = page.getFiles();
+            if (files != null) {
+                all.addAll(files);
+            }
+            pageToken = page.getNextPageToken();
+        } while (pageToken != null);
+
+        WorldShareMod.LOGGER.debug("Listed {} visible child(ren) of folder {}", all.size(), folderId);
+        return all;
     }
 
     /**

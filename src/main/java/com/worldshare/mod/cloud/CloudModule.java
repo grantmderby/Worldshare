@@ -124,6 +124,27 @@ public final class CloudModule {
     }
 
     /**
+     * Replace the cached DriveClient with one built on a freshly-issued credential.
+     *
+     * <p>Called after a Picker round trip. The credential itself may be equivalent
+     * to the cached one, but the <em>grants</em> behind it are not: the user has
+     * just handed the app files it previously couldn't see. Rebuilding here means
+     * the very next Drive call can reach them, instead of failing against a client
+     * created before the pick.
+     */
+    public static void refreshCredential(final Credential credential) throws IOException {
+        try {
+            final DriveClient rebuilt = DriveClient.fromCredential(credential);
+            synchronized (DRIVE_LOCK) {
+                driveClient = rebuilt;
+            }
+            WorldShareMod.LOGGER.debug("CloudModule: DriveClient rebuilt after Picker grant");
+        } catch (final GeneralSecurityException e) {
+            throw new IOException("Couldn't rebuild the Drive client after authorization", e);
+        }
+    }
+
+    /**
      * Drop the cached DriveClient. The next call to {@link #driveClient()} will
      * re-authenticate. Used when the user explicitly signs out or when we detect
      * a token has been revoked.

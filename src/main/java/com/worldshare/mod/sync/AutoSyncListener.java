@@ -1,6 +1,7 @@
 package com.worldshare.mod.sync;
 
 import com.worldshare.mod.WorldShareMod;
+import com.worldshare.mod.cloud.RemoteFileSet;
 import com.worldshare.mod.cloud.CloudModule;
 import com.worldshare.mod.cloud.LockManager;
 import com.worldshare.mod.config.WorldLink;
@@ -36,7 +37,13 @@ public final class AutoSyncListener {
     private static volatile Path capturedWorldRoot;
     private static volatile UUID capturedPlayerUuid;
     private static volatile String capturedWorldName;
-    private static volatile String capturedFolderId;
+    /**
+     * The world's Drive file set, captured while the server is still stopping.
+     *
+     * <p>Captured rather than re-read on {@code onServerStopped} because by then
+     * the world context is gone and the link file may no longer be resolvable.
+     */
+    private static volatile RemoteFileSet capturedRemote;
     private static volatile boolean serverHasStopped = false;
     private static volatile Object suppressionToken = null;
 
@@ -132,13 +139,13 @@ public final class AutoSyncListener {
             final Path worldRoot = levelDat.getParent();
             if (worldRoot == null) return;
 
-            // M5: Read Drive folder ID from the world's link file.
+            // Read the Drive file set from the world's own link file.
             final WorldLink link = WorldLink.read(worldRoot);
-            final String folderId = (link != null) ? link.driveFolderId : null;
+            final RemoteFileSet remote = (link != null) ? link.remote : null;
 
-            if (folderId == null) {
+            if (remote == null) {
                 WorldShareMod.LOGGER.debug(
-                        "AutoSync: no WorldLink for '{}'; auto-push disabled for this world",
+                        "AutoSync: no usable WorldLink for '{}'; auto-push disabled for this world",
                         worldRoot.getFileName());
             }
 
@@ -160,14 +167,14 @@ public final class AutoSyncListener {
 
             capturedWorldRoot = worldRoot;
             capturedPlayerUuid = uuid;
-            capturedFolderId = folderId;
+            capturedRemote = remote;
             capturedWorldName = worldRoot.getFileName() == null
                     ? "(unnamed)" : worldRoot.getFileName().toString();
 
             WorldShareMod.LOGGER.info(
-                    "AutoSync: captured world path on ServerStopping: {} (uuid={}, folderId={})",
+                    "AutoSync: captured world path on ServerStopping: {} (uuid={}, world={})",
                     worldRoot, uuid,
-                    folderId != null ? folderId.substring(0, Math.min(8, folderId.length())) + "..." : "none");
+                    remote != null ? remote.controlFileId : "not set up");
 
         } catch (final Throwable t) {
             WorldShareMod.LOGGER.warn("AutoSync onServerStopping failed", t);
@@ -182,11 +189,11 @@ public final class AutoSyncListener {
         final Path worldRoot = capturedWorldRoot;
         final UUID uuid = capturedPlayerUuid;
         final String worldName = capturedWorldName;
-        final String folderId = capturedFolderId;
+        final RemoteFileSet remote = capturedRemote;
         capturedWorldRoot = null;
         capturedPlayerUuid = null;
         capturedWorldName = null;
-        capturedFolderId = null;
+        capturedRemote = null;
 
         if (worldRoot == null) return;
 
@@ -197,9 +204,9 @@ public final class AutoSyncListener {
             return;
         }
 
-        if (folderId == null) {
+        if (remote == null) {
             WorldShareMod.LOGGER.debug(
-                    "AutoSync: no folder ID for '{}'; skipping auto-push", worldName);
+                    "AutoSync: '{}' isn't set up for sharing; skipping auto-push", worldName);
             return;
         }
 
@@ -222,15 +229,15 @@ public final class AutoSyncListener {
         CloudModule.executor().submit(() -> {
             try {
                 final SyncEngine.PushResult result = SyncEngine.push(
-                        worldRoot, folderId, uuid, /*baseline*/ null);
+                        worldRoot, remote, uuid, /*baseline*/ null);
                 if (result.failed == 0) {
                     WorldShareMod.LOGGER.info(
                             "AutoSync: push complete for '{}': {} files, {} bytes",
                             worldName, result.uploaded, result.bytes);
                     // M7: refresh modpack.json if mod list changed.
                     try {
-                        com.worldshare.mod.modmanager.ModManagerModule.generateAndUpload(folderId);
-                        WorldShareMod.LOGGER.info("AutoSync: modpack.json refreshed");
+                        com.worldshare.mod.modmanager.ModManagerModule.generateAndUpload(remote);
+                        WorldShareMod.LOGGER.info("AutoSync: modpack refreshed");
                     } catch (final Throwable modErr) {
                         WorldShareMod.LOGGER.warn(
                                 "AutoSync: modpack refresh failed (non-fatal): {}", modErr.getMessage());

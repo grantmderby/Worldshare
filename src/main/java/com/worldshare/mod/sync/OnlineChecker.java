@@ -1,6 +1,7 @@
 package com.worldshare.mod.sync;
 
 import com.worldshare.mod.WorldShareMod;
+import com.worldshare.mod.cloud.RemoteFileSet;
 import com.worldshare.mod.cloud.CloudModule;
 import com.worldshare.mod.cloud.DriveClient;
 
@@ -27,27 +28,30 @@ public final class OnlineChecker {
     /**
      * Test whether Drive is reachable for sync operations.
      *
-     * <p>Performs a single lightweight call (read the configured folder's
-     * metadata) with a short timeout. Returns one of three results:
+     * <p>Performs a single lightweight call (read the control file's metadata)
+     * with a short timeout. Returns one of three results:
      * <ul>
      *   <li>ONLINE — Drive is reachable and we can read the folder</li>
      *   <li>OFFLINE — Network or Drive is unreachable</li>
      *   <li>NOT_AUTHENTICATED — Drive is reachable but we don't have credentials yet</li>
      * </ul>
      *
-     * @param folderId the configured Drive folder ID, used as the test target
+     * @param remote the world's Drive file set; its control file is the probe
+     *               target, since under the {@code drive.file} scope that is
+     *               something we are guaranteed to have access to, whereas the
+     *               containing folder usually isn't
      * @return the result, never null
      */
-    public static Result check(final String folderId) {
-        if (folderId == null || folderId.isBlank()) {
-            return Result.OFFLINE;  // can't even attempt without a folder
+    public static Result check(final RemoteFileSet remote) {
+        if (remote == null || remote.controlFileId == null || remote.controlFileId.isBlank()) {
+            return Result.OFFLINE;  // can't even attempt without a target
         }
 
         final CompletableFuture<Result> future = new CompletableFuture<>();
         CloudModule.executor().submit(() -> {
             try {
                 final DriveClient client = CloudModule.driveClient();
-                final var meta = client.getFileMeta(folderId);
+                final var meta = client.getFileMeta(remote.controlFileId);
                 if (meta == null) {
                     future.complete(Result.OFFLINE);
                 } else {
