@@ -36,8 +36,8 @@ that conclusion was reached and what was tested.
 - The public site must be live first, because the consent screen requires working
   URLs. It deploys from `docs/site/` via `.github/workflows/pages.yml` on any push
   to `main` that touches those files. Confirm both pages load before continuing:
-  - Homepage: `https://grantmderby.github.io/worldshare/`
-  - Privacy policy: `https://grantmderby.github.io/worldshare/privacy.html`
+  - Homepage: `https://grantmderby.github.io/Worldshare/`
+  - Privacy policy: `https://grantmderby.github.io/Worldshare/privacy.html`
 
 ### 2. Verify domain ownership
 
@@ -70,8 +70,8 @@ Google requires you to own every domain used on the consent screen.
 | App name | `WorldShare` |
 | User support email | your Google account address |
 | App logo | the mod icon, 120×120 PNG (see *Outstanding* below) |
-| Application home page | `https://grantmderby.github.io/worldshare/` |
-| Application privacy policy | `https://grantmderby.github.io/worldshare/privacy.html` |
+| Application home page | `https://grantmderby.github.io/Worldshare/` |
+| Application privacy policy | `https://grantmderby.github.io/Worldshare/privacy.html` |
 | Application terms of service | leave blank — not required |
 | Authorised domains | `grantmderby.github.io` |
 | Developer contact | your Google account address |
