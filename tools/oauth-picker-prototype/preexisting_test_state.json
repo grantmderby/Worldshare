@@ -1,0 +1,19 @@
+{
+  "folder_id": "1W9Odyvw2mnkThb3S3iZ8IJj1yj5qEuC6",
+  "folder_name": "WorldShare preexisting test",
+  "created_by": "accountA",
+  "files": [
+    {
+      "id": "1kU-YDufGgKJ_WPmexyYhdgbEAe-kYap4",
+      "name": "worldshare-control.json"
+    },
+    {
+      "id": "1ufpTI_eGmWrK5LSNPCaN2G3xK-Rqdy1_",
+      "name": "worldshare-bucket_00.zip"
+    },
+    {
+      "id": "1tcKYm6xLYouMuWzy-q-y96McHYj-MDA1",
+      "name": "worldshare-bucket_01.zip"
+    }
+  ]
+}

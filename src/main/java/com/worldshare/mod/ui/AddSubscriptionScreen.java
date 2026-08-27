@@ -84,25 +84,32 @@ public final class AddSubscriptionScreen extends Screen {
                         .withStyle(ChatFormatting.GRAY),
                 cx, midY - 36, 0xAAAAAA);
 
+        // Be blunt about opening the folder and selecting its contents. Picking the
+        // folder itself is the intuitive move and grants nothing at all, so wording
+        // this as "the folder or its files" would send people down the failing path.
         g.drawCenteredString(this.font,
-                Component.literal("Google will ask you to choose files. Select the shared")
+                Component.literal("Google will ask you to choose files. Open the shared")
                         .withStyle(ChatFormatting.GRAY),
                 cx, midY - 14, 0xAAAAAA);
         g.drawCenteredString(this.font,
-                Component.literal("folder, or every worldshare-* file inside it.")
+                Component.literal("folder and select every worldshare-* file inside it.")
                         .withStyle(ChatFormatting.GRAY),
                 cx, midY - 2, 0xAAAAAA);
+        g.drawCenteredString(this.font,
+                Component.literal("Selecting the folder itself will not work.")
+                        .withStyle(ChatFormatting.YELLOW),
+                cx, midY + 10, 0xFFFF55);
 
         if (statusMessage != null) {
             g.drawCenteredString(this.font,
                     Component.literal(statusMessage)
                             .withStyle(statusIsError ? ChatFormatting.RED : ChatFormatting.GREEN),
-                    cx, midY + 12, statusIsError ? 0xFF5555 : 0x55FF55);
+                    cx, midY + 84, statusIsError ? 0xFF5555 : 0x55FF55);
         } else if (working) {
             g.drawCenteredString(this.font,
                     Component.literal("Waiting for you to finish in your browser...")
                             .withStyle(ChatFormatting.YELLOW),
-                    cx, midY + 12, 0xFFFF55);
+                    cx, midY + 84, 0xFFFF55);
         }
     }
 

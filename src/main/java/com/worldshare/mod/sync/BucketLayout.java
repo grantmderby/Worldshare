@@ -40,15 +40,23 @@ public final class BucketLayout {
      *
      * <p>This is a tuning knob with real tension on both sides: too few buckets
      * and each one is large, so a one-chunk edit re-uploads a big archive; too
-     * many and setup becomes a wall of files to pick, plus more API calls per
-     * sync. Sixteen keeps the Picker screen manageable while giving a typical
-     * "played in one area for an evening" session a good chance of touching only
-     * one or two archives.
+     * many and the joining player has more files to hand-pick during setup, plus
+     * more API calls per sync.
+     *
+     * <p><b>Eight, not sixteen, and the reason is measured rather than guessed.</b>
+     * Testing established that a Picker folder grant conveys no access to the
+     * folder's contents - not to files added afterwards, and not even to files
+     * already sitting in it when it was picked (the folder itself resolves, a
+     * listing returns nothing, and every child 404s). So there is no "just pick
+     * the folder" shortcut: a joining player must select every remote file by
+     * hand, and the count of those is {@code bucketCount + 2}. Eight keeps that
+     * to ten selections. See {@code tools/oauth-picker-prototype/preexisting_folder_test.py}
+     * for the test and {@code docs/CLOUD_BACKEND_DECISION.md} for the write-up.
      *
      * <p>Changing this value does not migrate existing worlds - the count is
      * frozen per world at setup time and carried in the control file.
      */
-    public static final int DEFAULT_BUCKET_COUNT = 16;
+    public static final int DEFAULT_BUCKET_COUNT = 8;
 
     /** Lower bound on bucket count. One bucket is legal - it means "one big archive". */
     public static final int MIN_BUCKET_COUNT = 1;

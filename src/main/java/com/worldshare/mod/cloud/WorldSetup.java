@@ -28,7 +28,10 @@ import java.util.function.Consumer;
  *       by that app for that user, so the creator never has to pick them
  *       individually.</li>
  *   <li>{@link #joinExistingWorld} - the player being invited. The files already
- *       exist, created by someone else, so they must come through the Picker.</li>
+ *       exist, created by someone else, so every one of them must be selected
+ *       individually in the Picker. Selecting the containing folder does not
+ *       work: testing showed a folder grant conveys no access to its contents,
+ *       even for files that were already inside it when it was picked.</li>
  * </ul>
  *
  * <p><b>Why the files are created empty.</b> A placeholder can be picked, and a
@@ -132,14 +135,16 @@ public final class WorldSetup {
     /**
      * Adopt an existing shared world by picking its files.
      *
-     * <p>Handles both shapes the Picker might return, so it works whether or not a
-     * folder grant reaches the files already inside it:
-     * <ul>
-     *   <li>a set of individual file IDs - matched to slots by filename</li>
-     *   <li>a folder ID - listed, and its visible children matched the same way</li>
-     * </ul>
-     * Anything unrecognised is ignored rather than treated as an error: a user who
-     * shift-selects a stray file in the shared folder should not have setup fail.
+     * <p>The player has to select every remote file individually. Picking the
+     * folder instead is the obvious thing to try and it silently yields nothing -
+     * a folder grant reaches neither files added later nor files already inside it -
+     * so that case is detected and called out specifically rather than surfacing as
+     * a bare "files missing".
+     *
+     * <p>A folder that comes back is still listed, on the chance the user selected
+     * both it and its contents. Anything unrecognised is ignored rather than
+     * treated as an error: shift-selecting a stray file in the shared folder should
+     * not fail setup.
      *
      * <p>The joiner does not need to be told the world's bucket count in advance.
      * That number lives in the control file, which can't be read until the control
@@ -166,6 +171,7 @@ public final class WorldSetup {
         final DriveClient client = CloudModule.driveClient();
 
         final Map<String, String> nameToId = new LinkedHashMap<>();
+        boolean pickedAnyFolder = false;
         for (final String pickedId : auth.pickedFileIds()) {
             final File meta = client.getFileMeta(pickedId);
             if (meta == null) {
@@ -174,10 +180,10 @@ public final class WorldSetup {
             }
 
             if (DriveClient.MIME_TYPE_FOLDER.equals(meta.getMimeType())) {
-                // A folder came back. Whether its existing contents are actually
-                // reachable is exactly what tools/oauth-picker-prototype tests; if
-                // they aren't, this listing simply comes back empty and we fall
-                // through to whatever individual files were also picked.
+                // Expected to come back empty - a folder grant doesn't reach the
+                // folder's contents - but list it anyway in case the user selected
+                // the folder *and* the files inside it.
+                pickedAnyFolder = true;
                 final Map<String, String> children = listChildren(client, pickedId);
                 WorldShareMod.LOGGER.info(
                         "join: picked folder '{}' exposes {} file(s)", meta.getName(), children.size());
@@ -185,6 +191,15 @@ public final class WorldSetup {
             } else {
                 nameToId.put(meta.getName(), pickedId);
             }
+        }
+
+        if (nameToId.isEmpty() && pickedAnyFolder) {
+            // By far the most likely way this goes wrong, and the least obvious to
+            // diagnose from a generic "nothing matched" message.
+            throw new IOException(
+                    "You selected the folder itself, which doesn't grant access to what's "
+                            + "inside it. Re-run this, open the shared folder in the picker, "
+                            + "and select all the worldshare-* files within it.");
         }
 
         // First pass at the default layout, purely to locate the control file among
@@ -195,8 +210,8 @@ public final class WorldSetup {
         if (remote.controlFileId == null) {
             throw new IOException(
                     "Couldn't find " + BucketLayout.CONTROL_FILENAME + " in what you picked. "
-                            + "Make sure you selected the shared world's folder (or all of its "
-                            + "worldshare-* files) and try again.");
+                            + "Open the shared folder in the picker and select all of its "
+                            + "worldshare-* files, then try again.");
         }
 
         // Now the authoritative bucket count is readable. Re-match against it, so a
