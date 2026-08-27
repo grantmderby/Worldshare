@@ -78,16 +78,18 @@ Run `/worldshare setup` **again** in the same world.
 **Log check:** `push: N changed file(s) dirty M of 8 bucket(s)` then
 `commitControl: published manifest with N entries`.
 
-> **Watch for:** all 8 buckets dirty on a *second* push after a small change. One
-> or two is the expected figure — that's the entire benefit of bucketing, and if
-> every push rewrites everything, the bucket assignment or the dirty-tracking is
-> not working.
+> **Watch for:** all 8 buckets dirty on a *second* push after a small change.
+> **Two** is the expected figure — bucket 0 (the hot bucket, holding `level.dat`,
+> playerdata, stats and `data/`, which Minecraft rewrites every session) plus the
+> one region bucket covering wherever you played. If every push rewrites
+> everything, the bucket assignment or the dirty-tracking is not working.
 
 ### 2.7 — Incremental push
 
 Play a little more in **one area**, then `/worldshare push` again.
 
-- **Expect:** log reports only 1–2 dirty buckets, not 8.
+- **Expect:** log reports 2 dirty buckets (hot + one region), not 8. Three is fine
+  if you crossed a region boundary.
 - Note the reported MB. This is the number that decides whether 8 buckets is the
   right default — report it back either way.
 

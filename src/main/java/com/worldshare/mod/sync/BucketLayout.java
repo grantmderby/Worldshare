@@ -32,6 +32,11 @@ import java.util.regex.Pattern;
  * almost always change together. Hashing on the region coordinates rather than
  * the full path lands all three in one bucket, so a session spent in a single
  * corner of the map dirties one bucket instead of three.
+ *
+ * <p><b>The hot bucket.</b> Bucket {@value #HOT_BUCKET} is reserved for everything
+ * that isn't a region file, because those files change every session regardless of
+ * where the player went. See {@link #HOT_BUCKET} for what happened when they were
+ * hashed like everything else.
  */
 public final class BucketLayout {
 
@@ -42,6 +47,9 @@ public final class BucketLayout {
      * and each one is large, so a one-chunk edit re-uploads a big archive; too
      * many and the joining player has more files to hand-pick during setup, plus
      * more API calls per sync.
+     *
+     * <p>Note that one of these is the reserved {@link #HOT_BUCKET}, so eight
+     * buckets means seven region buckets plus one for everything else.
      *
      * <p><b>Eight, not sixteen, and the reason is measured rather than guessed.</b>
      * Testing established that a Picker folder grant conveys no access to the
@@ -95,6 +103,26 @@ public final class BucketLayout {
     public static final String BUCKET_SUFFIX = ".zip";
 
     /**
+     * The bucket holding every file that isn't a region file.
+     *
+     * <p><b>Why this is reserved rather than hashed like everything else.</b>
+     * Minecraft rewrites a handful of small files on essentially every session no
+     * matter what the player did - {@code level.dat}, playerdata, stats,
+     * advancements, {@code data/*.dat}. Hashing those by path scattered them across
+     * the layout, and measurement showed the consequence: ten such files dirtied
+     * <em>six of eight</em> buckets before the player had moved a single block.
+     * Each one then dragged its bucket's worth of region files across the network
+     * with it, so nearly every push re-uploaded nearly the whole world and
+     * bucketing bought almost nothing.
+     *
+     * <p>Putting them together in one reserved bucket means a session dirties this
+     * bucket - which is tiny, a few hundred kilobytes against a world's tens or
+     * hundreds of megabytes - plus only the region buckets the player actually
+     * visited. That is the behaviour the whole design is for.
+     */
+    public static final int HOT_BUCKET = 0;
+
+    /**
      * Matches Minecraft's region-file naming, {@code r.<x>.<z>.mca}, anywhere in
      * the path. Also covers {@code .mcr} for ancient worlds and {@code .mcc}
      * oversized-chunk spill files, which follow the same convention.
@@ -137,23 +165,33 @@ public final class BucketLayout {
     public int indexFor(final String relPath) {
         if (relPath == null || relPath.isEmpty()) {
             // Defensive: a blank path is a caller bug, but silently corrupting the
-            // world is worse than dumping it deterministically into bucket 0.
-            return 0;
+            // world is worse than dumping it deterministically into one bucket.
+            return HOT_BUCKET;
         }
 
         final String normalized = relPath.replace('\\', '/').toLowerCase(Locale.ROOT);
 
         final Matcher region = REGION_FILE.matcher(normalized);
-        final long hash;
-        if (region.find()) {
-            // Group region/entities/poi views of the same map square together.
-            hash = regionHash(Long.parseLong(region.group(1)), Long.parseLong(region.group(2)));
-        } else {
-            hash = fnv1a(normalized);
+        if (!region.find()) {
+            // Not a region file: it goes in the hot bucket. See HOT_BUCKET.
+            return HOT_BUCKET;
+        }
+
+        // A region file. Group the region/entities/poi views of one map square
+        // together by hashing the coordinates rather than the path.
+        final long hash = regionHash(
+                Long.parseLong(region.group(1)), Long.parseLong(region.group(2)));
+
+        // One bucket is reserved, so region files spread across the remaining
+        // bucketCount-1. With bucketCount == 1 there is nothing to spread across
+        // and everything shares the single archive.
+        final int regionBuckets = bucketCount - 1;
+        if (regionBuckets <= 0) {
+            return HOT_BUCKET;
         }
 
         // Math.floorMod, not %, so a negative hash can't produce a negative index.
-        return (int) Math.floorMod(hash, (long) bucketCount);
+        return HOT_BUCKET + 1 + (int) Math.floorMod(hash, (long) regionBuckets);
     }
 
     /** Remote filename for a bucket index, e.g. {@code worldshare-bucket_03.zip}. */
