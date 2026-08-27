@@ -648,6 +648,16 @@ public final class WorldShareCommands {
                     ChatFormatting.RED);
             return 0;
         }
+        if (!E4mcCoordinator.isAvailable()) {
+            sendFeedback(source,
+                    "Live co-op needs the e4mc mod, which isn't installed.",
+                    ChatFormatting.RED);
+            sendFeedback(source,
+                    "Install it from modrinth.com/mod/e4mc and restart. "
+                    + "Drive sync works fine without it.",
+                    ChatFormatting.GRAY);
+            return 0;
+        }
         sendFeedback(source,
                 "Opening world to LAN via e4mc... waiting for relay domain.",
                 ChatFormatting.GREEN);

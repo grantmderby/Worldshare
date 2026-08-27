@@ -76,7 +76,38 @@ public final class E4mcCoordinator {
 
     // ---- Host API ----
 
+    /**
+     * Whether the e4mc mod is actually installed.
+     *
+     * <p>e4mc is an optional dependency: WorldShare's Drive sync, session locking
+     * and push/pull all work without it, and only live co-op needs a relay. There
+     * is no compile-time coupling either - this class discovers the relay domain
+     * by watching e4mc's log output, never by calling into it - so its absence
+     * can't be detected by a missing class. It has to be asked about directly.
+     *
+     * <p>Without this check the failure is silent and confusing: hosting starts,
+     * waits for a domain that will never be logged, and simply never reports
+     * anything.
+     */
+    public static boolean isAvailable() {
+        try {
+            return net.neoforged.fml.ModList.get().isLoaded("e4mc");
+        } catch (final Throwable t) {
+            // ModList isn't available in every context (early startup, tests).
+            // Assume absent - a false negative costs a clear message, a false
+            // positive costs an unexplained hang.
+            WorldShareMod.LOGGER.debug("E4mcCoordinator: couldn't query ModList: {}", t.getMessage());
+            return false;
+        }
+    }
+
     public static void startHosting() {
+        if (!isAvailable()) {
+            WorldShareMod.LOGGER.warn(
+                    "E4mcCoordinator: startHosting() - e4mc is not installed; "
+                            + "live co-op is unavailable. Drive sync is unaffected.");
+            return;
+        }
         if (isHosting) {
             WorldShareMod.LOGGER.warn("E4mcCoordinator: startHosting() called but already hosting");
             return;
