@@ -11,6 +11,9 @@ displayName="${mod_name}"
 authors="${mod_authors}"
 description='''${mod_description}'''
 credits="Built with NeoForge MDK"
+# Shown in the in-game mod list. Must sit at the jar root, hence
+# src/main/resources/icon.png rather than under assets/.
+logoFile="icon.png"
 
 # ----- Dependencies -----
 

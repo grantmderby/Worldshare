@@ -1,8 +1,18 @@
 # Player data under the bucket redesign: an audit
 
-*Written 2026-08-27, before any fixes. Question asked: did the move from per-file
-sync to bucket archives break the player-inventory handling, and does the design
-hold up beyond two players? Findings only — the fix plan is a separate decision.*
+*Written 2026-08-27. Question asked: did the move from per-file sync to bucket
+archives break the player-inventory handling, and does the design hold up beyond
+two players?*
+
+> **Status: all findings resolved in `2aa58fb`.** One correction to what follows,
+> made while planning the fixes: section 3 framed a stale-lock override as a
+> routine hazard, and it isn't. The lock expires only after 24 hours of no
+> heartbeat (raised from 8 in the same commit), the heartbeat runs every 15
+> minutes, overriding is gated behind a screen that already states what it costs
+> the other player, and with e4mc installed two players online at once join the
+> same live session rather than contending. The real defect was narrower and is
+> stated in section 4: push did its destructive work *before* checking the lock.
+> Fixing that closes the section 3 scenario too.*
 
 ## Summary
 
@@ -15,14 +25,14 @@ because of where player data now lives.
 
 Ordered by how much they should worry you:
 
-| # | Finding | Severity | New with buckets? |
-|---|---|---|---|
-| A | A dirty bucket republishes *every* file in it from local disk, including other players' inventories | **High** | **Yes** |
-| B | Uploads happen before the lock check, so a lost lock leaves archives and manifest disagreeing | **High** | Semantics much worse |
-| C | Nothing verifies extracted content against the manifest hash | Medium | Blast radius bigger |
-| D | `level.dat_old` syncs but never gets its Player tag stripped | Medium | No — pre-existing |
-| E | `ownPlayerUuid` is threaded through three layers and never read | Low | No — pre-existing |
-| F | Contention, not correctness, is what limits player count | Low | No |
+| # | Finding | Severity | New with buckets? | Fixed |
+|---|---|---|---|---|
+| A | A dirty bucket republishes *every* file in it from local disk, including other players' inventories | **High** | **Yes** | push refuses, naming the files |
+| B | Uploads happen before the lock check, so a lost lock leaves archives and manifest disagreeing | **High** | Semantics much worse | lock read from Drive before uploading |
+| C | Nothing verifies extracted content against the manifest hash | Medium | Blast radius bigger | pull verifies every extracted file |
+| D | `level.dat_old` syncs but never gets its Player tag stripped | Medium | No — pre-existing | both files stripped |
+| E | `ownPlayerUuid` is threaded through three layers and never read | Low | No — pre-existing | parameter removed |
+| F | Contention, not correctness, is what limits player count | Low | No | expiry raised to 24h |
 
 ---
 
@@ -205,16 +215,27 @@ Worth recording alongside the risks:
 
 ---
 
-## Candidate directions, not yet decided
+## What was done
 
-Sketched for the fix discussion; none implemented.
+All in `2aa58fb`:
 
-1. **Never repack a file you don't have the current version of.** Before packing
-   a dirty bucket, compare each member against the remote manifest; if a member
-   differs from remote and is *not* something this session changed, the local copy
-   is stale — fetch it first, or refuse the push. Directly targets Finding A.
-2. **Check the lock before uploading, not just before committing.** Cheap, and
-   removes the main way archives and manifest diverge.
-3. **Verify hashes on extract.** Turns silent divergence into a clear error.
-4. **Strip `level.dat_old` too**, or stop syncing it.
-5. **Delete the dead parameter** and correct the javadoc that describes it.
+1. **Push verifies the lock against Drive before uploading**, not just before
+   committing, and reads it rather than trusting the cached `weHoldLock()` flag
+   that only the 15-minute heartbeat refreshes. This is the fix; the rest is
+   defence in depth.
+2. **Push refuses if a dirty bucket holds a file that differs from the remote
+   manifest and wasn't changed this session**, naming the files. Should never fire
+   with (1) in place — it exists for states where something already went wrong,
+   like a pull that failed partway.
+3. **Pull verifies every extracted file against the manifest hash**, so a
+   manifest/archive divergence fails loudly instead of writing wrong bytes.
+4. **`level.dat_old` is stripped alongside `level.dat`.**
+5. **The dead parameter is gone**, along with the javadoc claiming it filtered.
+6. **The `baseline` branch was removed** — not in the original findings, spotted
+   while fixing. It skipped an upload and adopted the remote manifest entry, which
+   is right for per-file sync and wrong under buckets, where the file is repacked
+   from local disk regardless and the two then disagree. Inert (every caller
+   passed null) but a trap for whoever enabled it.
+7. **Lock expiry raised from 8 to 24 hours**, so someone who loses power has a day
+   to get back and upload. Only affects fresh installs — an existing
+   `worldshare-client.toml` keeps its old value and needs editing by hand.

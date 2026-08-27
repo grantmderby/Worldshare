@@ -177,6 +177,39 @@ A saves and quits. B opens it.
 
 ---
 
+## Phase 5.5 — The guards added after the player-data audit
+
+These are error paths, so they never run in a happy-path test. Both were added in
+`2aa58fb` and neither has been exercised in-game.
+
+### 5.5a — a normal push still works (the regression risk)
+
+Before anything else: after Phase 4, confirm an ordinary pull → play → save & quit
+cycle still pushes cleanly. The stale-push refusal is new, and the thing to rule
+out is it firing when it shouldn't. **If a normal push starts refusing, stop and
+report it** — that's worse than the bug it guards against.
+
+### 5.5b — push refuses once the lock is no longer yours
+
+1. Set `lockExpiryMinutes = 1` in `run/config/worldshare-client.toml` on both
+   installs, so a lock goes stale in a minute instead of a day.
+2. As A, open the world via Contributor Worlds and stay in it.
+3. Wait for the lock to go stale, then as B open the same world and accept the
+   override prompt. Play briefly and save & quit, so B's data is current on Drive.
+4. Back as A, still in-world, save & quit.
+
+- **Expect:** A's push aborts with *"This world's session lock is no longer yours
+  (B holds it now)…"* — and crucially, **before uploading anything**. Watch the log
+  for the absence of any `push: worldshare-bucket_NN.zip` upload lines.
+- **Then confirm B's data survived:** reopen as B and check their inventory and
+  anything they built. This is the whole point of the fix.
+- **Reset `lockExpiryMinutes` to 1440 afterwards on both installs.**
+
+> Before the fix, A's push would have uploaded bucket 0 — containing A's hours-old
+> copy of B's inventory — and only then noticed the lock was gone, leaving B's
+> work overwritten and the manifest describing contents the archives no longer
+> had.
+
 ## Phase 6 — Failure modes worth provoking
 
 Each of these is a path that will happen in real use and has never been exercised.
@@ -188,6 +221,10 @@ Each of these is a path that will happen in real use and has never been exercise
 - **Lock takeover.** With A holding the lock, force B to override a stale lock
   (or wait out the expiry). Expect A to get the chat warning that their session
   was overridden and that changes won't sync.
+- **Corrupted archive.** Download a bucket zip from Drive, alter a byte, re-upload
+  it, and pull. Expect a refusal naming the file — *"came out of
+  worldshare-bucket_NN.zip with different content than the world's manifest
+  describes"* — rather than the bad bytes silently landing in the world.
 - **Bucket-count mismatch.** Hand-edit `bucketCount` in `worldshare-control.json`
   to `4` and try to sync. Expect a refusal naming the mismatch — **not** a
   best-effort sync. This guard exists because proceeding corrupts the world
