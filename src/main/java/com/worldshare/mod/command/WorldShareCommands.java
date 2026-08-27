@@ -47,6 +47,12 @@ import java.time.Instant;
  * <p>Subcommands by milestone:
  * <ul>
  *   <li>M1: {@code test}, {@code signout}</li>
+ * <p>There is deliberately no {@code pull} command. Pulling rewrites world files
+ * underneath whatever has them open, and the command could only ever run with a
+ * world loaded - so its only reachable use was the unsafe one. It previously
+ * warned that it might corrupt the world and then did it anyway. Pulling happens
+ * through the Contributor Worlds screen, which pulls before the world is opened.
+ *
  *   <li>M2: {@code setDriveLink}, {@code clearDriveLink}, {@code lock}, {@code unlock},
  *       {@code lockinfo}, {@code heartbeat}</li>
  *   <li>M3: {@code push}, {@code pull}, {@code status}</li>
@@ -95,8 +101,6 @@ public final class WorldShareCommands {
                                 .executes(ctx -> runStatus(ctx.getSource())))
                         .then(Commands.literal("push")
                                 .executes(ctx -> runPush(ctx.getSource())))
-                        .then(Commands.literal("pull")
-                                .executes(ctx -> runPull(ctx.getSource())))
                         .then(Commands.literal("invite")
                                 .executes(ctx -> runInvite(ctx.getSource())))
                         .then(Commands.literal("modpack")
@@ -599,37 +603,6 @@ public final class WorldShareCommands {
                 sendClientMessage("§c[WorldShare] Sync error: " + error.getMessage());
             }
         };
-    }
-
-    private static int runPull(final CommandSourceStack source) {
-        final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
-        if (ctx.isEmpty()) {
-            sendFeedback(source, "No world loaded.", ChatFormatting.RED);
-            return 0;
-        }
-        final WorldContext.CurrentWorld world = ctx.get();
-        final RemoteFileSet remote = requireRemoteForCurrentWorld(source);
-        if (remote == null) return 0;
-
-        sendFeedback(source,
-                "WARNING: Pulling while a world is loaded may corrupt it. "
-                + "Save and Quit first.",
-                ChatFormatting.RED);
-        CloudModule.executor().submit(() -> {
-            try {
-                final SyncEngine.PullResult result =
-                        SyncEngine.pull(world.worldRoot, remote, world.playerUuid);
-                sendClientMessage("§a[WorldShare] Pull complete:");
-                sendClientMessage("§a  downloaded: " + result.downloaded + " files");
-                sendClientMessage("§7  failed: " + result.failed);
-                sendClientMessage("§7  bytes: " + result.bytes
-                        + " (" + (result.bytes / (1024 * 1024)) + " MB)");
-            } catch (final Throwable t) {
-                WorldShareMod.LOGGER.error("pull failed", t);
-                sendClientMessage("§c[WorldShare] pull failed: " + t.getMessage());
-            }
-        });
-        return Command.SINGLE_SUCCESS;
     }
 
     // ----- M4 -----

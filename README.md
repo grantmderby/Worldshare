@@ -115,12 +115,15 @@ Worlds set up with WorldShare should be loaded from the singleplayer tab only fo
 | `/worldshare unlock` | Release the session lock |
 | `/worldshare lockinfo` | Show current lock state |
 | `/worldshare push` | Manually push to Drive |
-| `/worldshare pull` | Manually pull from Drive (warning: do this from the title screen, not in-game) |
 | `/worldshare status` | Show what would be synced |
 | `/worldshare invite` | Open the world to LAN via e4mc (auto-runs when you hold the lock) |
 | `/worldshare modpack generate` | Regenerate `modpack.json` (also auto-runs on every upload) |
 | `/worldshare test` | Verify Drive auth is working |
 | `/worldshare signout` | Sign out of Google |
+
+> **Why there's no `pull` command.** Pulling rewrites world files underneath
+> whatever has them open, so it's only safe before a world loads. Open the world
+> from the **Contributor Worlds** tab instead — that pulls first, then opens.
 
 ## How it works (briefly)
 
