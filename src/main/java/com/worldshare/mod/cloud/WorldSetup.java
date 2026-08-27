@@ -65,6 +65,11 @@ public final class WorldSetup {
      * user picks becomes the home of the fixed file set. Nothing outside that
      * folder is ever touched.
      *
+     * <p>If the chosen folder already holds a WorldShare world that this user
+     * created, it is adopted rather than duplicated - so this doubles as the
+     * recovery path for a creator who lost their local link file, and they get
+     * their world back by picking one folder rather than ten files.
+     *
      * @param urlPresenter how to show the user the authorization URL
      * @param bucketCount  how many bucket archives to create; frozen for this
      *                     world's lifetime
@@ -78,8 +83,6 @@ public final class WorldSetup {
                                                final int bucketCount,
                                                final String worldName)
             throws IOException, GeneralSecurityException {
-        final BucketLayout layout = new BucketLayout(bucketCount);
-
         final PickerAuthResult auth =
                 OAuthHelper.authorizeWithPicker(urlPresenter, false, true);
         if (!auth.hasPicks()) {
@@ -102,22 +105,61 @@ public final class WorldSetup {
                             + "Re-run setup and choose a folder to keep this world in.");
         }
 
-        WorldShareMod.LOGGER.info("Setting up world '{}' in Drive folder '{}' ({}), {} buckets",
-                worldName, folderMeta.getName(), folderId, bucketCount);
+        WorldShareMod.LOGGER.info("Setting up world '{}' in Drive folder '{}' ({})",
+                worldName, folderMeta.getName(), folderId);
 
-        final RemoteFileSet remote = RemoteFileSet.empty(bucketCount);
+        // Adopt anything already in the folder before creating anything new.
+        //
+        // This is not an optimisation, it prevents data loss. A folder grant lets us
+        // list the files *this app created for this user*, which means a returning
+        // creator - reinstalled Minecraft, lost worldshare-link.json - shows up here
+        // with their real world sitting in the folder. Creating blindly would mint a
+        // second set of identically-named files, bind the mod to the new empty ones,
+        // and orphan the world without any error the player would notice.
+        //
+        // A joining player sees an empty listing here instead, because they never
+        // created these files; they go through joinExistingWorld and pick each file.
+        final Map<String, String> existing = listChildren(client, folderId);
+
+        final RemoteFileSet remote;
+        if (existing.containsKey(BucketLayout.CONTROL_FILENAME)) {
+            // The bucket count is whatever the existing world already uses; the
+            // caller's preference doesn't get to re-partition an established world.
+            final String existingControlId = existing.get(BucketLayout.CONTROL_FILENAME);
+            final int existingBuckets = readBucketCount(existingControlId);
+            remote = RemoteFileSet.empty(existingBuckets);
+            remote.acceptPicked(existing);
+            WorldShareMod.LOGGER.info(
+                    "setup: adopting the existing world already in this folder ({} buckets)",
+                    existingBuckets);
+        } else {
+            remote = RemoteFileSet.empty(bucketCount);
+        }
         remote.driveFolderId = folderId;
 
-        remote.controlFileId = client.writeText(
-                null, BucketLayout.CONTROL_FILENAME, folderId, "", DriveClient.MIME_TYPE_JSON);
-        remote.presenceFileId = client.writeText(
-                null, BucketLayout.PRESENCE_FILENAME, folderId, "", DriveClient.MIME_TYPE_JSON);
-
-        for (int i = 0; i < bucketCount; i++) {
-            final String id = client.writeText(
-                    null, BucketLayout.bucketFilename(i), folderId, "", MIME_TYPE_ZIP);
-            remote.setBucketFileId(i, id);
+        // Create only what's genuinely absent. On the adoption path this is usually
+        // nothing; on a folder where setup died halfway it fills just the gaps.
+        int created = 0;
+        if (remote.controlFileId == null) {
+            remote.controlFileId = client.writeText(
+                    null, BucketLayout.CONTROL_FILENAME, folderId, "", DriveClient.MIME_TYPE_JSON);
+            created++;
         }
+        if (remote.presenceFileId == null) {
+            remote.presenceFileId = client.writeText(
+                    null, BucketLayout.PRESENCE_FILENAME, folderId, "", DriveClient.MIME_TYPE_JSON);
+            created++;
+        }
+        for (int i = 0; i < remote.bucketCount; i++) {
+            if (remote.bucketFileId(i) == null) {
+                final String id = client.writeText(
+                        null, BucketLayout.bucketFilename(i), folderId, "", MIME_TYPE_ZIP);
+                remote.setBucketFileId(i, id);
+                created++;
+            }
+        }
+        WorldShareMod.LOGGER.info("setup: {} file(s) already present, {} created",
+                remote.layout().remoteFileCount() - created, created);
 
         if (!remote.isComplete()) {
             // Shouldn't happen - every create above either returned an ID or threw -
@@ -127,8 +169,8 @@ public final class WorldSetup {
                     + remote.missingFilenames());
         }
 
-        WorldShareMod.LOGGER.info("Created {} remote file(s) for world '{}'",
-                layout.remoteFileCount(), worldName);
+        WorldShareMod.LOGGER.info("World '{}' is ready: {} remote file(s), {} bucket(s)",
+                worldName, remote.layout().remoteFileCount(), remote.bucketCount);
         return remote;
     }
 
@@ -197,9 +239,9 @@ public final class WorldSetup {
             // By far the most likely way this goes wrong, and the least obvious to
             // diagnose from a generic "nothing matched" message.
             throw new IOException(
-                    "You selected the folder itself, which doesn't grant access to what's "
-                            + "inside it. Re-run this, open the shared folder in the picker, "
-                            + "and select all the worldshare-* files within it.");
+                    "Selecting the folder only works for a world you created yourself. "
+                            + "These files belong to someone else, so open the shared folder "
+                            + "in the picker and select all the worldshare-* files inside it.");
         }
 
         // First pass at the default layout, purely to locate the control file among

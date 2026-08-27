@@ -27,6 +27,22 @@ WHY IT MATTERS:
       ~18 files by hand, and we should keep the bucket count low to limit
       how tedious that is.
 
+RESULTS (recorded 2026-08-26, two real accounts, throwaway GCP project):
+
+  - Account B, which was SHARED the folder as Editor and picked the folder
+    itself: folder resolves, files.list returns ZERO children, and all three
+    pre-existing files 404 on direct ID lookup. Same for .json and .zip, so it
+    is not a MIME-type quirk. A folder grant conveys no access to its contents.
+
+  - Account A, which CREATED the files through the API: listing returns all
+    three, and all three are directly reachable. An app can always see the files
+    it made for that user.
+
+  Together: a folder grant is a write destination plus visibility of your own
+  app's files - never a way to reach someone else's. So the joining player must
+  select every file by hand, while the world's creator can recover their whole
+  file set by re-picking just the folder.
+
 HOW TO RUN (about 10 minutes, needs two Google accounts):
 
   Step 1 - account A creates the files:
@@ -194,27 +210,51 @@ def cmd_verify(args):
             print(f"[FAIL] {entry['name']:<28} NOT reachable (HTTP {e.status_code})")
 
     # 4. Verdict.
+    #
+    # Which question this run answers depends entirely on WHOSE token is being
+    # used, and the two answers point opposite ways. Reporting one banner for both
+    # is how you end up reading "folder pick works!" off a run that only proved an
+    # account can see files it created itself.
     total = len(state["files"])
+    is_creator = state["created_by"] == args.label
     print("\n" + "=" * 72)
-    if len(reachable) == total:
-        print("VERDICT: folder pick DOES cover files that already existed in it.")
+
+    if is_creator:
+        print(f"NOTE: --label {args.label} CREATED these files, so this run answers")
+        print("      'can an account see files it made itself?', not the sharing")
+        print("      question. Re-run with the other account for that.")
         print()
-        print("  => A joining player can pick ONE FOLDER during setup.")
-        print("  => Bucket count stops being a setup-tedium constraint.")
-        print("  => Files created LATER still won't be covered - so the fixed")
-        print("     up-front file set is still required. Nothing about the")
-        print("     bucket design changes, only how many things get picked.")
-    elif not reachable:
-        print("VERDICT: folder pick does NOT cover pre-existing files either.")
-        print()
-        print("  => A joining player must multi-select every fixed file.")
-        print("  => Keep the bucket count low (8 rather than 16) so setup stays")
-        print("     tolerable, since picks = buckets + 2.")
+        if len(reachable) == total:
+            print("VERDICT: an account can list and reach files its own app created")
+            print("         in a folder it holds a grant on.")
+            print()
+            print("  => The world's CREATOR can recover their file set by re-picking")
+            print("     just the folder - useful after a reinstall - and setup can")
+            print("     adopt an existing world instead of duplicating it.")
+        else:
+            print("VERDICT: an account can NOT reliably reach files its own app created.")
+            print()
+            print("  => No folder-based recovery. The creator must persist their file")
+            print("     IDs locally and re-pick individually if they lose them.")
     else:
-        print("VERDICT: MIXED - this is the interesting one, capture it carefully.")
-        print(f"  reachable: {reachable}")
-        print(f"  blocked  : {blocked}")
-        print("  => Access may depend on MIME type or on how each file was created.")
+        if len(reachable) == total:
+            print("VERDICT: folder pick DOES cover files that already existed in it.")
+            print()
+            print("  => A joining player can pick ONE FOLDER during setup.")
+            print("  => Bucket count stops being a setup-tedium constraint.")
+            print("  => Files created LATER still won't be covered - so the fixed")
+            print("     up-front file set is still required.")
+        elif not reachable:
+            print("VERDICT: folder pick does NOT cover pre-existing files either.")
+            print()
+            print("  => A joining player must multi-select every fixed file.")
+            print("  => Keep the bucket count low (8 rather than 16) so setup stays")
+            print("     tolerable, since picks = buckets + 2.")
+        else:
+            print("VERDICT: MIXED - this is the interesting one, capture it carefully.")
+            print(f"  reachable: {reachable}")
+            print(f"  blocked  : {blocked}")
+            print("  => Access may depend on MIME type or on how each file was created.")
     print("=" * 72)
 
 

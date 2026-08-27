@@ -84,9 +84,10 @@ public final class AddSubscriptionScreen extends Screen {
                         .withStyle(ChatFormatting.GRAY),
                 cx, midY - 36, 0xAAAAAA);
 
-        // Be blunt about opening the folder and selecting its contents. Picking the
-        // folder itself is the intuitive move and grants nothing at all, so wording
-        // this as "the folder or its files" would send people down the failing path.
+        // The right instruction differs by who's looking, so say both rather than
+        // one blanket rule. Picking the folder works only for files this Google
+        // account created; for a world someone else shared, it silently grants
+        // nothing and the files have to be selected one by one.
         g.drawCenteredString(this.font,
                 Component.literal("Google will ask you to choose files. Open the shared")
                         .withStyle(ChatFormatting.GRAY),
@@ -96,9 +97,13 @@ public final class AddSubscriptionScreen extends Screen {
                         .withStyle(ChatFormatting.GRAY),
                 cx, midY - 2, 0xAAAAAA);
         g.drawCenteredString(this.font,
-                Component.literal("Selecting the folder itself will not work.")
+                Component.literal("Picking the folder alone only works for a world you")
                         .withStyle(ChatFormatting.YELLOW),
-                cx, midY + 10, 0xFFFF55);
+                cx, midY + 14, 0xFFFF55);
+        g.drawCenteredString(this.font,
+                Component.literal("created yourself on this Google account.")
+                        .withStyle(ChatFormatting.YELLOW),
+                cx, midY + 26, 0xFFFF55);
 
         if (statusMessage != null) {
             g.drawCenteredString(this.font,
