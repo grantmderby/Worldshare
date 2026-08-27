@@ -229,7 +229,7 @@ public final class AutoSyncListener {
         CloudModule.executor().submit(() -> {
             try {
                 final SyncEngine.PushResult result = SyncEngine.push(
-                        worldRoot, remote, uuid, /*baseline*/ null);
+                        worldRoot, remote, uuid);
                 if (result.failed == 0) {
                     WorldShareMod.LOGGER.info(
                             "AutoSync: push complete for '{}': {} files, {} bytes",

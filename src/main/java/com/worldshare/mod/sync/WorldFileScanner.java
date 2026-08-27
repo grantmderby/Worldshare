@@ -55,7 +55,8 @@ public final class WorldFileScanner {
      * Optimized scan with optional mtime pre-check and dirty-region filtering.
      *
      * @param worldRoot         absolute path to the world folder
-     * @param ownPlayerUuid     UUID of the local player; used to filter per-UUID files
+     * @param ownPlayerUuid     retained for callers' convenience; no longer used for
+     *                          filtering, since every player's data syncs
      * @param scanCache         local scan cache from previous push; null = always hash every file.
      *                          When provided, files whose mtime+size match the cache reuse the
      *                          cached hash without reading the file.
@@ -153,7 +154,7 @@ public final class WorldFileScanner {
         Files.walkFileTree(worldRoot, new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult visitFile(final Path file, final BasicFileAttributes attrs) {
-                if (!TrackedPaths.isTracked(worldRoot, file, ownUuid)) {
+                if (!TrackedPaths.isTracked(worldRoot, file)) {
                     return FileVisitResult.CONTINUE;
                 }
 

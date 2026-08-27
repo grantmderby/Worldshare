@@ -44,7 +44,16 @@ public final class WorldShareConfig {
     /**
      * How long a lock is valid (without heartbeat refresh) before it's stale.
      * Stored as minutes to allow testing the stale-lock UX in seconds rather
-     * than hours. Default of 480 minutes = 8 hours.
+     * than hours. Default of 1440 minutes = 24 hours.
+     *
+     * <p>A day is deliberately generous. The heartbeat refreshes this every 15
+     * minutes while someone is playing, so a live session never approaches the
+     * limit and the lock clears on save/upload regardless - the only thing the
+     * expiry governs is how long a player who dropped offline keeps their claim.
+     * The failure it guards against is severe and asymmetric: someone loses power
+     * mid-session and returns to find their world overwritten and hours of
+     * building gone. Waiting longer to override a genuinely dead session is much
+     * the cheaper mistake.
      */
     public final ModConfigSpec.IntValue lockExpiryMinutes;
 
@@ -68,8 +77,8 @@ public final class WorldShareConfig {
 
         lockExpiryMinutes = builder
                 .comment("Minutes before an unheartbeated session lock is considered stale. "
-                        + "Default 480 = 8 hours. Set as low as 1 for testing the stale-lock UX.")
-                .defineInRange("lockExpiryMinutes", 480, 1, 7 * 24 * 60);
+                        + "Default 1440 = 24 hours. Set as low as 1 for testing the stale-lock UX.")
+                .defineInRange("lockExpiryMinutes", 1440, 1, 7 * 24 * 60);
 
         playerCap = builder
                 .comment("Soft cap on simultaneous players when hosting.")

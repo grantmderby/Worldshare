@@ -545,7 +545,7 @@ public final class WorldShareCommands {
             CloudModule.executor().submit(() -> {
                 try {
                     final SyncEngine.PushResult result = SyncEngine.push(
-                            world.worldRoot, remote, world.playerUuid, null, chatProgress);
+                            world.worldRoot, remote, world.playerUuid, chatProgress);
                     sendClientMessage("§a[WorldShare] Push complete:");
                     sendClientMessage("§a  uploaded: " + result.uploaded + " files");
                     sendClientMessage("§7  skipped (someone else's edits): "

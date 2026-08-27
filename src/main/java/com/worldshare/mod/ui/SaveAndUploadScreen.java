@@ -271,7 +271,7 @@ public final class SaveAndUploadScreen extends Screen {
                 CloudModule.executor().submit(() -> {
                     try {
                         final SyncEngine.PushResult r = SyncEngine.push(
-                                worldRoot, remote, playerUuid, null, prog);
+                                worldRoot, remote, playerUuid, prog);
                         pushFuture.complete(r);
                     } catch (final Throwable t) {
                         pushFuture.completeExceptionally(t);

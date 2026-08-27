@@ -8,6 +8,7 @@ import com.worldshare.mod.cloud.DriveClient;
 import com.worldshare.mod.cloud.LockManager;
 import com.worldshare.mod.cloud.RemoteFileSet;
 import com.worldshare.mod.util.MachineId;
+import com.worldshare.mod.util.SHA256Util;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
@@ -160,7 +161,7 @@ public final class SyncEngine {
         final int failed = transfer.bucketsFailed;
         final long bytes = transfer.bytesMoved;
 
-        stripPlayerFromLevelDat(worldRoot);
+        stripPlayerFromLevelData(worldRoot);
 
         // Local now matches Drive - invalidate the scan cache and reset dirty
         // tracking. Downloaded files carry fresh mtimes that would otherwise look
@@ -187,15 +188,13 @@ public final class SyncEngine {
 
     public static PushResult push(final Path worldRoot,
                                   final RemoteFileSet remote,
-                                  final UUID ownUuid,
-                                  final WorldManifest baseline) throws IOException {
-        return push(worldRoot, remote, ownUuid, baseline, SyncProgress.NOOP);
+                                  final UUID ownUuid) throws IOException {
+        return push(worldRoot, remote, ownUuid, SyncProgress.NOOP);
     }
 
     public static PushResult push(final Path worldRoot,
                                   final RemoteFileSet remote,
                                   final UUID ownUuid,
-                                  final WorldManifest baseline,
                                   final SyncProgress progress) throws IOException {
         requireComplete(remote);
 
@@ -235,26 +234,7 @@ public final class SyncEngine {
         final SyncDiff diff = SyncDiff.compute(local, driveManifest);
 
         // Paths whose bytes actually need to reach Drive.
-        final Set<String> changedPaths = new LinkedHashSet<>();
-        int skippedStale = 0;
-
-        for (final String relPath : diff.different) {
-            if (baseline != null) {
-                // The file differs from Drive, but our copy is byte-identical to what
-                // we started the session with - so the difference is the *other*
-                // player's newer work, not ours. Keep theirs.
-                final WorldManifest.Entry baseEntry = baseline.get(relPath);
-                final WorldManifest.Entry localEntry = local.get(relPath);
-                if (baseEntry != null && baseEntry.sha256 != null
-                        && localEntry != null
-                        && baseEntry.sha256.equals(localEntry.sha256)) {
-                    skippedStale++;
-                    local.put(relPath, driveManifest.get(relPath));
-                    continue;
-                }
-            }
-            changedPaths.add(relPath);
-        }
+        final Set<String> changedPaths = new LinkedHashSet<>(diff.different);
         changedPaths.addAll(diff.onlyLocal);
 
         // Files present on Drive but absent from our scan. Either somebody else's
@@ -264,12 +244,35 @@ public final class SyncEngine {
             local.put(relPath, driveManifest.get(relPath));
         }
 
+        // Refuse to publish a copy of somebody else's newer work.
+        //
+        // A dirty bucket is repacked in full from local disk, so a push rewrites
+        // every file in it - including files this player never touched. If our copy
+        // of one of those differs from what Drive has, ours is the older one (we
+        // didn't change it, so the difference is theirs) and packing it would revert
+        // their progress.
+        //
+        // With the lock verified against Drive before uploading, this should never
+        // fire in normal use: holding a valid lock means nobody else can push. It is
+        // here to catch states where something has already gone wrong - a pull that
+        // failed partway and left a mixture on disk, or some future path that takes
+        // a lock without pulling first. Refusing is deliberate: merging would mean
+        // writing world files underneath a running game.
+        final List<String> staleHere = new ArrayList<>();
+        for (final String relPath : diff.different) {
+            if (!changedPaths.contains(relPath)) {
+                staleHere.add(relPath);
+            }
+        }
+        if (!staleHere.isEmpty()) {
+            throw new IOException(describeStalePush(staleHere));
+        }
+
         if (changedPaths.isEmpty()) {
-            WorldShareMod.LOGGER.info("push: nothing changed ({} file(s) left to the other player)",
-                    skippedStale);
+            WorldShareMod.LOGGER.info("push: nothing changed");
             progress.onStart(0, 0L);
             progress.onComplete();
-            return new PushResult(0, skippedStale, 0, 0L);
+            return new PushResult(0, 0, 0, 0L);
         }
 
         // A bucket is dirty if any of its files changed. Rebuilding it means packing
@@ -332,6 +335,16 @@ public final class SyncEngine {
                 "push: {} changed file(s) dirty {} of {} bucket(s); repacking {} MB",
                 changedPaths.size(), dirtyBuckets.size(), layout.bucketCount(),
                 totalBytes / (1024 * 1024));
+
+        // Confirm the lock is still ours BEFORE overwriting anything.
+        //
+        // This has to be read from Drive rather than trusting weHoldLock(), which is
+        // a local flag only refreshed when the heartbeat happens to run - up to 15
+        // minutes stale. Checking it afterwards, as this used to, is too late: by
+        // then the archives have already been replaced, and since a bucket is
+        // repacked whole that includes files belonging to whoever took the lock over.
+        requireLockStillOurs(remote, "uploading");
+
         progress.onStart(changedPaths.size(), totalBytes);
 
         final Map<Integer, Set<String>> toUpload = new TreeMap<>();
@@ -350,22 +363,23 @@ public final class SyncEngine {
             progress.onError(new IOException(
                     failed + " bucket upload(s) failed; the world's control file was NOT updated"));
             WorldShareMod.LOGGER.error("push: {} bucket(s) failed; control file not committed", failed);
-            return new PushResult(transfer.bucketsOk, skippedStale, failed, bytes);
+            return new PushResult(transfer.bucketsOk, 0, failed, bytes);
         }
 
         // Only now, with every dirty archive safely on Drive, does the manifest that
-        // describes them become the published truth.
+        // describes them become the published truth. Re-checked because a long upload
+        // leaves a window after the pre-upload check.
         if (!LockManager.weHoldLock()) {
             WorldShareMod.LOGGER.error(
-                    "push: lock no longer ours, aborting control-file commit. "
+                    "push: lock lost during upload, aborting control-file commit. "
                             + "{} bucket(s) were uploaded but the manifest is unchanged.",
                     transfer.bucketsOk);
             progress.onError(new IOException(
-                    "Your session lock was overridden during upload. "
-                            + "Bucket archives were uploaded but the manifest was NOT updated. "
-                            + "Your changes are still saved locally. "
-                            + "Coordinate with the other player and retry."));
-            return new PushResult(transfer.bucketsOk, skippedStale, 0, bytes);
+                    "Your session lock was taken over while the upload was running. "
+                            + "The manifest was NOT updated, so the world still describes "
+                            + "the other player's state. Your changes are still saved "
+                            + "locally. Coordinate with them before retrying."));
+            return new PushResult(transfer.bucketsOk, 0, 0, bytes);
         }
 
         commitControl(remote, local);
@@ -373,10 +387,9 @@ public final class SyncEngine {
         DirtyRegionTracker.resetAfterPush();
         progress.onComplete();
 
-        WorldShareMod.LOGGER.info(
-                "push complete: {} bucket(s) uploaded, {} file(s) left to other player, {} bytes",
-                transfer.bucketsOk, skippedStale, bytes);
-        return new PushResult(transfer.bucketsOk, skippedStale, 0, bytes);
+        WorldShareMod.LOGGER.info("push complete: {} bucket(s) uploaded, {} bytes",
+                transfer.bucketsOk, bytes);
+        return new PushResult(transfer.bucketsOk, 0, 0, bytes);
     }
 
     // ---- BUCKET TRANSFER ----
@@ -426,7 +439,7 @@ public final class SyncEngine {
                 try {
                     final long moved = uploading
                             ? uploadBucket(remote, bucket, worldRoot, paths)
-                            : downloadBucket(remote, bucket, worldRoot, paths);
+                            : downloadBucket(remote, bucket, worldRoot, paths, manifestForSizes);
                     // A pull that found an empty placeholder moved no bytes and
                     // restored nothing; counting its expected files as restored
                     // would report a success that didn't happen.
@@ -513,7 +526,8 @@ public final class SyncEngine {
     private static long downloadBucket(final RemoteFileSet remote,
                                        final int bucketIndex,
                                        final Path worldRoot,
-                                       final Set<String> wantedPaths) throws IOException {
+                                       final Set<String> wantedPaths,
+                                       final WorldManifest expected) throws IOException {
         final Path archive = Files.createTempFile(
                 "worldshare-bucket-" + bucketIndex + "-", ".zip");
         try {
@@ -532,7 +546,9 @@ public final class SyncEngine {
                         BucketLayout.bucketFilename(bucketIndex));
                 return 0L;
             }
-            BucketArchive.extract(archive, worldRoot, wantedPaths);
+            final List<String> extracted =
+                    BucketArchive.extract(archive, worldRoot, wantedPaths);
+            verifyExtracted(worldRoot, extracted, expected, bucketIndex);
             return size;
         } finally {
             try { Files.deleteIfExists(archive); } catch (final IOException ignored) {}
@@ -588,6 +604,41 @@ public final class SyncEngine {
         WorldShareMod.LOGGER.info("commitControl: published manifest with {} entries", manifest.size());
     }
 
+    /**
+     * Abort unless Drive still says this machine holds the world's lock.
+     *
+     * <p>Deliberately reads the control file rather than consulting
+     * {@link LockManager#weHoldLock()}, which is a cached local flag updated only
+     * by the 15-minute heartbeat and so can be that far out of date.
+     */
+    private static void requireLockStillOurs(final RemoteFileSet remote, final String about)
+            throws IOException {
+        final LockManager.LockStatus status = LockManager.readStatus(remote);
+        if (status.state == LockManager.LockState.HELD_BY_US) {
+            return;
+        }
+        final String holder = (status.lock != null && status.lock.holderName != null)
+                ? status.lock.holderName : "someone else";
+        WorldShareMod.LOGGER.error("push: refusing to continue {} - lock state is {}",
+                about, status.state);
+        throw new IOException(
+                "This world's session lock is no longer yours (" + holder + " holds it now), "
+                        + "so " + about + " would overwrite their work. Your changes are "
+                        + "still saved locally. Coordinate with them, then reopen the world "
+                        + "from Contributor Worlds to get their changes before retrying.");
+    }
+
+    /** Wording for a push that would publish somebody else's older data. */
+    private static String describeStalePush(final List<String> stale) {
+        final int shown = Math.min(4, stale.size());
+        final String names = String.join(", ", stale.subList(0, shown));
+        return "Someone else has newer versions of " + stale.size() + " file(s) that this "
+                + "copy hasn't caught up with (" + names
+                + (stale.size() > shown ? ", ..." : "") + "). Pushing now would replace their "
+                + "work with older data. Save and quit, then reopen this world from "
+                + "Contributor Worlds to pull their changes first.";
+    }
+
     private static RemoteFileSet requireComplete(final RemoteFileSet remote) throws IOException {
         if (remote == null) {
             throw new IOException("This world isn't linked to Drive yet. Run WorldShare setup for it.");
@@ -626,22 +677,72 @@ public final class SyncEngine {
 
     // ---- LEVEL.DAT PLAYER STRIP ----
 
-    private static void stripPlayerFromLevelDat(final Path worldRoot) {
-        final Path levelDat = worldRoot.resolve("level.dat");
-        if (!Files.isRegularFile(levelDat)) return;
+    /**
+     * Remove the singleplayer host's character from the level data files.
+     *
+     * <p>In a singleplayer or LAN world the host's inventory lives in
+     * {@code level.dat} under {@code Data.Player}, not in {@code playerdata/}.
+     * Left in place, whoever opens the world next would load the previous host's
+     * character. Stripping it forces Minecraft to fall back to
+     * {@code playerdata/<uuid>.dat}, which is per-player and syncs on its own -
+     * giving dedicated-server behaviour where your character follows you.
+     *
+     * <p><b>Both files matter.</b> {@code level.dat_old} is Minecraft's rollback
+     * copy and is synced too. If that fallback ever fires it restores a level.dat
+     * carrying the previous host's Player tag - reintroducing exactly this bug at
+     * the moment the player is already recovering from a problem.
+     */
+    private static void stripPlayerFromLevelData(final Path worldRoot) {
+        for (final String name : new String[]{"level.dat", "level.dat_old"}) {
+            stripPlayerFrom(worldRoot.resolve(name), worldRoot);
+        }
+    }
+
+    private static void stripPlayerFrom(final Path levelFile, final Path worldRoot) {
+        if (!Files.isRegularFile(levelFile)) return;
         try {
-            final CompoundTag root = NbtIo.readCompressed(levelDat, NbtAccounter.unlimitedHeap());
+            final CompoundTag root = NbtIo.readCompressed(levelFile, NbtAccounter.unlimitedHeap());
             final CompoundTag data = root.getCompound("Data");
             if (!data.contains("Player")) return;
             data.remove("Player");
-            NbtIo.writeCompressed(root, levelDat);
-            WorldShareMod.LOGGER.info(
-                    "pull: stripped Player tag from level.dat in '{}'",
-                    worldRoot.getFileName());
+            NbtIo.writeCompressed(root, levelFile);
+            WorldShareMod.LOGGER.info("pull: stripped Player tag from {} in '{}'",
+                    levelFile.getFileName(), worldRoot.getFileName());
         } catch (final Throwable t) {
-            WorldShareMod.LOGGER.warn(
-                    "pull: failed to strip Player from level.dat (non-fatal): {}",
-                    t.getMessage());
+            // Non-fatal: a level.dat_old we can't parse is a rollback copy we
+            // simply won't have cleaned, not a reason to fail an otherwise good pull.
+            WorldShareMod.LOGGER.warn("pull: failed to strip Player from {} (non-fatal): {}",
+                    levelFile.getFileName(), t.getMessage());
+        }
+    }
+
+    /**
+     * Confirm extracted files match the hashes the manifest promised.
+     *
+     * <p>An archive and the manifest describing it are separate Drive objects, so
+     * they can drift - a push interrupted between uploading buckets and committing
+     * the manifest leaves exactly that. Nothing used to notice: pull extracted
+     * whatever the archive held and trusted it. Checking here turns a silent wrong
+     * -content bug into a clear failure naming the file.
+     */
+    private static void verifyExtracted(final Path worldRoot,
+                                        final List<String> extracted,
+                                        final WorldManifest expected,
+                                        final int bucketIndex) throws IOException {
+        if (expected == null) return;
+        for (final String relPath : extracted) {
+            final WorldManifest.Entry entry = expected.get(relPath);
+            if (entry == null || entry.sha256 == null) continue;
+            final String actual = SHA256Util.hashFile(worldRoot.resolve(relPath));
+            if (!entry.sha256.equals(actual)) {
+                throw new IOException(
+                        "'" + relPath + "' came out of "
+                                + BucketLayout.bucketFilename(bucketIndex)
+                                + " with different content than the world's manifest "
+                                + "describes. The archive and manifest on Drive disagree, "
+                                + "which usually means a push was interrupted. Ask the other "
+                                + "player to push again.");
+            }
         }
     }
 

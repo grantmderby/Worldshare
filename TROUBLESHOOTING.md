@@ -87,7 +87,13 @@ token expiry, and reinstalling the game.
 
 ## "Locked by <name>" but they crashed / aren't actually playing
 
-**Cause:** Their game crashed before releasing the lock. The lock will expire automatically after 8 hours.
+**Cause:** Their game crashed before releasing the lock. The lock expires
+automatically after 24 hours, or as soon as they reopen the world and save.
+
+The wait is deliberately long: it exists so someone who lost power mid-session
+can get back online and upload rather than returning to find their world
+overwritten. If you know they aren't coming back, you can override it — the
+confirmation screen explains what that costs them.
 
 **Fix:** Wait, or use the Contributor Worlds tab — if the lock is older than the heartbeat threshold, you'll see a "Stale Lock" badge with an option to override.
 

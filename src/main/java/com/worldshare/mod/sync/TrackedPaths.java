@@ -1,15 +1,19 @@
 package com.worldshare.mod.sync;
 
 import java.nio.file.Path;
-import java.util.UUID;
 
 /**
  * Decides which files inside a Minecraft world folder are subject to sync.
  *
- * <p><b>M7:</b> All playerdata, stats, and advancements files sync regardless
- * of UUID. Combined with stripping level.dat Player on pull, this gives
- * dedicated-server-style behaviour where each player's character lives in
- * their own playerdata file and follows them between machines.
+ * <p><b>All playerdata, stats and advancements sync, regardless of UUID.</b>
+ * Combined with stripping the Player tag from level.dat on pull, this gives
+ * dedicated-server behaviour: each player's character lives in their own
+ * playerdata file and follows them between machines.
+ *
+ * <p>This method used to take the local player's UUID to filter by. It doesn't
+ * any more, and the parameter has been removed rather than left in place looking
+ * meaningful - restoring per-UUID filtering would stop other players' characters
+ * syncing at all, which is the opposite of what this design needs.
  *
  * <p><b>M8:</b> {@link #isMcaFile(String)} exposed for {@link WorldFileScanner}
  * dirty-region filtering. {@code worldshare-scan-cache.json} excluded from sync
@@ -19,9 +23,7 @@ public final class TrackedPaths {
 
     private TrackedPaths() {}
 
-    public static boolean isTracked(final Path worldRoot,
-                                    final Path file,
-                                    final UUID ownPlayerUuid) {
+    public static boolean isTracked(final Path worldRoot, final Path file) {
         if (worldRoot == null || file == null) return false;
         if (!file.startsWith(worldRoot)) return false;
 
