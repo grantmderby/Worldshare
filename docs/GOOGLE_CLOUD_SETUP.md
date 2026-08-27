@@ -25,7 +25,14 @@ needs a recurring paid CASA security audit — realistically $540–1,800 a year
 escape a hard cap of 100 test users. `docs/CLOUD_BACKEND_DECISION.md` records how
 that conclusion was reached and what was tested.
 
-`drive.file` needs no audit. It needs **brand verification**, which is free.
+`drive.file` needs no audit — and, confirmed against the live console in August
+2026, **no verification at all**. Google's own words: verification isn't required
+because the app requests no sensitive or restricted scopes. That is better than
+this project planned for; the original write-up assumed a free brand-verification
+round with a 2–3 day wait.
+
+What still matters is **publishing status**, which is a separate thing and easy to
+conflate with verification. See step 4.
 
 ---
 
@@ -102,23 +109,33 @@ The client must be of type **Desktop app**. This matters for two reasons:
 
 **OAuth consent screen → Publishing status → Publish app**
 
-This is the step that matters most for day-to-day use, and it's worth doing early
-even before verification completes:
+**With verification off the table, this is the only step in this document that
+must actually happen.** Do not skip it on the basis that verification isn't
+needed — they are different settings:
 
 > While the app sits in **Testing**, refresh tokens expire after **7 days**, so
 > every user has to sign in again weekly. This is a property of publishing status,
 > not of the scope — it applies to `drive.file` too. Publishing to **Production**
 > ends it.
 
-Because the only scope is non-sensitive, publishing does not require the app to
-have completed verification first. Brand verification affects how the consent
-screen is *presented*, not whether the app functions.
+Publishing does not require verification, and for this app there is no
+verification to require. Publishing should therefore be immediate.
 
-### 6. Submit for brand verification
+### 6. Verification — not required
 
-Once the consent screen is filled in and the domain is verified, submit. Expect
-anywhere from a few minutes (automated) to about three business days (manual
-review). Until it passes, users may see an "unverified app" interstitial.
+Confirmed in the console: Google does not require verification for this app,
+because `drive.file` is non-sensitive and no sensitive or restricted scope is
+requested. There is nothing to submit and nothing to wait for.
+
+This is the payoff from the scope decision. Had the mod stayed on the broad
+`drive` scope it would have needed a CASA audit costing $540–1,800 a year,
+recurring.
+
+**Worth checking during end-to-end testing:** whether the consent screen shows an
+"unverified app" interstitial. It shouldn't for non-sensitive scopes, but that is
+easier to confirm by looking than to argue from documentation. If it does appear,
+note the exact wording — it changes whether verification is worth pursuing
+voluntarily.
 
 ### 7. Quota — no action needed, recorded for the record
 
