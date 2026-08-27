@@ -1,6 +1,7 @@
 package com.worldshare.mod.sync;
 
-import com.worldshare.mod.WorldShareMod;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -37,6 +38,16 @@ import java.util.zip.ZipOutputStream;
  * advancements - still compress fine at that level.
  */
 public final class BucketArchive {
+
+    /**
+     * This class deliberately holds its own logger rather than borrowing
+     * {@code LOG}. Reaching into the mod entrypoint for it made a
+     * self-contained utility depend on the whole mod, and loading it dragged in
+     * NeoForge transitively - which meant the pack/unpack logic could not be unit
+     * tested without booting Minecraft. Same underlying logger either way;
+     * {@code LOG} is an SLF4J logger too.
+     */
+    private static final Logger LOG = LoggerFactory.getLogger(BucketArchive.class);
 
     /**
      * Cap on a single entry's uncompressed size when extracting: 512 MB.
@@ -85,7 +96,7 @@ public final class BucketArchive {
             for (final String relPath : ordered) {
                 final Path source = worldRoot.resolve(relPath);
                 if (!Files.isRegularFile(source)) {
-                    WorldShareMod.LOGGER.debug(
+                    LOG.debug(
                             "BucketArchive.build: skipping missing file {}", relPath);
                     continue;
                 }
@@ -102,7 +113,7 @@ public final class BucketArchive {
             }
         }
 
-        WorldShareMod.LOGGER.debug("BucketArchive.build: {} -> {} entries, {} bytes",
+        LOG.debug("BucketArchive.build: {} -> {} entries, {} bytes",
                 destZip.getFileName(), written.size(), Files.size(destZip));
         return written;
     }
@@ -168,7 +179,7 @@ public final class BucketArchive {
             }
         }
 
-        WorldShareMod.LOGGER.debug("BucketArchive.extract: {} -> {} entries into {}",
+        LOG.debug("BucketArchive.extract: {} -> {} entries into {}",
                 zipFile.getFileName(), extracted.size(), worldRoot);
         return extracted;
     }

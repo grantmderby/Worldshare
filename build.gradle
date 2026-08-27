@@ -89,8 +89,52 @@ configurations.all {
     }
 }
 
+// ----- Unit tests -----
+//
+// These live in their own source set rather than in `test`, and that is deliberate.
+// NeoGradle claims the `test` task and runs it under ModLauncher with the
+// `forgejunitdev` launch target - it boots an actual Minecraft in "unit testing
+// mode". That is the right machinery for tests that need the game, and entirely
+// wrong for these: bucket assignment, archive packing and manifest diffing are
+// plain Java, and asking for a Minecraft runtime to test them only bought us
+// "Failed to start Minecraft".
+//
+// A source set NeoGradle doesn't know about gets a plain JVM, which is all these
+// need. Anything that genuinely requires a world belongs in docs/E2E_TEST_PLAN.md.
+sourceSets {
+    unitTest {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+    }
+}
+
+tasks.register('unitTest', Test) {
+    description = 'Runs the pure-logic unit tests (no Minecraft, no Drive).'
+    group = 'verification'
+    testClassesDirs = sourceSets.unitTest.output.classesDirs
+    classpath = sourceSets.unitTest.runtimeClasspath
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat 'full'
+    }
+}
+
+tasks.named('check') { dependsOn 'unitTest' }
+
 dependencies {
     implementation "net.neoforged:neoforge:${neo_version}"
+
+    // Unit tests cover the pure logic only - bucket assignment, archive round-trips,
+    // manifest diffing. None of it touches Minecraft or Drive, which is precisely why
+    // it can run on every build. Anything needing a world or a Google account lives in
+    // docs/E2E_TEST_PLAN.md and is run by hand.
+    //
+    // These attach to the `unitTest` source set, NOT to `test`. See the sourceSets
+    // block below for why.
+    unitTestImplementation platform('org.junit:junit-bom:5.10.2')
+    unitTestImplementation 'org.junit.jupiter:junit-jupiter'
+    unitTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
     // Shade for jar packing (relocates packages into the output jar)
     compileOnly files('run/mods/e4mc-neoforge-6.1.0.jar')
