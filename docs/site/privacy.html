@@ -18,70 +18,134 @@
   @media (prefers-color-scheme: dark) {
     body { color: #e8e8e8; background: #14161a; }
     a { color: #7fb3ff; }
+    .updated { color: #9a9a9a; }
+    th, td { border-color: #2c3038; }
   }
   h1 { font-size: 1.6rem; }
   h2 { font-size: 1.15rem; margin-top: 2rem; }
   .updated { color: #666; font-size: 0.9rem; }
-  @media (prefers-color-scheme: dark) { .updated { color: #9a9a9a; } }
   code { background: rgba(127,127,127,0.15); padding: 0.15em 0.4em; border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.95rem; }
+  th, td { border: 1px solid #e2e2e2; padding: 0.5rem 0.6rem; text-align: left; vertical-align: top; }
+  th { font-weight: 600; }
   a.back { display: inline-block; margin-top: 2.5rem; }
 </style>
 </head>
 <body>
   <h1>WorldShare — Privacy Policy</h1>
-  <p class="updated">Last updated: 2026</p>
+  <p class="updated">Last updated: 26 August 2026</p>
 
   <p>
-    WorldShare is a Minecraft mod. This page explains, in plain language, what
-    it accesses, where that data goes, and what the developer can and can't see.
+    WorldShare is a Minecraft mod that keeps one singleplayer world in sync
+    between two people over Google Drive. This page explains, in plain language,
+    what it accesses, everywhere your data goes, and what the developer can and
+    can't see.
   </p>
 
-  <h2>What WorldShare accesses</h2>
+  <h2>What WorldShare accesses in your Google account</h2>
   <p>
-    When you connect your Google account, WorldShare requests permission to
-    read and write files inside a Google Drive folder <em>you explicitly
-    choose</em>, using Google's Drive API with the narrowest scope Google
-    offers for this purpose (<code>drive.file</code>). It does not request
-    access to your entire Drive, your Gmail, or any other Google data.
+    WorldShare requests a single Google Drive permission,
+    <code>drive.file</code> — the narrowest scope Google offers for this purpose.
+    It grants access <em>only to the specific files you personally select</em> in
+    Google's own file picker, plus files WorldShare itself creates for you.
   </p>
   <p>
-    The only data WorldShare uploads is your Minecraft world's save files —
-    region files, player data, and related world state — so that another
-    player can download and continue the same world.
+    It cannot browse your Drive, cannot see files you didn't select, and cannot
+    reach anything created later without you selecting that too. It requests no
+    access to Gmail, Contacts, Photos, or any other Google service.
+  </p>
+  <p>
+    In practice you select about ten files, once, when you first set up a shared
+    world: one small settings file, one presence file, and eight world archives.
+  </p>
+
+  <h2>What gets uploaded</h2>
+  <p>
+    Your Minecraft world's save data — region files, player data, and related
+    world state — packed into those archives, so the other player can download
+    and continue the same world. Alongside it, a small settings file records
+    which files the world consists of, who currently has the world open, and the
+    display name you chose in WorldShare's settings.
   </p>
 
   <h2>Where your data goes</h2>
   <p>
-    Directly from your Minecraft client to Google Drive, using your own
-    Google account. WorldShare does not operate a server of its own and does
-    not route your world data through any server the developer controls. The
-    developer of WorldShare has no access to your Drive files, your world
-    data, or your Google account.
+    Three places, and no others:
+  </p>
+  <table>
+    <tr>
+      <th>Destination</th>
+      <th>What is sent</th>
+      <th>When</th>
+    </tr>
+    <tr>
+      <td><strong>Google Drive</strong><br>(your own account)</td>
+      <td>Your world's save data and the settings file described above.</td>
+      <td>Whenever you sync a world.</td>
+    </tr>
+    <tr>
+      <td><strong>Modrinth</strong><br><code>api.modrinth.com</code></td>
+      <td>SHA-1 hashes of the mod <code>.jar</code> files installed in your game — not the files themselves, and nothing about you or your world.</td>
+      <td>When a world's mod list is published or checked, so the other player can be told which mods they need.</td>
+    </tr>
+    <tr>
+      <td><strong>e4mc relay</strong><br>(via the separate e4mc mod)</td>
+      <td>Live gameplay traffic, while you and the other player are playing together at the same time.</td>
+      <td>Only during a live co-op session.</td>
+    </tr>
+  </table>
+  <p>
+    WorldShare does not operate a server of its own, and world data is never
+    routed through anything the developer controls. e4mc is a separate mod with
+    its own operators and its own terms; live co-op uses it, and that part of
+    your traffic is subject to their policy rather than this one.
   </p>
 
-  <h2>What's stored locally</h2>
+  <h2>What the developer can see</h2>
   <p>
-    Your OAuth access and refresh tokens are stored only on your own
-    computer, inside your Minecraft installation's config folder. They are
-    never transmitted anywhere except directly to Google, and never bundled
-    into any file you share with anyone else.
+    Nothing. The developer has no access to your Drive files, your world data,
+    your Google account, or any record of you using the mod. WorldShare collects
+    no analytics, no telemetry, and no crash reports.
+  </p>
+
+  <h2>What's stored on your computer</h2>
+  <p>
+    Your Google sign-in token is stored only on your own machine, in your
+    Minecraft installation's config folder. It is sent nowhere except to Google,
+    and is never written into your world files or anything you share.
   </p>
 
   <h2>Revoking access</h2>
   <p>
-    You can revoke WorldShare's access to your Google account at any time
-    from Google's own account settings:
+    You can revoke WorldShare's access at any time from Google's own settings:
     <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>.
-    Doing so does not delete anything already in your Drive folder — it only
-    stops WorldShare from being able to read or write to it until you sign
-    in again.
+    Revoking does not delete anything already in your Drive — it only stops
+    WorldShare from reading or writing those files until you sign in again.
+  </p>
+  <p>
+    The files themselves are ordinary files in your Drive. You can move, rename,
+    or delete them yourself at any time, with or without the mod.
+  </p>
+
+  <h2>Children</h2>
+  <p>
+    WorldShare is not directed at children under 13 and collects no personal
+    information from anyone. Signing in uses a Google account, which is subject
+    to Google's own age requirements.
+  </p>
+
+  <h2>Changes to this policy</h2>
+  <p>
+    If what the mod accesses ever changes, this page changes with it, and the
+    date at the top is updated. Past versions are visible in the project's public
+    Git history.
   </p>
 
   <h2>Questions</h2>
   <p>
     WorldShare's source code is public — see the
     <a href="https://github.com/grantmderby/worldshare">GitHub repository</a>
-    for exactly how it uses the Drive API.
+    for exactly how it uses the Drive API, or open an issue there to ask.
   </p>
 
   <a class="back" href="index.html">&larr; Back to WorldShare</a>

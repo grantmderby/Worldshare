@@ -1,119 +1,165 @@
-# Google Cloud Console Setup
+# Google Cloud setup for WorldShare
 
-**Do this once, before running `/worldshare test`.** It's about 10 minutes of clicking
-through Google's web UI.
+Everything WorldShare needs from Google, and the exact values to enter. Two
+audiences here, in order:
 
-## Why
+1. **[Publishing checklist](#publishing-checklist)** — the one-time work to make
+   the mod installable by the public. Do this first; the verification step has a
+   waiting period.
+2. **[Development setup](#development-setup)** — for anyone building the mod from
+   source with their own credentials.
 
-WorldShare uses Google Drive to store shared worlds. Google requires you to register an
-"OAuth application" that identifies the mod when it asks a user to sign in. You'll be
-the owner of this OAuth app; your brother (and anyone else you share the mod with)
-authenticates as a *test user* of your app.
+---
 
-## Step 1 — Create a Google Cloud Project
+## Why this is needed at all
 
-1. Go to https://console.cloud.google.com/
-2. Sign in with the Google account that owns the Drive folder you want to use
-3. In the top bar, click the project dropdown (to the right of "Google Cloud") → **New Project**
-4. Name it `WorldShare` (or anything - this is just for you). Leave Organization as "No organization".
-5. Click **Create**. Wait a few seconds. Make sure this new project is selected in the top bar.
+WorldShare talks to Google Drive on the user's behalf, which means it is an OAuth
+application and Google has an opinion about it. The scope it requests determines
+how much of an opinion.
 
-## Step 2 — Enable the Google Drive API
+WorldShare uses **`drive.file`**, which Google classifies as *non-sensitive*. It
+grants access only to files the user personally selects in Google's picker. That
+classification is the whole reason publishing is affordable: the broad
+`drive.file`-adjacent scope `drive` is *restricted*, and a restricted-scope app
+needs a recurring paid CASA security audit — realistically $540–1,800 a year — to
+escape a hard cap of 100 test users. `docs/CLOUD_BACKEND_DECISION.md` records how
+that conclusion was reached and what was tested.
 
-1. In the left nav (or the search bar at top), navigate to **APIs & Services → Library**
-2. Search for `Google Drive API`
-3. Click the result → **Enable**
-4. You should land on a "Drive API is enabled" page
+`drive.file` needs no audit. It needs **brand verification**, which is free.
 
-## Step 3 — Configure the OAuth Consent Screen
+---
 
-This is the screen users will see when they authorize the mod to access their Drive.
+## Publishing checklist
 
-1. Left nav: **APIs & Services → OAuth consent screen**
-2. User Type: **External** → Create
-3. Fill in:
-   - **App name:** `WorldShare`
-   - **User support email:** (your email)
-   - **App logo:** skip
-   - **Application home page:** skip
-   - **Authorized domains:** skip
-   - **Developer contact:** (your email)
-4. Click **Save and Continue**
+### 1. Prerequisites
 
-### Scopes
-5. Click **Add or Remove Scopes**
-6. In the filter, search for `drive`
-7. Check the box next to `.../auth/drive` — "See, edit, create, and delete all of your Google Drive files"
-8. Click **Update**, then **Save and Continue**
+- The public site must be live first, because the consent screen requires working
+  URLs. It deploys from `docs/site/` via `.github/workflows/pages.yml` on any push
+  to `main` that touches those files. Confirm both pages load before continuing:
+  - Homepage: `https://grantmderby.github.io/worldshare/`
+  - Privacy policy: `https://grantmderby.github.io/worldshare/privacy.html`
 
-### Test Users
-9. Click **Add Users**
-10. Add your own Google account email
-11. Add your brother's Google account email (you can add up to 100 test users later)
-12. Click **Add**, then **Save and Continue**
+### 2. Verify domain ownership
 
-### Summary
-13. Review and click **Back to Dashboard**
+Google requires you to own every domain used on the consent screen.
 
-> ⚠️ **About Testing mode:** While your app is in "Testing" status, Google limits
-> refresh tokens to **7 days**. Every week, each user will be prompted to re-authorize
-> (a single browser click). This is OK for a personal 2-person mod. Publishing the app
-> would remove this limit but requires a Google verification process that takes weeks
-> — not worth it.
+- Go to [Google Search Console](https://search.google.com/search-console) and add
+  a property for `grantmderby.github.io`.
+- Use the **URL prefix** method — the DNS method is unavailable, since you don't
+  control `github.io`'s DNS.
+- Choose the **HTML file upload** verification option. Download the
+  `google*.html` file it gives you, commit it to `docs/site/`, push, and wait for
+  Pages to redeploy before clicking Verify.
+- In Google Cloud Console, go to **APIs & Services → OAuth consent screen →
+  Branding**, and confirm the verified domain appears under *Authorised domains*.
 
-## Step 4 — Create OAuth Client ID Credentials
+> **If this fails:** GitHub Pages subdomains are usually verifiable this way, but
+> Google has historically been inconsistent about shared hosting domains. If
+> Search Console refuses `grantmderby.github.io`, the fallback is a cheap custom
+> domain (~$10/yr) pointed at Pages via CNAME, which verifies without argument.
+> Decide this before submitting for verification rather than after — a rejected
+> submission restarts the wait.
 
-1. Left nav: **APIs & Services → Credentials**
-2. Top bar: **+ Create Credentials → OAuth client ID**
-3. Application type: **Desktop app**
-4. Name: `WorldShare Desktop`
-5. Click **Create**
-6. A dialog pops up with your client ID and secret. Click **Download JSON**
-7. The downloaded file will be named something like `client_secret_xxxx.apps.googleusercontent.com.json`
+### 3. Configure the OAuth consent screen
 
-## Step 5 — Install the Credentials in the Mod
+**APIs & Services → OAuth consent screen**
 
-1. **Rename** the downloaded file to exactly: `client_secret.json`
-2. **Move** it into your project at exactly this path:
-   ```
-   worldshare/src/main/resources/worldshare/oauth/client_secret.json
-   ```
-3. The file is automatically excluded from git by `.gitignore`. Never commit it.
-4. When you build the mod, this file gets bundled into the jar. When your brother
-   installs the built mod jar, he has your credentials automatically — no GCP setup
-   needed on his side.
+| Field | Value |
+|---|---|
+| User type | External |
+| App name | `WorldShare` |
+| User support email | your Google account address |
+| App logo | the mod icon, 120×120 PNG (see *Outstanding* below) |
+| Application home page | `https://grantmderby.github.io/worldshare/` |
+| Application privacy policy | `https://grantmderby.github.io/worldshare/privacy.html` |
+| Application terms of service | leave blank — not required |
+| Authorised domains | `grantmderby.github.io` |
+| Developer contact | your Google account address |
 
-## Step 6 — (Later) Create a Shared Drive Folder
+**Scopes** — add exactly one, and nothing else:
 
-For Milestone 1's test command, we don't need a folder yet — the test uploads to
-the Drive root. But for later milestones you'll want:
+```
+https://www.googleapis.com/auth/drive.file
+```
 
-1. Go to https://drive.google.com/
-2. Create a new folder called `WorldShare` (or whatever)
-3. Right-click → **Share** → add your brother's Google account as Editor
-4. Open the folder. The URL will look like `https://drive.google.com/drive/folders/ABC123...`
-5. The ID is the last part after `/folders/` — copy that string
-6. In Minecraft, set the folder ID in WorldShare's config (we'll add UI for this later;
-   for now it lives in `config/worldshare-client.toml`)
+Adding any scope Google classifies as sensitive or restricted changes the review
+you are subject to, and reintroduces the audit cost this whole design exists to
+avoid. If the scope list ever needs to grow, re-read the decision report first.
 
-## Security Notes
+### 4. Confirm the OAuth client type
 
-- **client_secret.json** for desktop-app OAuth isn't truly secret. Google documents this.
-  Anyone who decompiles the mod jar will see it. For a personal 2-person mod this is fine.
-- **Your stored access/refresh tokens** (at `config/worldshare/tokens/`) ARE sensitive —
-  they give access to your Drive. That directory is in `.gitignore`. Don't share it.
-- If you ever want to revoke access: go to https://myaccount.google.com/permissions and
-  remove "WorldShare" from the list of third-party apps.
+**APIs & Services → Credentials**
 
-## Troubleshooting
+The client must be of type **Desktop app**. This matters for two reasons:
 
-**"This app isn't verified" screen during auth:**
-This is expected for apps in Testing mode. Click "Advanced" → "Go to WorldShare (unsafe)".
-It's only "unsafe" because Google hasn't audited it — not because there's anything wrong.
+- Desktop clients allow the loopback redirect (`http://127.0.0.1:<random-port>/`)
+  that `LocalRedirectReceiver` listens on, with no pre-registered redirect URI.
+- Google treats desktop client secrets as non-confidential, which is why shipping
+  `client_secret.json` inside the mod jar is acceptable practice rather than a
+  leak. It is not a password; the security boundary is the user's own consent.
 
-**"access_denied" error:**
-The user trying to auth isn't in your Test Users list. Go back to step 3.9 and add them.
+### 5. Publish the app
 
-**"invalid_client" error:**
-Something is wrong with client_secret.json — possibly a typo in the path, or the file
-was downloaded from a different GCP project than the one whose app is configured.
+**OAuth consent screen → Publishing status → Publish app**
+
+This is the step that matters most for day-to-day use, and it's worth doing early
+even before verification completes:
+
+> While the app sits in **Testing**, refresh tokens expire after **7 days**, so
+> every user has to sign in again weekly. This is a property of publishing status,
+> not of the scope — it applies to `drive.file` too. Publishing to **Production**
+> ends it.
+
+Because the only scope is non-sensitive, publishing does not require the app to
+have completed verification first. Brand verification affects how the consent
+screen is *presented*, not whether the app functions.
+
+### 6. Submit for brand verification
+
+Once the consent screen is filled in and the domain is verified, submit. Expect
+anywhere from a few minutes (automated) to about three business days (manual
+review). Until it passes, users may see an "unverified app" interstitial.
+
+### 7. Quota — no action needed, recorded for the record
+
+All installs share one Cloud project's quota. Drive's default per-project ceiling
+is far above anything this design generates: a sync costs a handful of API calls
+(read one control file, update the touched bucket archives, write the control
+file back), not one call per world file as the pre-migration design did. Worth
+revisiting only if WorldShare becomes unexpectedly popular.
+
+### Outstanding
+
+- **Mod icon.** Needed in three places: the consent screen logo (120×120 PNG),
+  `logoFile` in `neoforge.mods.toml`, and the Modrinth project icon. Not yet
+  created — this needs a design decision, not a default.
+
+---
+
+## Development setup
+
+For building from source with your own credentials. You do **not** need to
+publish or verify anything to develop or test locally.
+
+1. Create a project at [console.cloud.google.com](https://console.cloud.google.com).
+2. **APIs & Services → Library → Google Drive API → Enable.**
+3. **APIs & Services → OAuth consent screen:** User type *External*, fill in the
+   required name and email fields, and add the single scope
+   `https://www.googleapis.com/auth/drive.file`.
+4. Add your own Google account (and any test accounts) under **Test users**.
+5. **Credentials → Create credentials → OAuth client ID → Desktop app.**
+6. Download the JSON and place it at **one** of:
+   - `src/main/resources/worldshare/oauth/client_secret.json` — bundled into the
+     jar at build time.
+   - `<gamedir>/config/worldshare/client_secret.json` — loaded at runtime and
+     takes precedence, so you can swap credentials without rebuilding.
+
+Both paths are gitignored. Do not commit either.
+
+### Testing Drive behaviour without launching Minecraft
+
+`tools/oauth-picker-prototype/` holds standalone Python scripts that exercise the
+same Drive API paths the mod uses — the consent-plus-picker flow, per-file grant
+persistence, and what a folder grant does and doesn't cover. Its README explains
+each script. They're how every claim in the decision report was established, and
+they're much faster than a game restart when you need to check an API assumption.

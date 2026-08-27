@@ -19,16 +19,21 @@
     body { color: #e8e8e8; background: #14161a; }
     a { color: #7fb3ff; }
     .card { background: #1d2026; border-color: #2c3038; }
+    .tagline { color: #9a9a9a; }
+    .links a { border-color: #3a3f48; }
+    ol.steps li::marker { color: #9a9a9a; }
   }
   h1 { font-size: 1.9rem; margin-bottom: 0.25rem; }
+  h2 { font-size: 1.15rem; margin-top: 2.25rem; }
   .tagline { color: #666; margin-top: 0; }
-  @media (prefers-color-scheme: dark) { .tagline { color: #9a9a9a; } }
   .card {
     border: 1px solid #e2e2e2;
     border-radius: 10px;
     padding: 1.25rem 1.5rem;
     margin: 1.5rem 0;
   }
+  ol.steps { padding-left: 1.2rem; }
+  ol.steps li { margin: 0.5rem 0; }
   .links { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 2rem; }
   .links a {
     display: inline-block;
@@ -45,22 +50,42 @@
   <p class="tagline">Share one Minecraft singleplayer world with someone far away, without running a dedicated server.</p>
 
   <p>
-    WorldShare is a Minecraft mod that lets two players keep a single singleplayer
-    world in sync over Google Drive, with session locking so you never overwrite
-    each other's progress. Either of you can open the world solo, and when you're
-    both online at the same time, you play together live over a peer-to-peer relay.
+    WorldShare is a Minecraft mod that lets two players keep a single
+    singleplayer world in sync through Google Drive, with session locking so you
+    never overwrite each other's progress. Either of you can open the world solo
+    whenever you like; when you're both online at the same time, you play
+    together live over a peer-to-peer relay.
   </p>
+
+  <h2>How it works</h2>
+  <ol class="steps">
+    <li>One of you sets up a world. WorldShare creates about ten files in a Drive folder you choose.</li>
+    <li>You share that folder with the other player, the way you'd share any Drive folder.</li>
+    <li>They sign in once and select those files. That's the whole setup — it never has to be repeated.</li>
+    <li>From then on, whoever plays pushes their changes when they're done, and the other pulls them next time they play.</li>
+  </ol>
 
   <div class="card">
     <strong>What it needs from you:</strong> a Google account, and permission to
-    read and write files in a Google Drive folder you choose. See the
-    <a href="privacy.html">privacy policy</a> for exactly what that means.
+    read and write the specific files you select — nothing else in your Drive.
+    WorldShare uses <code>drive.file</code>, the narrowest Drive permission
+    Google offers, which grants access only to files you personally pick. See the
+    <a href="privacy.html">privacy policy</a> for exactly what that means and
+    everywhere your data goes.
   </div>
 
+  <h2>What it isn't</h2>
   <p>
-    No dedicated server, no third-party hosting — your world lives in your own
-    Google Drive, in a folder you pick, and only the people you've shared that
-    folder with can reach it.
+    There's no dedicated server and no third-party hosting. Your world lives in
+    your own Google Drive, in a folder you chose, reachable only by the people
+    you shared it with. The developer has no access to any of it, and the mod
+    collects no analytics.
+  </p>
+
+  <p>
+    Live co-op runs through <a href="https://modrinth.com/mod/e4mc">e4mc</a>, a
+    separate mod you'll also need installed. It's only used while you're actually
+    playing together.
   </p>
 
   <div class="links">
