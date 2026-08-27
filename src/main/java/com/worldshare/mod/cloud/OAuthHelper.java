@@ -213,10 +213,13 @@ public final class OAuthHelper {
      * Erase the stored credential. The next call to {@link #authorize()} will
      * trigger a full browser flow. Used by a "Sign out" menu action.
      *
-     * <p>This does not revoke the app's per-file grants on Google's side - the
-     * user re-signing in with the same account regains access to the files they
-     * previously picked, without re-picking. Revoking for real is done from the
-     * user's Google account permissions page.
+     * <p>This does not cost the user their file picks. Grants live server-side
+     * against the (Google account, OAuth client) pair, not inside the token, so
+     * signing back in with the same account restores access to everything they
+     * previously selected without another trip through the Picker. Verified
+     * directly: token deleted, plain consent re-run with no Picker step, and a
+     * previously-picked object was still reachable. Revoking access for real is
+     * done from the user's Google account permissions page, not here.
      */
     public static void forgetStoredCredential() throws IOException {
         final Path stored = WorldSharePaths.tokensDir().resolve("StoredCredential");
