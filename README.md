@@ -43,6 +43,8 @@ The "host" is whoever creates the world. You only do this once per world.
    your friend's game knows what it needs.
 5. **Share that Drive folder** with your friend by email. **Set their permission
    to Editor**, not Viewer; they cannot sync without write access.
+6. **Send them the folder's link.** WorldShare prints it in chat after setup. It
+   isn't a password — it only tells Google which folder to show them.
 
 > **Why so many files rather than one?** Google Drive replaces a file's entire
 > contents on every write — there's no way to update part of one. Splitting the
@@ -62,13 +64,14 @@ The "guest" is anyone joining a host's world.
 3. **Launch Minecraft** to the title screen.
 4. **Click "Contributor Worlds"** (the button below Multiplayer), then
    **"+ Add World"**.
-5. **Sign in with Google** when prompted — this is separate from your Minecraft
-   account. Google will then ask which files WorldShare may use.
-6. **Open the shared folder and select every `worldshare-*` file inside it.**
+5. **Paste the folder link the host sent you**, then click *Sign in and pick
+   world files*. (No link? Leave it blank — you'll browse to the folder yourself.)
+6. **Sign in with Google** — separate from your Minecraft account. Google shows
+   you the world's folder. **Open it and select every file inside.**
 
-   > Selecting the folder itself will *not* work, and this catches everyone out
-   > the first time. Google only grants access to files you pick individually —
-   > a folder grants nothing about its contents. You do this once; it's
+   > The folder itself isn't selectable, on purpose. Google grants access only to
+   > files you pick individually — a folder grants nothing about its contents, so
+   > selecting it would look like it worked and then fail. You do this once; it's
    > remembered from then on, even if you sign out or reinstall.
 
 7. The world appears in your Contributor Worlds list. Click **Download**.

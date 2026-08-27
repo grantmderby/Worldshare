@@ -16,20 +16,24 @@ ID, not by name or location, so the owner can reorganise their Drive freely.
 Editor access. Then run `/worldshare clearDriveLink` in the world and re-add it
 from the Contributor Worlds tab, selecting the files again.
 
-## "Selecting the folder only works for a world you created yourself"
+## The picker shows my whole Drive instead of the world's folder
 
-**Cause:** In Google's file picker you selected the shared *folder* rather than
-the files inside it. This is the single most common setup mistake.
+**Cause:** No invite link was pasted into Add World, so there was nothing to
+scope the picker to.
 
-**Fix:** Run Add World again, **open** the folder in the picker, and select every
-`worldshare-*` file within it. They toggle on a single click — no ctrl or shift
-needed.
+**Fix:** Ask the host for their world's folder link — WorldShare prints it in
+chat when they run `/worldshare setup` — and paste it before signing in. Browsing
+manually also works; it's just slower.
 
-**Why it works this way:** Google grants access per file, and a folder is just
-another file — being given a folder tells Google nothing about what's inside it.
-The one exception is a world you created yourself: files your own copy of the mod
-created stay reachable to it, which is why picking the folder works for the host
-and not for anyone else.
+## I can't select the folder in the picker
+
+That's deliberate. Open it and select the files inside instead.
+
+Google grants access per file, and a folder is just another file — being given a
+folder tells Google nothing about what's inside it. Selecting it would appear to
+work and then fail, so the join flow makes folders unselectable. (The host's own
+setup flow *does* let them pick a folder, because it needs somewhere to create
+the files.)
 
 ## "Missing N file(s): worldshare-bucket_04.zip, ..."
 

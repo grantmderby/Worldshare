@@ -103,6 +103,23 @@ public final class OAuthHelper {
      */
     private static final String PARAM_ALLOW_FOLDER_SELECTION = "allow_folder_selection";
 
+    /**
+     * Authorization-URL parameter restricting what the Picker offers, as a
+     * comma-separated list of Drive IDs.
+     *
+     * <p>This is what turns joining a world from "find these eighteen files
+     * somewhere in your Drive" into a single screen showing exactly the right
+     * ones. Passing the world's <em>folder</em> ID is the useful case: the Picker
+     * shows that one folder, the user opens it, and its contents are selectable
+     * inside. Verified directly against the API.
+     *
+     * <p>Pair it with {@code allow_folder_selection} left off. The folder then
+     * stays navigable but cannot itself be selected - which matters, because
+     * selecting the folder returns a grant that reaches none of its contents and
+     * looks like success to the user.
+     */
+    private static final String PARAM_FILE_IDS = "file_ids";
+
     private OAuthHelper() {
         // utility class
     }
@@ -145,7 +162,7 @@ public final class OAuthHelper {
         }
 
         WorldShareMod.LOGGER.info("Starting OAuth authorization for user '{}'", USER_ID);
-        return runBrowserFlow(flow, urlPresenter, false, false, false).credential();
+        return runBrowserFlow(flow, urlPresenter, false, false, false, null).credential();
     }
 
     /**
@@ -188,12 +205,30 @@ public final class OAuthHelper {
                                                        final boolean allowMultiple,
                                                        final boolean allowFolderSelection)
             throws IOException, GeneralSecurityException {
+        return authorizeWithPicker(urlPresenter, allowMultiple, allowFolderSelection, null);
+    }
+
+    /**
+     * As {@link #authorizeWithPicker(Consumer, boolean, boolean)}, but restricting
+     * what the Picker shows.
+     *
+     * @param scopeToIds Drive IDs the Picker should be limited to, or null for the
+     *                   user's whole Drive. Passing a world's folder ID here is
+     *                   what lets a joining player see just that world's files
+     *                   instead of hunting for them - see {@link #PARAM_FILE_IDS}.
+     */
+    public static PickerAuthResult authorizeWithPicker(final Consumer<String> urlPresenter,
+                                                       final boolean allowMultiple,
+                                                       final boolean allowFolderSelection,
+                                                       final List<String> scopeToIds)
+            throws IOException, GeneralSecurityException {
         final GoogleAuthorizationCodeFlow flow = buildFlow();
         WorldShareMod.LOGGER.info(
-                "Starting OAuth authorization WITH Picker (allowMultiple={}, allowFolders={})",
-                allowMultiple, allowFolderSelection);
-        final PickerAuthResult result =
-                runBrowserFlow(flow, urlPresenter, true, allowMultiple, allowFolderSelection);
+                "Starting OAuth authorization WITH Picker (allowMultiple={}, allowFolders={}, scoped={})",
+                allowMultiple, allowFolderSelection,
+                scopeToIds == null ? "no" : scopeToIds.size() + " id(s)");
+        final PickerAuthResult result = runBrowserFlow(
+                flow, urlPresenter, true, allowMultiple, allowFolderSelection, scopeToIds);
         WorldShareMod.LOGGER.info("Picker flow complete: {} file(s) granted",
                 result.pickedFileIds().size());
         return result;
@@ -242,7 +277,8 @@ public final class OAuthHelper {
                                                    final Consumer<String> urlPresenter,
                                                    final boolean triggerPicker,
                                                    final boolean allowMultiple,
-                                                   final boolean allowFolderSelection)
+                                                   final boolean allowFolderSelection,
+                                                   final List<String> scopeToIds)
             throws IOException {
         final LocalRedirectReceiver receiver = new LocalRedirectReceiver();
         try {
@@ -257,6 +293,9 @@ public final class OAuthHelper {
                 }
                 if (allowFolderSelection) {
                     authUrl.set(PARAM_ALLOW_FOLDER_SELECTION, "true");
+                }
+                if (scopeToIds != null && !scopeToIds.isEmpty()) {
+                    authUrl.set(PARAM_FILE_IDS, String.join(",", scopeToIds));
                 }
             }
 

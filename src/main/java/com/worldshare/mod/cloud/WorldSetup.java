@@ -31,7 +31,9 @@ import java.util.function.Consumer;
  *       exist, created by someone else, so every one of them must be selected
  *       individually in the Picker. Selecting the containing folder does not
  *       work: testing showed a folder grant conveys no access to its contents,
- *       even for files that were already inside it when it was picked.</li>
+ *       even for files that were already inside it when it was picked. The
+ *       inviter's folder ID is used to scope the Picker so those files are the
+ *       only thing on screen.</li>
  * </ul>
  *
  * <p><b>Why the files are created empty.</b> A placeholder can be picked, and a
@@ -196,17 +198,35 @@ public final class WorldSetup {
      * is exact.
      *
      * @param urlPresenter how to show the user the authorization URL
+     * @param inviteFolderId the world's Drive folder ID, from the invite the host
+     *                       shared. Optional: when present the Picker shows only
+     *                       that folder, so the player opens it and selects the
+     *                       contents rather than hunting through their Drive. When
+     *                       null they browse Drive themselves, which still works.
      * @return a {@link RemoteFileSet} which the caller MUST check with
      *         {@link RemoteFileSet#isComplete()} before saving
      */
-    public static RemoteFileSet joinExistingWorld(final Consumer<String> urlPresenter)
+    public static RemoteFileSet joinExistingWorld(final Consumer<String> urlPresenter,
+                                                  final String inviteFolderId)
             throws IOException, GeneralSecurityException {
+        final List<String> scope = (inviteFolderId == null || inviteFolderId.isBlank())
+                ? null
+                : List.of(inviteFolderId);
+
+        // Folder selection is deliberately OFF here, unlike the creator flow.
+        //
+        // With the Picker scoped to the world's folder, the folder is the first
+        // thing on screen and selecting it is the obvious move - but a folder grant
+        // reaches none of its contents, so that returns a useless grant that looks
+        // like success. Turning folder selection off leaves the folder navigable
+        // while making it unselectable, which funnels the player into opening it
+        // and selecting the files. Verified against the live Picker.
         final PickerAuthResult auth =
-                OAuthHelper.authorizeWithPicker(urlPresenter, true, true);
+                OAuthHelper.authorizeWithPicker(urlPresenter, true, false, scope);
         if (!auth.hasPicks()) {
             throw new IOException(
-                    "Nothing was selected. Re-run setup and choose the world's files "
-                            + "(or the folder containing them) in the picker.");
+                    "Nothing was selected. Open the world's folder in the picker and "
+                            + "select the files inside it.");
         }
 
         CloudModule.refreshCredential(auth.credential());
@@ -236,12 +256,12 @@ public final class WorldSetup {
         }
 
         if (nameToId.isEmpty() && pickedAnyFolder) {
-            // By far the most likely way this goes wrong, and the least obvious to
-            // diagnose from a generic "nothing matched" message.
+            // Should be unreachable now that folder selection is off for this flow,
+            // but a folder can still arrive if the user had previously granted one.
             throw new IOException(
-                    "Selecting the folder only works for a world you created yourself. "
-                            + "These files belong to someone else, so open the shared folder "
-                            + "in the picker and select all the worldshare-* files inside it.");
+                    "You selected a folder, which doesn't grant access to what's inside it. "
+                            + "Open the folder in the picker and select the worldshare-* "
+                            + "files within it.");
         }
 
         // First pass at the default layout, purely to locate the control file among
@@ -303,6 +323,39 @@ public final class WorldSetup {
             }
         }
         return out;
+    }
+
+    /**
+     * Pull a Drive folder ID out of whatever the host pasted to their friend.
+     *
+     * <p>Accepts a bare ID or a full folder URL, because the natural thing for a
+     * host to send is the address bar of the folder they just shared.
+     *
+     * @return the folder ID, or null if the input doesn't contain a plausible one
+     */
+    public static String extractFolderId(final String raw) {
+        if (raw == null) return null;
+        String s = raw.trim();
+        if (s.isEmpty()) return null;
+
+        final int folders = s.indexOf("/folders/");
+        if (folders >= 0) {
+            s = s.substring(folders + "/folders/".length());
+        }
+        final int q = s.indexOf('?');
+        if (q >= 0) s = s.substring(0, q);
+        final int hash = s.indexOf('#');
+        if (hash >= 0) s = s.substring(0, hash);
+        while (s.endsWith("/")) {
+            s = s.substring(0, s.length() - 1);
+        }
+
+        if (!s.matches("[A-Za-z0-9_\\-]+")) return null;
+        // Drive IDs are 25+ characters in practice; anything shorter is a typo or a
+        // fragment of something else, and passing it to the Picker just yields an
+        // empty screen with no explanation.
+        if (s.length() < 25) return null;
+        return s;
     }
 
     /**

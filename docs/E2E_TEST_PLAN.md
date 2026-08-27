@@ -102,19 +102,30 @@ Play a little more in **one area**, then `/worldshare push` again.
 | # | Action | Expected |
 |---|---|---|
 | 3.1 | As A, share the Drive folder with B's account as **Editor** | — |
-| 3.2 | As B, launch Minecraft → **Contributor Worlds** → **Add World** | Screen explains to open the folder and select the files inside |
-| 3.3 | Click *Sign in and pick world files* | Browser opens to consent + picker |
-| 3.4 | **First, deliberately do it wrong:** select only the *folder* | Back in game: *"Selecting the folder only works for a world you created yourself..."* |
-| 3.5 | Retry, open the folder, select **all 18** `worldshare-*` files | Returns to Contributor Worlds, world appears in the list |
-| 3.6 | Select the world → download/open | Pull runs, world opens with A's terrain and buildings |
+| 3.2 | As A, copy the folder link `/worldshare setup` printed in chat | A `drive.google.com/drive/folders/...` URL |
+| 3.3 | As B, **Contributor Worlds** → **Add World**, paste the link | — |
+| 3.4 | Click *Sign in and pick world files* | Picker opens showing **only that folder** — not B's whole Drive |
+| 3.5 | Try to select the folder itself | **Not selectable.** It can only be opened |
+| 3.6 | Open it, select **all 18** `worldshare-*` files | Returns to Contributor Worlds, world appears in the list |
+| 3.7 | Select the world → download/open | Pull runs, world opens with A's terrain and buildings |
 
-**Log check on 3.5:** `join: matched 18 of 18 required file(s)`.
+**Log check on 3.6:** `join: matched 18 of 18 required file(s)`.
 
-> **Step 3.4 is not optional padding.** It's the mistake every real user will make
-> first, and the whole point of that error message. If it instead reports "18 files
-> missing", the guidance is useless and needs rewording.
+> **Step 3.4 and 3.5 are the point of this phase.** Scoping the picker to the
+> invite folder and making that folder unselectable are what stop the commonest
+> setup failure. If B sees their whole Drive, the `file_ids` scoping didn't take.
+> If the folder *can* be selected, `allow_folder_selection` is leaking into the
+> join flow and users will pick it and get a grant that reaches nothing.
 
-### 3.7 — Partial selection
+### 3.8 — The no-invite path
+
+Repeat with the link box left **blank**.
+
+- **Expect:** the picker opens on B's whole Drive, B navigates to the shared
+  folder, and selection works the same way. Slower, but it must work — invites
+  get lost.
+
+### 3.9 — Partial selection
 
 Worth one run: pick only **half** the files.
 

@@ -235,12 +235,14 @@ public final class WorldShareCommands {
                 sendClientMessage("§e ");
                 sendClientMessage("§e[WorldShare] To invite someone:");
                 sendClientMessage("§e  1. Share that Drive folder with them as Editor.");
-                sendClientMessage("§e  2. Have them use Contributor Worlds -> Add World.");
-                sendClientMessage("§e  3. When Google asks, they must OPEN the folder and");
-                sendClientMessage("§e     select all " + (remote.bucketCount + 2)
-                        + " worldshare-* files inside it.");
-                sendClientMessage("§7     Picking just the folder works for you, because you");
-                sendClientMessage("§7     created these files - but not for them.");
+                sendClientMessage("§e  2. Send them this link:");
+                sendClientMessage("§b     https://drive.google.com/drive/folders/"
+                        + remote.driveFolderId);
+                sendClientMessage("§e  3. They paste it into Contributor Worlds -> Add World,");
+                sendClientMessage("§e     then open the folder and select all "
+                        + (remote.bucketCount + 2) + " files inside.");
+                sendClientMessage("§7     The link only tells Google which folder to show them;");
+                sendClientMessage("§7     it grants nothing on its own.");
                 sendClientMessage("§e ");
                 sendClientMessage("§e[WorldShare] Note: this world is NOT yet locked for syncing.");
                 sendClientMessage("§e To play with Drive sync, save and quit, then open via");
