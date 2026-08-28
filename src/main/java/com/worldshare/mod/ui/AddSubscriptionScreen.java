@@ -49,6 +49,16 @@ public final class AddSubscriptionScreen extends Screen {
     private volatile String statusMessage = null;
     private volatile boolean statusIsError = false;
 
+    /**
+     * The Google sign-in URL, once the flow has produced one.
+     *
+     * <p>Kept so the player has a way forward if the browser doesn't open. Without
+     * it this screen can sit on "waiting for you to finish in your browser" with no
+     * browser and no URL, which is a dead end with no way out but Cancel.
+     */
+    private volatile String authUrl = null;
+    private Button copyLinkButton;
+
     public AddSubscriptionScreen(final ContributorWorldsScreen parent) {
         super(Component.literal("Add Contributor World"));
         this.parent = parent;
@@ -79,6 +89,20 @@ public final class AddSubscriptionScreen extends Screen {
                         b -> Minecraft.getInstance().setScreen(parent))
                 .bounds(cx - 60, midY + 56, 120, 20)
                 .build());
+
+        // Hidden until there's a URL to copy. Chat isn't an option here - this
+        // screen covers it - so the escape hatch has to live on the screen itself.
+        copyLinkButton = this.addRenderableWidget(Button.builder(
+                        Component.literal("Copy sign-in link"),
+                        b -> {
+                            if (authUrl != null) {
+                                Minecraft.getInstance().keyboardHandler.setClipboard(authUrl);
+                                setStatus("Link copied - paste it into your browser.", false);
+                            }
+                        })
+                .bounds(cx - 90, midY + 80, 180, 20)
+                .build());
+        copyLinkButton.visible = false;
     }
 
     @Override
@@ -151,8 +175,13 @@ public final class AddSubscriptionScreen extends Screen {
 
         CloudModule.executor().submit(() -> {
             try {
-                final RemoteFileSet remote =
-                        WorldSetup.joinExistingWorld(BrowserOpener::open, folderId);
+                final RemoteFileSet remote = WorldSetup.joinExistingWorld(url -> {
+                    authUrl = url;
+                    if (!BrowserOpener.open(url)) {
+                        setStatus("Couldn't open your browser - use the button below.", true);
+                    }
+                    Minecraft.getInstance().execute(() -> copyLinkButton.visible = true);
+                }, folderId);
 
                 if (!remote.isComplete()) {
                     // Partial selections are the most likely way this goes wrong, so
@@ -191,7 +220,10 @@ public final class AddSubscriptionScreen extends Screen {
                 }
             } finally {
                 working = false;
-                Minecraft.getInstance().execute(() -> confirmButton.active = true);
+                Minecraft.getInstance().execute(() -> {
+                    confirmButton.active = true;
+                    copyLinkButton.visible = false;
+                });
             }
         });
     }
