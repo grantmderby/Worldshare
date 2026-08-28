@@ -1,0 +1,16 @@
+#WorldShare settings
+[general]
+	#Display name shown to other contributors. Leave blank to use your Minecraft username.
+	playerDisplayName = ""
+	#Google Drive folder ID for the shared world. Set via in-game settings after OAuth.
+	driveFolderId = ""
+	#Minutes before an unheartbeated session lock is considered stale. Default 1440 = 24 hours. Set as low as 1 for testing the stale-lock UX.
+	# Default: 1440
+	# Range: 1 ~ 10080
+	lockExpiryMinutes = 1440
+	#Soft cap on simultaneous players when hosting.
+	# Default: 5
+	# Range: 1 ~ 20
+	playerCap = 5
+	#Write detailed sync logs to worldshare.log for debugging.
+	verboseLogging = false

@@ -154,6 +154,34 @@ public final class WorldShareCommands {
         return Command.SINGLE_SUCCESS;
     }
 
+    /**
+     * Post the invite link as one clickable line that copies to the clipboard.
+     *
+     * <p>Printing the raw URL was worse than merely untidy: a Drive folder URL is
+     * about sixty characters, so it wrapped across three chat lines and could not
+     * reliably be copied out of the game at all - and copying it is the entire
+     * point, since it has to reach the other player.
+     */
+    private static void postCopyableInviteLink(final String folderId) {
+        final String url = "https://drive.google.com/drive/folders/" + folderId;
+        final Minecraft mc = Minecraft.getInstance();
+        if (mc == null) return;
+        mc.execute(() -> {
+            final MutableComponent link = Component.literal("  [Copy invite link]")
+                    .setStyle(Style.EMPTY
+                            .withColor(ChatFormatting.AQUA)
+                            .withUnderlined(true)
+                            .withClickEvent(new ClickEvent(
+                                    ClickEvent.Action.COPY_TO_CLIPBOARD, url))
+                            .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
+                                    Component.literal("Click to copy:\n" + url
+                                            + "\n\nSend this to the person you're sharing with."))));
+            if (mc.player != null) {
+                mc.player.displayClientMessage(link, false);
+            }
+        });
+    }
+
     private static void postClickableAuthLink(final String url) {
         final Minecraft mc = Minecraft.getInstance();
         if (mc == null) return;
@@ -233,25 +261,16 @@ public final class WorldShareCommands {
                 SubscriptionStore.get().linkWorldToRemote(
                         world.worldRoot, localFolder, remote, world.name);
 
-                sendClientMessage("§a[WorldShare] Set up '" + world.name + "' for sharing.");
-                sendClientMessage("§7 Created " + (bucketCount + 2)
-                        + " files in your Drive folder.");
-                sendClientMessage("§e ");
-                sendClientMessage("§e[WorldShare] To invite someone:");
-                sendClientMessage("§e  1. Share that Drive folder with them as Editor.");
-                sendClientMessage("§e  2. Send them this link:");
-                sendClientMessage("§b     https://drive.google.com/drive/folders/"
-                        + remote.driveFolderId);
-                sendClientMessage("§e  3. They paste it into Contributor Worlds -> Add World,");
-                sendClientMessage("§e     then open the folder and select all "
-                        + (remote.bucketCount + 2) + " files inside.");
-                sendClientMessage("§7     The link only tells Google which folder to show them;");
-                sendClientMessage("§7     it grants nothing on its own.");
-                sendClientMessage("§e ");
-                sendClientMessage("§e[WorldShare] Note: this world is NOT yet locked for syncing.");
-                sendClientMessage("§e To play with Drive sync, save and quit, then open via");
-                sendClientMessage("§e the Contributor Worlds tab. Running from vanilla");
-                sendClientMessage("§7 Singleplayer will not save changes to Drive.");
+                // Three lines, deliberately. This used to print sixteen, and Minecraft
+                // shows about ten - so the success line and the first two invite steps
+                // scrolled off before the player could read them, making a successful
+                // setup look like it had done nothing. The step-by-step for the person
+                // being invited belongs in the README, not in the host's chat log.
+                sendClientMessage("§a\u2705 '" + world.name + "' is ready to share \u2014 "
+                        + remote.layout().remoteFileCount() + " files created in Drive.");
+                postCopyableInviteLink(remote.driveFolderId);
+                sendClientMessage("§7Share that Drive folder with them as Editor, "
+                        + "then send them the link.");
 
                 WorldShareMod.LOGGER.info("setup: '{}' (local: '{}') -> control file {}",
                         world.name, localFolder, remote.controlFileId);
@@ -277,6 +296,8 @@ public final class WorldShareCommands {
                     sendClientMessage("§e[WorldShare] Mod list publish failed - "
                             + "run /worldshare modpack generate manually.");
                 }
+                sendClientMessage("§8Not locked for syncing yet \u2014 open this world from "
+                        + "Contributor Worlds to play with Drive sync.");
             } catch (final Throwable t) {
                 WorldShareMod.LOGGER.error("setup failed", t);
                 sendClientMessage("§c[WorldShare] Setup failed: " + t.getMessage());
@@ -672,25 +693,98 @@ public final class WorldShareCommands {
 
         CloudModule.executor().submit(() -> {
             final java.util.List<String> report = new java.util.ArrayList<>();
+            final java.util.List<String> problems = new java.util.ArrayList<>();
             try {
-                buildDoctorReport(report, world, full);
+                buildDoctorReport(report, problems, world, full);
             } catch (final Throwable t) {
-                report.add("§cDiagnostics aborted: " + t.getClass().getSimpleName()
+                problems.add("Diagnostics aborted: " + t.getClass().getSimpleName()
                         + ": " + t.getMessage());
                 WorldShareMod.LOGGER.error("doctor: failed", t);
             }
-            // Chat for reading, log for pasting - a dozen coloured chat lines are
-            // painful to copy out of the game.
-            WorldShareMod.LOGGER.info("=== /worldshare doctor ===");
-            for (final String line : report) {
-                sendClientMessage(line);
-                WorldShareMod.LOGGER.info("  {}", line.replaceAll("\u00a7.", ""));
+
+            // Chat gets a verdict; the file gets everything.
+            //
+            // The full report runs to a dozen-plus lines and Minecraft shows about
+            // ten, so printing it all guaranteed the top scrolled away - and chat
+            // text can't be copied out of the game anyway, which is what you want
+            // to do with a diagnostic. The file is plain, selectable text.
+            final java.nio.file.Path out = writeDoctorReport(report, world);
+
+            if (problems.isEmpty()) {
+                sendClientMessage("§a\u2705 WorldShare looks healthy for '" + world.name + "'.");
+            } else {
+                sendClientMessage("§c\u26a0 " + problems.size() + " problem(s) with '"
+                        + world.name + "':");
+                for (final String problem : problems) {
+                    sendClientMessage("§c  \u2022 " + problem);
+                }
+            }
+            if (out != null) {
+                postCopyableReportPath(out);
+            } else {
+                sendClientMessage("§7Full report is in the log.");
             }
         });
         return Command.SINGLE_SUCCESS;
     }
 
+    /**
+     * Write the full diagnostic somewhere it can be read and pasted.
+     *
+     * <p>Goes next to the game directory rather than into the log, because
+     * latest.log is enormous and finding the report inside it is its own chore.
+     *
+     * @return the file written, or null if it couldn't be (in which case the
+     *         caller falls back to the log)
+     */
+    private static java.nio.file.Path writeDoctorReport(final java.util.List<String> report,
+                                                        final WorldContext.CurrentWorld world) {
+        final java.nio.file.Path out = com.worldshare.mod.util.WorldSharePaths.gameDir()
+                .resolve("worldshare-doctor.txt");
+        final StringBuilder text = new StringBuilder();
+        text.append("WorldShare diagnostic report\n")
+                .append("Generated: ").append(java.time.Instant.now()).append('\n')
+                .append("World: ").append(world.name).append('\n')
+                .append("Path:  ").append(world.worldRoot).append('\n')
+                .append("----------------------------------------\n");
+        for (final String line : report) {
+            // Strip Minecraft's colour codes; they're noise in a text file.
+            text.append(line.replaceAll("\u00a7.", "")).append('\n');
+        }
+
+        WorldShareMod.LOGGER.info("=== /worldshare doctor ===\n{}", text);
+        try {
+            java.nio.file.Files.writeString(out, text.toString(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            return out;
+        } catch (final Exception e) {
+            WorldShareMod.LOGGER.warn("doctor: couldn't write {}: {}", out, e.getMessage());
+            return null;
+        }
+    }
+
+    /** One clickable line that copies the report's path, since chat text can't be selected. */
+    private static void postCopyableReportPath(final java.nio.file.Path path) {
+        final Minecraft mc = Minecraft.getInstance();
+        if (mc == null) return;
+        mc.execute(() -> {
+            final MutableComponent link = Component.literal("  [Copy full report path]")
+                    .setStyle(Style.EMPTY
+                            .withColor(ChatFormatting.AQUA)
+                            .withUnderlined(true)
+                            .withClickEvent(new ClickEvent(ClickEvent.Action.COPY_TO_CLIPBOARD,
+                                    path.toAbsolutePath().toString()))
+                            .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
+                                    Component.literal(path.toAbsolutePath().toString()
+                                            + "\n\nOpen this to read or paste the full report."))));
+            if (mc.player != null) {
+                mc.player.displayClientMessage(link, false);
+            }
+        });
+    }
+
     private static void buildDoctorReport(final java.util.List<String> out,
+                                          final java.util.List<String> problems,
                                           final WorldContext.CurrentWorld world,
                                           final boolean full) {
         out.add("§b=== WorldShare doctor ===");
@@ -700,27 +794,35 @@ public final class WorldShareCommands {
         final WorldLink link = WorldLink.read(world.worldRoot);
         if (link == null) {
             out.add("§eNot set up for sharing. Run /worldshare setup.");
+            problems.add("Not set up for sharing - run /worldshare setup");
             return;
         }
         if (link.isLegacy()) {
             out.add("§eLinked under the old full-Drive scope (folder "
                     + link.driveFolderId + ").");
             out.add("§eRun /worldshare setup again to pick this world's files.");
+            problems.add("Linked under the old full-Drive scope - re-run /worldshare setup");
             return;
         }
         final RemoteFileSet remote = link.remote;
         if (remote == null) {
             out.add("§cLink file exists but names no Drive files. Re-run setup.");
+            problems.add("Link file names no Drive files - re-run setup");
             return;
         }
         if (!remote.isComplete()) {
             out.add("§cSetup incomplete - still missing: §f"
                     + WorldSetup.describeMissing(remote));
             out.add("§7Re-run Add World and select the missing files.");
+            problems.add("Setup incomplete, missing: " + WorldSetup.describeMissing(remote));
             return;
         }
         out.add("§aLink OK §7- " + remote.bucketCount + " buckets, "
                 + remote.layout().remoteFileCount() + " remote files");
+        if (remote.driveFolderId != null) {
+            out.add("§7  invite link: §fhttps://drive.google.com/drive/folders/"
+                    + remote.driveFolderId);
+        }
         out.add("§7  control:  §f" + remote.controlFileId);
         out.add("§7  presence: §f" + remote.presenceFileId);
 
@@ -731,6 +833,7 @@ public final class WorldShareCommands {
         } catch (final Exception e) {
             out.add("§cControl file unreadable: §f" + e.getMessage());
             out.add("§7Check the folder is still shared with this Google account.");
+            problems.add("Control file unreadable - is the folder still shared with you?");
             return;
         }
         if (control == null) {
@@ -743,6 +846,8 @@ public final class WorldShareCommands {
             if (control.bucketCount != remote.bucketCount) {
                 out.add("§c!! Bucket layout mismatch: local " + remote.bucketCount
                         + " vs Drive " + control.bucketCount + ". Syncing is blocked.");
+                problems.add("Bucket layout mismatch: local " + remote.bucketCount
+                        + " vs Drive " + control.bucketCount);
             }
             if (control.modpack != null) {
                 out.add("§7  modpack published: §fyes");
