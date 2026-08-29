@@ -30,6 +30,22 @@ public final class SyncActivity {
 
     private static final AtomicInteger IN_FLIGHT = new AtomicInteger();
 
+    /**
+     * True once a push has started replacing bucket archives and before it has
+     * published the matching manifest.
+     *
+     * <p>Separate from {@link #isSyncing()} because the damage outlives the
+     * transfer. A push that uploads three archives and then fails on the fourth
+     * stops being "in flight" immediately, but Drive is left holding archives whose
+     * contents the published manifest does not describe - and releasing the lock in
+     * that state is exactly as harmful as releasing it mid-upload.
+     *
+     * <p>Session-scoped on purpose. It is only consulted alongside
+     * {@code LockManager.weHoldLock()}, which is itself in-memory and false after a
+     * restart, so a stale value cannot outlive the lock it guards.
+     */
+    private static volatile boolean remoteAheadOfManifest = false;
+
     private SyncActivity() {}
 
     /** Call on entry to a push or pull. Always pair with {@link #end()} in a finally. */
@@ -45,5 +61,31 @@ public final class SyncActivity {
     /** @return true if at least one push or pull has not finished. */
     public static boolean isSyncing() {
         return IN_FLIGHT.get() > 0;
+    }
+
+    /** Call before the first bucket archive of a push is replaced on Drive. */
+    public static void markRemoteAheadOfManifest() {
+        remoteAheadOfManifest = true;
+    }
+
+    /** Call once the manifest describing those archives has been published. */
+    public static void clearRemoteAheadOfManifest() {
+        remoteAheadOfManifest = false;
+    }
+
+    /**
+     * @return true if Drive holds archives the published manifest doesn't describe,
+     *         meaning the lock must not be handed to anyone else yet
+     */
+    public static boolean remoteAheadOfManifest() {
+        return remoteAheadOfManifest;
+    }
+
+    /**
+     * @return true if releasing the session lock right now would expose another
+     *         player to a half-finished push
+     */
+    public static boolean lockMustBeHeld() {
+        return isSyncing() || remoteAheadOfManifest;
     }
 }

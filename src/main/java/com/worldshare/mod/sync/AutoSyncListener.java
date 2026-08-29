@@ -252,9 +252,19 @@ public final class AutoSyncListener {
                             + " bucket(s) failed to upload. Run /worldshare push to retry.");
                 }
 
-                if (LockManager.weHoldLock()) {
-                    LockManager.release();
-                    WorldShareMod.LOGGER.info("AutoSync: released lock after push");
+                // Only on success - see the same reasoning in SaveAndUploadScreen.
+                // A failed push leaves archives on Drive that the published manifest
+                // does not describe, and the lock is what keeps anyone from pulling
+                // them.
+                if (result.failed == 0) {
+                    if (LockManager.weHoldLock()) {
+                        LockManager.release();
+                        WorldShareMod.LOGGER.info("AutoSync: released lock after push");
+                    }
+                } else {
+                    WorldShareMod.LOGGER.warn(
+                            "AutoSync: {} bucket(s) failed; keeping the session lock",
+                            result.failed);
                 }
             } catch (final Throwable t) {
                 WorldShareMod.LOGGER.error(

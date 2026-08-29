@@ -387,6 +387,10 @@ public final class SyncEngine {
             toUpload.put(bucket, membersByBucket.getOrDefault(bucket, Set.of()));
         }
 
+        // From here until commitControl, Drive may hold archives the published
+        // manifest doesn't describe. Nobody else may be given the lock in between.
+        SyncActivity.markRemoteAheadOfManifest();
+
         final TransferResult transfer = transferBuckets(
                 toUpload, remote, worldRoot, local, true, progress,
                 repackedFiles, totalBytes);
@@ -418,6 +422,8 @@ public final class SyncEngine {
         }
 
         commitControl(remote, local);
+        // The manifest now describes what the archives actually hold.
+        SyncActivity.clearRemoteAheadOfManifest();
         saveScanCache(local, scanCache, worldRoot);
         DirtyRegionTracker.resetAfterPush();
         progress.onComplete();

@@ -67,7 +67,7 @@ public final class CloudModule {
                 // the commit that never happened happens.
                 if (com.worldshare.mod.sync.SyncActivity.isSyncing()) {
                     WorldShareMod.LOGGER.warn(
-                            "Shutdown hook: a sync was still running, so the session "
+                            "Shutdown hook: a push did not finish, so the session "
                                     + "lock is being LEFT HELD deliberately. Reopen this "
                                     + "world and let it finish uploading; the lock "
                                     + "releases then.");

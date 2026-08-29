@@ -284,20 +284,35 @@ public final class SaveAndUploadScreen extends Screen {
                 });
                 final SyncEngine.PushResult result = pushFuture.get();
 
-                stage = "Releasing session lock...";
-                final java.util.concurrent.CompletableFuture<Void> releaseFuture
-                        = new java.util.concurrent.CompletableFuture<>();
-                CloudModule.executor().submit(() -> {
-                    try {
-                        if (LockManager.weHoldLock()) {
-                            LockManager.release();
+                // Release the lock only if the push actually landed.
+                //
+                // A failed push has already replaced some bucket archives without
+                // publishing the manifest that describes them. Handing the lock over
+                // in that state lets the next player pull archives the manifest
+                // disagrees with, and their extraction check rejects the world.
+                // Keeping the lock costs them a wait; releasing it costs them a
+                // world they cannot open.
+                if (result.failed == 0) {
+                    stage = "Releasing session lock...";
+                    final java.util.concurrent.CompletableFuture<Void> releaseFuture
+                            = new java.util.concurrent.CompletableFuture<>();
+                    CloudModule.executor().submit(() -> {
+                        try {
+                            if (LockManager.weHoldLock()) {
+                                LockManager.release();
+                            }
+                            releaseFuture.complete(null);
+                        } catch (final Throwable t) {
+                            releaseFuture.completeExceptionally(t);
                         }
-                        releaseFuture.complete(null);
-                    } catch (final Throwable t) {
-                        releaseFuture.completeExceptionally(t);
-                    }
-                });
-                releaseFuture.get();
+                    });
+                    releaseFuture.get();
+                } else {
+                    WorldShareMod.LOGGER.warn(
+                            "SaveAndUpload: {} bucket(s) failed; keeping the session lock "
+                                    + "so nobody pulls a world the manifest doesn't match",
+                            result.failed);
+                }
 
                 if (result.failed == 0) {
                     final String summary = result.filesUploaded + " files synced ("
