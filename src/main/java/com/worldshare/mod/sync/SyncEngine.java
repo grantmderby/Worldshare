@@ -347,17 +347,28 @@ public final class SyncEngine {
                     vanished);
         }
 
+        // Count the files being repacked, not the files that changed.
+        //
+        // These are different numbers - a dirty bucket is rebuilt whole, so 15
+        // changed files can mean 25 files written - and progress has to use the
+        // repacked one, because that is what transferBuckets counts off as each
+        // archive lands. Reporting changed-file count as the denominator produced
+        // "25 / 15 files" on screen. totalBytes was already measured over full
+        // bucket membership, so this also puts the two halves of the progress
+        // report back into agreement with each other.
         long totalBytes = 0L;
+        int repackedFiles = 0;
         for (final int bucket : dirtyBuckets) {
             for (final String relPath : membersByBucket.getOrDefault(bucket, Set.of())) {
+                repackedFiles++;
                 final WorldManifest.Entry entry = local.get(relPath);
                 if (entry != null) totalBytes += entry.size;
             }
         }
 
         WorldShareMod.LOGGER.info(
-                "push: {} changed file(s) dirty {} of {} bucket(s); repacking {} MB",
-                changedPaths.size(), dirtyBuckets.size(), layout.bucketCount(),
+                "push: {} changed file(s) dirty {} of {} bucket(s); repacking {} file(s), {} MB",
+                changedPaths.size(), dirtyBuckets.size(), layout.bucketCount(), repackedFiles,
                 totalBytes / (1024 * 1024));
 
         // Confirm the lock is still ours BEFORE overwriting anything.
@@ -369,7 +380,7 @@ public final class SyncEngine {
         // repacked whole that includes files belonging to whoever took the lock over.
         requireLockStillOurs(remote, "uploading");
 
-        progress.onStart(changedPaths.size(), totalBytes);
+        progress.onStart(repackedFiles, totalBytes);
 
         final Map<Integer, Set<String>> toUpload = new TreeMap<>();
         for (final int bucket : dirtyBuckets) {
@@ -378,7 +389,7 @@ public final class SyncEngine {
 
         final TransferResult transfer = transferBuckets(
                 toUpload, remote, worldRoot, local, true, progress,
-                changedPaths.size(), totalBytes);
+                repackedFiles, totalBytes);
 
         final int failed = transfer.bucketsFailed;
         final long bytes = transfer.bytesMoved;

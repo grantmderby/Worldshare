@@ -105,7 +105,14 @@ public final class ContributorWorldsScreen extends Screen {
                     .bounds(this.width / 2 + 55, bY, 100, 20).build());
         }
 
-        if (loadState == LoadState.IDLE || refreshRequested.compareAndSet(true, false)) {
+        // Never kick off a world-list reload while a transfer is running. onDownload
+        // rebuilds the widgets to swap in the progress bar, and this init() runs as
+        // part of that - so without the guard, the act of showing the progress bar
+        // started a second load that finished first and repainted the world list
+        // over it. From the outside the screen flickered and came back with the
+        // Download button still sitting there, as if nothing had happened.
+        if (!downloadInProgress
+                && (loadState == LoadState.IDLE || refreshRequested.compareAndSet(true, false))) {
             startLoading();
         }
     }
@@ -118,6 +125,10 @@ public final class ContributorWorldsScreen extends Screen {
     }
 
     private void startLoading() {
+        // This IS the refresh, so consume the request. triggerRefresh() both sets
+        // the flag and calls straight in here, which used to leave it set for the
+        // next init() to find and act on a second time.
+        refreshRequested.set(false);
         loadState = LoadState.LOADING;
         loadError = null;
         worlds = List.of();
