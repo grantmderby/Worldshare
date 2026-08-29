@@ -6,8 +6,8 @@ import com.worldshare.mod.cloud.CloudModule;
 import com.worldshare.mod.cloud.LockManager;
 import com.worldshare.mod.config.WorldLink;
 import com.worldshare.mod.relay.E4mcCoordinator;
+import com.worldshare.mod.util.PlayerNotice;
 import net.minecraft.client.Minecraft;
-import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.storage.LevelResource;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -232,8 +232,8 @@ public final class AutoSyncListener {
                         worldRoot, remote, uuid);
                 if (result.failed == 0) {
                     WorldShareMod.LOGGER.info(
-                            "AutoSync: push complete for '{}': {} files, {} bytes",
-                            worldName, result.uploaded, result.bytes);
+                            "AutoSync: push complete for '{}': {} file(s) in {} bucket(s), {} bytes",
+                            worldName, result.filesUploaded, result.bucketsUploaded, result.bytes);
                     // M7: refresh modpack.json if mod list changed.
                     try {
                         com.worldshare.mod.modmanager.ModManagerModule.generateAndUpload(remote);
@@ -243,13 +243,13 @@ public final class AutoSyncListener {
                                 "AutoSync: modpack refresh failed (non-fatal): {}", modErr.getMessage());
                     }
                     notifyClientChat("§a[WorldShare] §f'" + worldName
-                            + "' synced to Drive: " + result.uploaded + " files ("
+                            + "' synced to Drive: " + result.filesUploaded + " files ("
                             + (result.bytes / (1024 * 1024)) + " MB).");
                 } else {
                     WorldShareMod.LOGGER.warn(
                             "AutoSync: push had {} failures for '{}'", result.failed, worldName);
-                    notifyClientChat("§c[WorldShare] §f" + result.failed
-                            + " files failed to upload. Run /worldshare push to retry.");
+                    notifyClientError("§c[WorldShare] §f" + result.failed
+                            + " bucket(s) failed to upload. Run /worldshare push to retry.");
                 }
 
                 if (LockManager.weHoldLock()) {
@@ -260,27 +260,26 @@ public final class AutoSyncListener {
                 WorldShareMod.LOGGER.error(
                         "AutoSync: push failed for '{}'; local files preserved",
                         worldName, t);
-                notifyClientChat("§c[WorldShare] Auto-push failed: " + t.getMessage()
+                notifyClientError("§c[WorldShare] Auto-push failed: " + t.getMessage()
                         + ". Local changes preserved. Retry with /worldshare push.");
             }
         });
     }
 
+    /**
+     * Tell the player something about the auto-sync.
+     *
+     * <p>Delegates to {@link PlayerNotice} rather than writing to chat directly,
+     * because this class runs on {@code ServerStopping} - the player is already
+     * gone by the time any of these messages exist, so chat alone dropped every
+     * one of them into the log.
+     */
     private static void notifyClientChat(final String message) {
-        try {
-            final Minecraft mc = Minecraft.getInstance();
-            if (mc != null) {
-                mc.execute(() -> {
-                    if (mc.player != null) {
-                        mc.player.displayClientMessage(
-                                Component.literal(message), false);
-                    } else {
-                        WorldShareMod.LOGGER.info("[chat-while-no-player] {}", message);
-                    }
-                });
-            }
-        } catch (final Throwable t) {
-            WorldShareMod.LOGGER.debug("notifyClientChat failed silently", t);
-        }
+        PlayerNotice.info(message);
+    }
+
+    /** As above, for outcomes that need the player to do something about them. */
+    private static void notifyClientError(final String message) {
+        PlayerNotice.error(message);
     }
 }

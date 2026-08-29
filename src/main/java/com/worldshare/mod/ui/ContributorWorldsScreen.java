@@ -341,6 +341,24 @@ public final class ContributorWorldsScreen extends Screen {
     }
 
     private void handleAction(final WorldStateResolver.ResolvedWorld world) {
+        // Ignore a second click while a transfer is already running.
+        //
+        // downloadInProgress was already being set here, but only to hide the nav
+        // buttons - nothing checked it - and the widget rebuild that removes this
+        // row's button is deferred to Minecraft.execute(...), so the button stayed
+        // clickable for a tick or two afterwards.
+        //
+        // In practice the duplicate did no harm, and it is worth knowing exactly
+        // why: CloudModule.executor() is single-threaded and FIFO, so the second
+        // pull queued behind the first and then found everything already up to
+        // date. That is safety by accident. If that executor ever becomes
+        // multi-threaded, two pulls would unpack into the same world folder at the
+        // same time - so the guard belongs here regardless.
+        if (downloadInProgress) {
+            WorldShareMod.LOGGER.debug(
+                    "ContributorWorlds: ignoring click, a transfer is already running");
+            return;
+        }
         switch (world.state) {
             case LIVE -> onJoin(world);
             case AVAILABLE -> onOpen(world);
@@ -461,6 +479,9 @@ public final class ContributorWorldsScreen extends Screen {
                 .resolve("saves").resolve(localFolderName);
 
         loadState = LoadState.LOADING;
+        // Same re-entry guard the download path uses: this also runs a pull, and a
+        // second click would queue a second one behind it.
+        downloadInProgress = true;
 
         CloudModule.executor().submit(() -> {
             boolean lockAcquired = false;
@@ -477,6 +498,7 @@ public final class ContributorWorldsScreen extends Screen {
                             modCheck.missing.size(),
                             modCheck.wrongVersion.size());
                     loadState = LoadState.DONE;
+                    downloadInProgress = false;
                     Minecraft.getInstance().execute(() ->
                             Minecraft.getInstance().setScreen(
                                     new com.worldshare.mod.ui.ModpackSyncScreen(
@@ -514,6 +536,7 @@ public final class ContributorWorldsScreen extends Screen {
                     }
                 }
 
+                downloadInProgress = false;
                 loadError = formatDriveError(t, "Could not open world");
                 loadState = LoadState.ERROR;
                 Minecraft.getInstance().execute(() -> {
@@ -548,6 +571,8 @@ public final class ContributorWorldsScreen extends Screen {
 
             @Override
             public void onComplete() {
+                dlFilesDone = dlTotalFiles;
+                dlBytesDone = dlTotalBytes;
                 dlActive = false;
             }
 

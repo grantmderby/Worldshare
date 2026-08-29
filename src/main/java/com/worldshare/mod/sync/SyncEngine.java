@@ -108,6 +108,18 @@ public final class SyncEngine {
                                   final RemoteFileSet remote,
                                   final UUID ownUuid,
                                   final SyncProgress progress) throws IOException {
+        SyncActivity.begin();
+        try {
+            return pullInternal(worldRoot, remote, ownUuid, progress);
+        } finally {
+            SyncActivity.end();
+        }
+    }
+
+    private static PullResult pullInternal(final Path worldRoot,
+                                           final RemoteFileSet remote,
+                                           final UUID ownUuid,
+                                           final SyncProgress progress) throws IOException {
         Files.createDirectories(worldRoot);
         requireComplete(remote);
 
@@ -196,6 +208,18 @@ public final class SyncEngine {
                                   final RemoteFileSet remote,
                                   final UUID ownUuid,
                                   final SyncProgress progress) throws IOException {
+        SyncActivity.begin();
+        try {
+            return pushInternal(worldRoot, remote, ownUuid, progress);
+        } finally {
+            SyncActivity.end();
+        }
+    }
+
+    private static PushResult pushInternal(final Path worldRoot,
+                                           final RemoteFileSet remote,
+                                           final UUID ownUuid,
+                                           final SyncProgress progress) throws IOException {
         requireComplete(remote);
 
         final ControlFile control =
@@ -272,7 +296,7 @@ public final class SyncEngine {
             WorldShareMod.LOGGER.info("push: nothing changed");
             progress.onStart(0, 0L);
             progress.onComplete();
-            return new PushResult(0, 0, 0, 0L);
+            return new PushResult(0, 0, 0, 0, 0L);
         }
 
         // A bucket is dirty if any of its files changed. Rebuilding it means packing
@@ -363,7 +387,7 @@ public final class SyncEngine {
             progress.onError(new IOException(
                     failed + " bucket upload(s) failed; the world's control file was NOT updated"));
             WorldShareMod.LOGGER.error("push: {} bucket(s) failed; control file not committed", failed);
-            return new PushResult(transfer.bucketsOk, 0, failed, bytes);
+            return new PushResult(transfer.bucketsOk, transfer.filesOk, 0, failed, bytes);
         }
 
         // Only now, with every dirty archive safely on Drive, does the manifest that
@@ -379,7 +403,7 @@ public final class SyncEngine {
                             + "The manifest was NOT updated, so the world still describes "
                             + "the other player's state. Your changes are still saved "
                             + "locally. Coordinate with them before retrying."));
-            return new PushResult(transfer.bucketsOk, 0, 0, bytes);
+            return new PushResult(transfer.bucketsOk, transfer.filesOk, 0, 0, bytes);
         }
 
         commitControl(remote, local);
@@ -389,7 +413,7 @@ public final class SyncEngine {
 
         WorldShareMod.LOGGER.info("push complete: {} bucket(s) uploaded, {} bytes",
                 transfer.bucketsOk, bytes);
-        return new PushResult(transfer.bucketsOk, 0, 0, bytes);
+        return new PushResult(transfer.bucketsOk, transfer.filesOk, 0, 0, bytes);
     }
 
     // ---- BUCKET TRANSFER ----
@@ -458,6 +482,14 @@ public final class SyncEngine {
         int bucketsFailed = 0;
         int filesOk = 0;
         long bytesMoved = 0L;
+        // Progress is accounted separately from bytesMoved, and the distinction is
+        // the whole point: bytesMoved is what actually crossed the wire (compressed
+        // archive bytes), while totalBytes is the uncompressed size of the world
+        // files being transferred. Reporting one against the other made the bar
+        // stall at whatever the world's compression ratio happened to be - around
+        // 62% in testing - and never reach 100%. Summing the same uncompressed
+        // sizes here keeps both sides of the fraction in the same unit.
+        long bytesAccounted = 0L;
         try {
             for (int i = 0; i < order.size(); i++) {
                 final BucketTaskResult res = completion.take().get();
@@ -476,7 +508,8 @@ public final class SyncEngine {
                 }
                 // Report after either outcome so the bar still advances when a bucket
                 // fails; filesOk deliberately counts only work that actually landed.
-                progress.onFileProgress(filesOk, totalFiles, bytesMoved, totalBytes, archiveName);
+                bytesAccounted += bytesOf(pathsByBucket.get(res.bucketIndex), manifestForSizes);
+                progress.onFileProgress(filesOk, totalFiles, bytesAccounted, totalBytes, archiveName);
             }
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -808,15 +841,27 @@ public final class SyncEngine {
         }
     }
 
+    /**
+     * Outcome of a push.
+     *
+     * <p>Bucket and file counts are both here, and both named, because there used
+     * to be one field called {@code uploaded} holding the bucket count that every
+     * caller printed as "N files synced" - reporting 4 when 14 files had gone up.
+     * A bucket is repacked whole, so the two numbers are never equal and neither is
+     * derivable from the other.
+     */
     public static final class PushResult {
         /** Number of bucket archives rewritten on Drive. */
-        public final int uploaded;
+        public final int bucketsUploaded;
+        /** Number of world files those archives carried. */
+        public final int filesUploaded;
         public final int skippedSomeoneElsesEdit;
         public final int failed;
         public final long bytes;
 
-        PushResult(int u, int s, int f, long b) {
-            this.uploaded = u; this.skippedSomeoneElsesEdit = s;
+        PushResult(int buckets, int files, int s, int f, long b) {
+            this.bucketsUploaded = buckets; this.filesUploaded = files;
+            this.skippedSomeoneElsesEdit = s;
             this.failed = f; this.bytes = b;
         }
     }

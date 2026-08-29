@@ -51,11 +51,31 @@ public final class CloudModule {
         // normal flow releases via ServerStoppingEvent in later milestones.
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
-                if (LockManager.weHoldLock()) {
-                    WorldShareMod.LOGGER.info(
-                            "Shutdown hook: releasing held session.lock...");
-                    LockManager.release();
+                if (!LockManager.weHoldLock()) {
+                    return;
                 }
+                // Do NOT release the lock out from under a sync that hasn't
+                // finished. The transfer threads are daemons, so a quit during a
+                // background push kills them mid-flight: bucket archives are
+                // already replaced on Drive but commitControl never ran, leaving
+                // the published manifest describing content the archives no longer
+                // hold. Releasing here would invite the next player straight into
+                // that state, where their pull fails verification.
+                //
+                // Keeping the lock makes it self-healing instead - others stay out,
+                // and when we reopen the world we still hold it, push again, and
+                // the commit that never happened happens.
+                if (com.worldshare.mod.sync.SyncActivity.isSyncing()) {
+                    WorldShareMod.LOGGER.warn(
+                            "Shutdown hook: a sync was still running, so the session "
+                                    + "lock is being LEFT HELD deliberately. Reopen this "
+                                    + "world and let it finish uploading; the lock "
+                                    + "releases then.");
+                    return;
+                }
+                WorldShareMod.LOGGER.info(
+                        "Shutdown hook: releasing held session.lock...");
+                LockManager.release();
             } catch (final Throwable t) {
                 // Can't do much here - the JVM is going down. Just log.
                 WorldShareMod.LOGGER.warn("Shutdown hook lock release failed", t);

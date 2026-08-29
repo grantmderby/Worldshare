@@ -9,7 +9,12 @@ out/
 !gradle/wrapper/gradle-wrapper.properties
 
 # Forge runtime directories
+# run2/ and run3/ are the second and third dev clients (see the runs block in
+# build.gradle). Each is a full game directory holding OAuth tokens, so they must
+# stay out of git as firmly as run/ does.
 run/
+run2/
+run3/
 run-data/
 runs/
 

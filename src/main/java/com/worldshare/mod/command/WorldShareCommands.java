@@ -572,7 +572,8 @@ public final class WorldShareCommands {
                     final SyncEngine.PushResult result = SyncEngine.push(
                             world.worldRoot, remote, world.playerUuid, chatProgress);
                     sendClientMessage("§a[WorldShare] Push complete:");
-                    sendClientMessage("§a  uploaded: " + result.uploaded + " files");
+                    sendClientMessage("§a  uploaded: " + result.filesUploaded
+                            + " files in " + result.bucketsUploaded + " bucket(s)");
                     sendClientMessage("§7  skipped (someone else's edits): "
                             + result.skippedSomeoneElsesEdit);
                     sendClientMessage("§7  failed: " + result.failed);

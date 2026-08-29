@@ -10,6 +10,7 @@ import com.worldshare.mod.sync.OnlineChecker;
 import com.worldshare.mod.sync.SyncEngine;
 import com.worldshare.mod.sync.SyncProgress;
 import com.worldshare.mod.sync.WorldContext;
+import com.worldshare.mod.util.PlayerNotice;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -224,9 +225,8 @@ public final class SaveAndUploadScreen extends Screen {
         final Thread orchestrator = new Thread(() -> {
             try {
                 if (!waitForServerStopped()) {
-                    errorMessage = "Server didn't stop within 30 seconds. "
-                            + "Local changes are preserved; retry with /worldshare push.";
-                    errored = true;
+                    fail("Server didn't stop within 30 seconds. "
+                            + "Local changes are preserved; retry with /worldshare push.");
                     return;
                 }
 
@@ -234,14 +234,12 @@ public final class SaveAndUploadScreen extends Screen {
 
                 final OnlineChecker.Result online = OnlineChecker.check(remote);
                 if (online == OnlineChecker.Result.OFFLINE) {
-                    errorMessage = "Drive is unreachable. Local changes are preserved; "
-                            + "they'll upload next time you have internet.";
-                    errored = true;
+                    fail("Drive is unreachable. Local changes are preserved; "
+                            + "they'll upload next time you have internet.");
                     return;
                 }
                 if (online == OnlineChecker.Result.NOT_AUTHENTICATED) {
-                    errorMessage = "Not signed in to Drive. Run /worldshare test on next launch.";
-                    errored = true;
+                    fail("Not signed in to Drive. Run /worldshare test on next launch.");
                     return;
                 }
 
@@ -261,7 +259,14 @@ public final class SaveAndUploadScreen extends Screen {
                         totalBytes = tb;
                         stage = "Uploading: " + currentFile;
                     }
-                    @Override public void onComplete() {}
+                    @Override
+                    public void onComplete() {
+                        // Snap to full. The bar is driven by bucket completions, and
+                        // the last one lands before the manifest commit, so without
+                        // this the run ends looking unfinished.
+                        filesDone = totalFiles;
+                        bytesDone = totalBytes;
+                    }
                     @Override public void onError(final Throwable error) {}
                 };
 
@@ -295,17 +300,22 @@ public final class SaveAndUploadScreen extends Screen {
                 releaseFuture.get();
 
                 if (result.failed == 0) {
-                    stage = "\u2705 Done! " + result.uploaded + " files synced.";
+                    final String summary = result.filesUploaded + " files synced ("
+                            + (result.bytes / (1024 * 1024)) + " MB).";
+                    stage = "\u2705 Done! " + summary;
                     done = true;
+                    // Only notify if they walked away; otherwise the screen in front
+                    // of them already says it and a toast would just duplicate it.
+                    if (userContinuedInBackground.get()) {
+                        PlayerNotice.info("\u00a7a[WorldShare] \u00a7f'" + worldName + "' " + summary);
+                    }
                 } else {
-                    errorMessage = result.failed + " files failed to upload. "
-                            + "Local changes are preserved.";
-                    errored = true;
+                    fail(result.failed + " bucket(s) failed to upload. "
+                            + "Local changes are preserved.");
                 }
             } catch (final Throwable t) {
                 WorldShareMod.LOGGER.error("SaveAndUpload flow failed", t);
-                errorMessage = "Upload failed: " + t.getMessage();
-                errored = true;
+                fail("Upload failed: " + t.getMessage());
             }
         }, "WorldShare-SaveAndUpload");
         orchestrator.setDaemon(true);
@@ -329,6 +339,23 @@ public final class SaveAndUploadScreen extends Screen {
                 "SaveAndUploadScreen: waitForServerStopped TIMED OUT (flag still={})",
                 AutoSyncListener.serverHasStopped());
         return false;
+    }
+
+    /**
+     * Record a failure, and make sure it reaches the player even if they left.
+     *
+     * <p>"Continue in Background" returns to the title screen while the push keeps
+     * running, so writing the message to this screen's fields is not enough on its
+     * own - nobody is looking at them any more. A failed upload that reports
+     * nothing is indistinguishable from a successful one, and the player would go
+     * on believing their world was safely on Drive.
+     */
+    private void fail(final String message) {
+        errorMessage = message;
+        errored = true;
+        if (userContinuedInBackground.get()) {
+            PlayerNotice.error("§c[WorldShare] §f'" + worldName + "' did not sync: " + message);
+        }
     }
 
     private void onContinueInBackground() {

@@ -69,6 +69,17 @@ runs {
         systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
     }
 
+    // A third client. Two is enough for the lock and round-trip tests, but not for
+    // the ones that only go wrong with a crowd: a three-way contest for a single
+    // lock, and whether a bucket repack preserves the playerdata of players who
+    // aren't the one pushing. playerCap already defaults to 5.
+    clientThree {
+        configure 'client'
+        workingDirectory project.file('run3')
+        programArguments.addAll '--username', 'Player3'
+        systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+    }
+
     server {
         systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
         programArgument '--nogui'
