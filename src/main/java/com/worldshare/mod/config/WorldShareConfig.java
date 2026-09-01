@@ -75,11 +75,15 @@ public final class WorldShareConfig {
     /**
      * Seconds before "Continue in Background" appears on the save-and-upload screen.
      *
-     * <p>Three seconds, down from a hardcoded thirty. That thirty was chosen when a
-     * push meant re-uploading most of the world; bucket tiling and dirty tracking
-     * cut a typical save to about fifteen seconds, at which point the button was
-     * arriving with a third of the upload left and the paths behind it - the
-     * background toast among them - had never been exercised at all.
+     * <p>Thirty seconds, which is deliberately longer than a typical save now takes.
+     * The button is an escape hatch for a large world on a slow connection, not
+     * something an ordinary save should offer - and walking away mid-upload has
+     * enough consequences attached that it should be a decision, not a reflex.
+     *
+     * <p>It is configurable because the paths behind it are otherwise untestable:
+     * bucket tiling cut a typical save to about fifteen seconds, so at thirty the
+     * button never appeared at all, and the background success and failure toasts
+     * went unexercised for weeks because of it. Set this to 0 to reach them.
      *
      * <p>It is a reasonable preference in its own right: on a slow connection you
      * may want the button immediately.
@@ -129,8 +133,8 @@ public final class WorldShareConfig {
         backgroundButtonDelaySeconds = builder
                 .comment("Seconds before the save-and-upload screen offers "
                         + "\"Continue in Background\". 0 shows it immediately. "
-                        + "Default 3.")
-                .defineInRange("backgroundButtonDelaySeconds", 3, 0, 300);
+                        + "Default 30.")
+                .defineInRange("backgroundButtonDelaySeconds", 30, 0, 300);
 
         devCommands = builder
                 .comment("Expose the developer subcommands (push, lock, unlock, "

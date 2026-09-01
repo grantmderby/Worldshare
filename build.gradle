@@ -38,6 +38,16 @@ runs {
         systemProperty 'forge.logging.console.level', 'debug'
         modSource project.sourceSets.main
 
+        // 2 GB each, not the usual dev-client default.
+        //
+        // Testing this mod means running three clients side by side, and three
+        // instances at their normal allocation is more memory than a 32 GB machine
+        // has left after Windows. These worlds are test worlds - a few dozen
+        // megabytes and a small render distance - so the heap is not what limits
+        // them. Raise it if a real modpack ever gets loaded in here.
+        jvmArgument '-Xmx2G'
+        jvmArgument '-Xms512M'
+
         // Add Google libs explicitly to the run classpath
         dependencies {
             runtime 'com.google.api-client:google-api-client:2.2.0'
