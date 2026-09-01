@@ -154,10 +154,8 @@ public final class LockManager {
         final Instant now = Instant.now();
         final Duration expiresAfter = Duration.ofMinutes(
                 WorldShareConfig.get().lockExpiryMinutes.get());
-        final int cap = WorldShareConfig.get().playerCap.get();
-
         final SessionLock lock = SessionLock.newAcquired(
-                holderName, machineId, now, expiresAfter, cap);
+                holderName, machineId, now, expiresAfter);
 
         // Writes through the same monitor the heartbeat and the sync commit use, so
         // taking the lock can't race with a manifest write already in flight.

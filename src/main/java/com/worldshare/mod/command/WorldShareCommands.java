@@ -733,7 +733,15 @@ public final class WorldShareCommands {
         sendFeedback(source, "Saving '" + world.name + "' to disk first...",
                 ChatFormatting.GRAY);
         try {
+            // Logged by us rather than by vanilla. saveEverything's first argument
+            // suppresses its own "Saving chunks for level" lines, and leaving them
+            // on would bury the repair in per-dimension chatter - but with them off
+            // there was no way to tell from a log whether the flush had happened at
+            // all, which is exactly the question a bug report needs answered.
+            WorldShareMod.LOGGER.info("repair: flushing '{}' to disk before packing",
+                    world.name);
             source.getServer().saveEverything(true, true, true);
+            WorldShareMod.LOGGER.info("repair: flush complete");
         } catch (final Throwable t) {
             WorldShareMod.LOGGER.error("repair: world save failed", t);
             sendFeedback(source, "Couldn't save the world first, so nothing was uploaded.",

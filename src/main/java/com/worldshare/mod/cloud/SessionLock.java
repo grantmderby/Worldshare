@@ -57,8 +57,6 @@ public final class SessionLock {
     public String lastHeartbeatAt;
     /** Display names of players currently in the session. Host is always first. */
     public List<String> playersOnline;
-    /** Soft cap on players; respected by the relay module in M4. */
-    public int playerCap;
 
     /** No-arg constructor required by Gson. */
     public SessionLock() {
@@ -73,13 +71,11 @@ public final class SessionLock {
      * @param machineId      stable per-machine identifier (see {@code MachineId})
      * @param now            current UTC instant
      * @param expiresAfter   how long from {@code now} until the lock is stale
-     * @param playerCap      soft cap on simultaneous players
      */
     public static SessionLock newAcquired(final String holderName,
                                           final String machineId,
                                           final Instant now,
-                                          final java.time.Duration expiresAfter,
-                                          final int playerCap) {
+                                          final java.time.Duration expiresAfter) {
         final SessionLock lock = new SessionLock();
         lock.holderName = holderName;
         lock.machineId = machineId;
@@ -90,7 +86,6 @@ public final class SessionLock {
         lock.lastHeartbeatAt = now.toString();
         lock.playersOnline = new ArrayList<>();
         lock.playersOnline.add(holderName);
-        lock.playerCap = playerCap;
         return lock;
     }
 
@@ -113,7 +108,6 @@ public final class SessionLock {
         lock.expiresAt = Instant.EPOCH.toString();
         lock.lastHeartbeatAt = now.toString();
         lock.playersOnline = new ArrayList<>();
-        lock.playerCap = 0;
         return lock;
     }
 

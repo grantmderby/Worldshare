@@ -156,7 +156,7 @@ class ControlFileTest {
     void heldLockExpires() {
         final Instant acquired = Instant.parse("2026-08-27T12:00:00Z");
         final SessionLock lock = SessionLock.newAcquired(
-                "Grant", "machine-a", acquired, Duration.ofHours(24), 5);
+                "Grant", "machine-a", acquired, Duration.ofHours(24));
 
         assertFalse(lock.isUnlocked());
         assertTrue(lock.isOwnedBy("machine-a"));
@@ -174,7 +174,7 @@ class ControlFileTest {
         // Fail toward "available". The opposite reading would leave a world locked
         // forever by a corrupt timestamp.
         final SessionLock lock = SessionLock.newAcquired(
-                "Grant", "m", Instant.now(), Duration.ofHours(1), 5);
+                "Grant", "m", Instant.now(), Duration.ofHours(1));
         lock.expiresAt = "not-a-timestamp";
 
         assertTrue(lock.isExpired(Instant.now()));
@@ -186,7 +186,7 @@ class ControlFileTest {
     void lockRoundTrips() {
         final SessionLock original = SessionLock.newAcquired(
                 "Grant", "machine-a", Instant.parse("2026-08-27T12:00:00Z"),
-                Duration.ofHours(24), 5);
+                Duration.ofHours(24));
 
         final SessionLock parsed = SessionLock.fromJson(original.toJson());
 

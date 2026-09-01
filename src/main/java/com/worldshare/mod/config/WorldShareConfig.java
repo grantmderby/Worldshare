@@ -12,7 +12,7 @@ import org.apache.commons.lang3.tuple.Pair;
  * <p>Used by:
  * <ul>
  *   <li>M1: {@code OAuthHelper} reads {@link #playerDisplayName} for the holder name</li>
- *   <li>M2: {@code LockManager} reads {@link #lockExpiryMinutes} and {@link #playerCap}</li>
+ *   <li>M2: {@code LockManager} reads {@link #lockExpiryMinutes}</li>
  *   <li>M2: Commands read/write {@link #driveFolderId}</li>
  * </ul>
  *
@@ -57,8 +57,6 @@ public final class WorldShareConfig {
      */
     public final ModConfigSpec.IntValue lockExpiryMinutes;
 
-    /** Soft cap on simultaneous players when hosting. */
-    public final ModConfigSpec.IntValue playerCap;
 
     /** If true, detailed sync logs are written to worldshare.log. */
     public final ModConfigSpec.BooleanValue verboseLogging;
@@ -116,10 +114,6 @@ public final class WorldShareConfig {
                 .comment("Minutes before an unheartbeated session lock is considered stale. "
                         + "Default 1440 = 24 hours. Set as low as 1 for testing the stale-lock UX.")
                 .defineInRange("lockExpiryMinutes", 1440, 1, 7 * 24 * 60);
-
-        playerCap = builder
-                .comment("Soft cap on simultaneous players when hosting.")
-                .defineInRange("playerCap", 5, 1, 20);
 
         verboseLogging = builder
                 .comment("Write detailed sync logs to worldshare.log for debugging.")
