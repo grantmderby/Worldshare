@@ -1,5 +1,6 @@
 package com.worldshare.mod.sync;
 
+import com.worldshare.mod.util.SHA256Util;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -11,7 +12,9 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.zip.Deflater;
@@ -182,6 +185,47 @@ public final class BucketArchive {
         LOG.debug("BucketArchive.extract: {} -> {} entries into {}",
                 zipFile.getFileName(), extracted.size(), worldRoot);
         return extracted;
+    }
+
+    /**
+     * Hash an archive's entries in place, writing nothing to disk.
+     *
+     * <p>Exists so a bucket can be checked against the manifest <em>before</em> any
+     * of it reaches the world. {@link #extract} writes each entry through a temp
+     * file, so individual files land atomically, but the archive as a whole does
+     * not - and checking afterwards meant mismatched content was already in the
+     * world by the time anyone objected. The guard could report the problem; it
+     * could not prevent it.
+     *
+     * <p>Costs one extra decompression pass over a file already on local disk.
+     *
+     * @param only if non-null, hash just these paths and ignore the rest
+     * @return relative path to lowercase hex SHA-256, for every entry hashed
+     */
+    public static Map<String, String> hashEntries(final Path zipFile,
+                                                  final Set<String> only) throws IOException {
+        final Map<String, String> hashes = new LinkedHashMap<>();
+        try (InputStream fileIn = Files.newInputStream(zipFile);
+             ZipInputStream zip = new ZipInputStream(fileIn)) {
+
+            ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                if (entry.isDirectory()) {
+                    zip.closeEntry();
+                    continue;
+                }
+                final String relPath = entry.getName().replace('\\', '/');
+                if (only != null && !only.contains(relPath)) {
+                    zip.closeEntry();
+                    continue;
+                }
+                // hashStream deliberately doesn't close its argument - the entries
+                // after this one still need the stream open.
+                hashes.put(relPath, SHA256Util.hashStream(zip));
+                zip.closeEntry();
+            }
+        }
+        return hashes;
     }
 
     /**

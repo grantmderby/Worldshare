@@ -260,7 +260,17 @@ Each of these is a path that will happen in real use and has never been exercise
 - **Corrupted archive.** Download a bucket zip from Drive, alter a byte, re-upload
   it, and pull. Expect a refusal naming the file — *"came out of
   worldshare-bucket_NN.zip with different content than the world's manifest
-  describes"* — rather than the bad bytes silently landing in the world.
+  describes"* — and **nothing written into the world**.
+
+  > This fired for real in Round 2, from an interrupted push rather than a
+  > hand-edited zip, and it revealed that the guard verified *after* extracting: the
+  > mismatched content landed and was then reported. It detected, it did not
+  > prevent. Since then the archive is hashed in place before anything is written,
+  > so the second half of that expectation is now the part worth checking — compare
+  > the world folder before and after, not just the message.
+
+- **Renaming a bucket file in Drive proves nothing.** Drive addresses files by ID,
+  so a rename changes nothing the mod can observe. Alter the *contents* instead.
 - **Bucket-count mismatch.** Hand-edit `bucketCount` in `worldshare-control.json`
   to `4` and try to sync. Expect a refusal naming the mismatch — **not** a
   best-effort sync. This guard exists because proceeding corrupts the world
@@ -419,6 +429,51 @@ had it, which is why client B reported it missing.
 testable: `onJoin` hands `presence.e4mc_link` straight to
 `ConnectScreen.startConnecting`, so writing a presence file pointing at a localhost
 LAN port exercises presence → LIVE badge → Join without the relay being involved.
+
+## Round 2D — a failed download leaves no trace, and the repair path
+
+Both added after Round 2 found that a failed download left a half-written world
+resolving as a legitimate local copy, and that an inconsistent Drive had no way
+back if the interrupted player never returned.
+
+### 2D.1 — A failed download changes nothing
+
+Recreate the inconsistency deliberately, which Round 2 produced by accident:
+
+1. On **A**, open the world, play briefly, save and quit, and **kill the game**
+   once the log shows one `push: worldshare-bucket_NN.zip` line but before
+   `commitControl`.
+2. On **B**, with the client closed, clear `localFolderName` as in 2A.1.
+3. Record the folder listing: `ls run2/saves/`
+4. Launch B, Contributor Worlds → **Download**.
+
+- **Expect:** the download fails naming a file, the row still reads **Download**,
+  and `ls run2/saves/` is **identical to step 3** — no new folder, nothing modified.
+- Previously this produced a `Conflict!` row and a partially written world.
+
+### 2D.2 — Repair from my copy
+
+From that same inconsistent state, with **B already having a local copy** (so use a
+world B has downloaded before, not the one from 2D.1):
+
+1. Shorten `lockExpiryMinutes` on both installs, or wait out A's lock.
+2. On **B**, click **Open**.
+
+- **Expect:** instead of a dead error, the **Repair Shared World?** screen, naming
+  A as the holder and saying plainly that A's unfinished upload will be lost.
+- Confirm with **Repair from my copy**.
+- **Expect:** a backup at `run2/saves/<world>_offline_backup_<timestamp>`, then
+  `repair: republishing every bucket` in the log, then every bucket uploaded and
+  `commitControl` published.
+- **Then on A:** open the world. A pulls B's copy cleanly. A's unpublished work is
+  gone, which is the stated bargain — and the backup on B is not A's work, so make
+  sure that expectation is clear before running this with anything you care about.
+
+> **The point of 2D.2 is that a plain push cannot do this.** Push decides which
+> buckets are dirty by diffing local files against the manifest, and here the
+> manifest is the stale half — B's copy matches it exactly, so an ordinary push
+> would log `push: nothing changed` and leave Drive broken. Watch for
+> `repair: full scan` and a bucket count equal to every non-empty bucket.
 
 ## Still unrun from Round 1
 

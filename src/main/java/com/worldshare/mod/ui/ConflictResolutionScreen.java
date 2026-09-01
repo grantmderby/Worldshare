@@ -328,29 +328,10 @@ public final class ConflictResolutionScreen extends Screen {
      * @return the backup path, or null if no backup was needed
      */
     private Path createBackupIfNeeded(final Path localWorld) throws IOException {
-        if (!Files.isDirectory(localWorld)) return null;
-
-        final String timestamp = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")
-                .format(java.time.LocalDateTime.now());
-        final String backupName = localWorld.getFileName() + "_offline_backup_" + timestamp;
-        final Path backupDir = localWorld.getParent().resolve(backupName);
-
-        Files.createDirectories(backupDir);
-        copyDirectory(localWorld, backupDir);
-        return backupDir;
-    }
-
-    private static void copyDirectory(final Path src, final Path dst) throws IOException {
-        try (final Stream<Path> stream = Files.walk(src)) {
-            for (final Path file : (Iterable<Path>) stream::iterator) {
-                final Path dest = dst.resolve(src.relativize(file));
-                if (Files.isDirectory(file)) {
-                    Files.createDirectories(dest);
-                } else {
-                    Files.copy(file, dest, StandardCopyOption.REPLACE_EXISTING);
-                }
-            }
-        }
+        // Shared with RepairWorldScreen. Both operations are irreversible in
+        // opposite directions, and both need "there is a backup" to be true rather
+        // than nearly true, so they use one implementation.
+        return com.worldshare.mod.util.WorldBackup.create(localWorld);
     }
 
     private void openWorldLocally(final String folderName) {

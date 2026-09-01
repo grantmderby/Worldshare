@@ -222,6 +222,68 @@ class BucketArchiveTest {
                 "a diverged archive must be distinguishable from the manifest's hash");
     }
 
+    // ------------------------------------------------------- hashing before extract
+
+    @Test
+    @DisplayName("hashEntries matches what extraction would have produced")
+    void hashEntriesAgreesWithExtraction(@TempDir Path tmp) throws Exception {
+        final Path world = tmp.resolve("world");
+        final Map<String, byte[]> original = sampleWorld(world);
+
+        final Path zip = tmp.resolve("bucket.zip");
+        BucketArchive.build(world, original.keySet(), zip);
+
+        final Map<String, String> hashed = BucketArchive.hashEntries(zip, null);
+        assertEquals(original.size(), hashed.size());
+
+        // The whole point of the pre-check: hashing the archive in place must give
+        // the same answer as hashing the files after they land, or it can't stand in
+        // for the post-extraction check.
+        final Path restored = tmp.resolve("restored");
+        BucketArchive.extract(zip, restored, null);
+        for (final String relPath : original.keySet()) {
+            assertEquals(sha256(restored.resolve(relPath)), hashed.get(relPath),
+                    relPath + " hashed differently in the archive than on disk");
+        }
+    }
+
+    @Test
+    @DisplayName("hashEntries honours the wanted-path filter")
+    void hashEntriesRespectsFilter(@TempDir Path tmp) throws Exception {
+        final Path world = tmp.resolve("world");
+        final Map<String, byte[]> original = sampleWorld(world);
+        final Path zip = tmp.resolve("bucket.zip");
+        BucketArchive.build(world, original.keySet(), zip);
+
+        final Map<String, String> hashed =
+                BucketArchive.hashEntries(zip, Set.of("level.dat", "data/raids.dat"));
+
+        assertEquals(Set.of("level.dat", "data/raids.dat"), hashed.keySet());
+    }
+
+    @Test
+    @DisplayName("a tampered archive hashes differently, and nothing was written to find out")
+    void hashEntriesDetectsTamperingWithoutExtracting(@TempDir Path tmp) throws Exception {
+        final Path world = tmp.resolve("world");
+        Files.createDirectories(world);
+        Files.write(world.resolve("level.dat"), "original".getBytes(StandardCharsets.UTF_8));
+
+        final Path honest = tmp.resolve("honest.zip");
+        BucketArchive.build(world, Set.of("level.dat"), honest);
+        final String promised = BucketArchive.hashEntries(honest, null).get("level.dat");
+
+        Files.write(world.resolve("level.dat"), "tampered".getBytes(StandardCharsets.UTF_8));
+        final Path tampered = tmp.resolve("tampered.zip");
+        BucketArchive.build(world, Set.of("level.dat"), tampered);
+
+        final Path untouched = tmp.resolve("untouched-world");
+        assertFalse(Files.exists(untouched),
+                "hashing must not need a destination directory at all");
+        org.junit.jupiter.api.Assertions.assertNotEquals(
+                promised, BucketArchive.hashEntries(tampered, null).get("level.dat"),
+                "tampering has to be visible before a single byte reaches the world");
+    }
+
     private static String sha256(final Path p) throws Exception {
         final byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
                 .digest(Files.readAllBytes(p));

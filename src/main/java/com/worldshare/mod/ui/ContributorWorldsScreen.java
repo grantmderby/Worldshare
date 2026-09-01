@@ -464,12 +464,22 @@ public final class ContributorWorldsScreen extends Screen {
             this.init();
         });
 
+        // Whether this folder is ours to clean up if the download fails. Captured
+        // before anything creates it, so we can never delete a save that was
+        // already sitting there.
+        final boolean folderIsNew = !Files.exists(localWorld);
+
         CloudModule.executor().submit(() -> {
             try {
                 Files.createDirectories(localWorld);
+                SyncEngine.pull(localWorld, remote, playerUuid, makeProgress());
+                // Link only now. Doing it before the pull meant a failed download
+                // still flipped hasLocalFolder() true, so the world resolved as a
+                // real local copy and the row reported a lock state - which is how a
+                // download that should have been a no-op ended up offering a
+                // destructive "Resolve..." button.
                 SubscriptionStore.get().linkWorldToRemote(
                         localWorld, folderName, remote, displayName);
-                SyncEngine.pull(localWorld, remote, playerUuid, makeProgress());
                 if (renamedFromPreferred) {
                     WorldShareMod.LOGGER.info(
                             "ContributorWorlds: downloaded as '{}' to avoid collision",
@@ -479,6 +489,7 @@ public final class ContributorWorldsScreen extends Screen {
             } catch (final Throwable t) {
                 downloadInProgress = false;  // M7: re-show nav buttons on error
                 WorldShareMod.LOGGER.error("ContributorWorlds: download failed", t);
+                discardFailedDownload(localWorld, folderIsNew);
                 setLoadError("Download failed.", formatDriveError(t, "Download failed"),
                         isRetryable(t));
                 loadState = LoadState.ERROR;
@@ -567,6 +578,20 @@ public final class ContributorWorldsScreen extends Screen {
                 }
 
                 downloadInProgress = false;
+
+                // A world that failed its content check isn't a dead end any more.
+                // We have a local copy, so we can offer to republish it and make
+                // Drive self-consistent again - otherwise nobody can open this world
+                // until the player whose push was interrupted comes back.
+                if (!isRetryable(t) && world.subscription.hasLocalFolder()) {
+                    final String detail = t.getMessage();
+                    loadState = LoadState.DONE;
+                    Minecraft.getInstance().execute(() ->
+                            Minecraft.getInstance().setScreen(new RepairWorldScreen(
+                                    this, world, playerUuid, detail)));
+                    return;
+                }
+
                 setLoadError("Could not open world.", formatDriveError(t, "Could not open world"),
                         isRetryable(t));
                 loadState = LoadState.ERROR;
@@ -737,6 +762,31 @@ public final class ContributorWorldsScreen extends Screen {
             }
         } catch (final Exception ignored) {}
         return UUID.randomUUID();
+    }
+
+    /**
+     * Remove a world folder this download created, so a failure leaves no trace.
+     *
+     * <p>Only when we created it. A folder that already existed belongs to a
+     * previous download or another save, and deleting it would turn a failed
+     * transfer into data loss - the opposite of the point.
+     *
+     * <p>Best-effort: if the delete fails, the folder is unlinked anyway, so the
+     * row still reads Download and the next attempt adopts or renames around it.
+     */
+    private static void discardFailedDownload(final Path localWorld, final boolean folderIsNew) {
+        if (!folderIsNew || !Files.isDirectory(localWorld)) return;
+        try (var paths = Files.walk(localWorld)) {
+            paths.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
+                try { Files.deleteIfExists(p); } catch (final Exception ignored) {}
+            });
+            WorldShareMod.LOGGER.info(
+                    "ContributorWorlds: removed partial download at {}", localWorld);
+        } catch (final Exception e) {
+            WorldShareMod.LOGGER.warn(
+                    "ContributorWorlds: couldn't remove partial download at {}: {}",
+                    localWorld, e.getMessage());
+        }
     }
 
     private void setLoadError(final String title, final String detail, final boolean retryable) {

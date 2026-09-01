@@ -217,16 +217,61 @@ public final class SyncEngine {
                                   final SyncProgress progress) throws IOException {
         SyncActivity.begin();
         try {
-            return pushInternal(worldRoot, remote, ownUuid, progress);
+            return pushInternal(worldRoot, remote, ownUuid, progress, false);
         } finally {
             SyncActivity.end();
         }
     }
 
+    /**
+     * Republish the whole world, making Drive internally consistent again.
+     *
+     * <p>For one situation: an interrupted push has left bucket archives on Drive
+     * that the published manifest does not describe, and the player who could
+     * finish it is not coming back. Everyone else's pull then fails verification
+     * on the affected bucket, and the override path is acquire, pull, open - so it
+     * never reaches open and nobody can get in to fix it.
+     *
+     * <p><b>An ordinary push cannot do this job.</b> It works out which buckets are
+     * dirty by diffing local files against the manifest, and in this failure the
+     * manifest is the stale half - a repairing player's copy matches it exactly, so
+     * the diff is empty and the push returns having done nothing. Forcing every
+     * bucket to be repacked and the manifest republished is what makes archives and
+     * manifest agree, and it agrees by construction rather than by comparison.
+     *
+     * <p>Repacking only the bucket that failed verification would be cheaper and
+     * wrong: a pull only checks the buckets it needed, so others may disagree
+     * without anyone having noticed.
+     *
+     * <p>Costs a full world upload. That is acceptable for a recovery that should
+     * happen approximately never, and the caller is expected to have said so
+     * plainly and taken a backup first.
+     */
+    public static PushResult repair(final Path worldRoot,
+                                    final RemoteFileSet remote,
+                                    final UUID ownUuid,
+                                    final SyncProgress progress) throws IOException {
+        SyncActivity.begin();
+        try {
+            WorldShareMod.LOGGER.warn(
+                    "repair: republishing every bucket of '{}' from the local copy",
+                    worldRoot.getFileName());
+            return pushInternal(worldRoot, remote, ownUuid, progress, true);
+        } finally {
+            SyncActivity.end();
+        }
+    }
+
+    /**
+     * @param forceAllBuckets repack and upload every bucket regardless of what
+     *                        changed, and republish the manifest even if the local
+     *                        world matches it. See {@link #repair}.
+     */
     private static PushResult pushInternal(final Path worldRoot,
                                            final RemoteFileSet remote,
                                            final UUID ownUuid,
-                                           final SyncProgress progress) throws IOException {
+                                           final SyncProgress progress,
+                                           final boolean forceAllBuckets) throws IOException {
         requireComplete(remote);
 
         final ControlFile control =
@@ -238,10 +283,14 @@ public final class SyncEngine {
         final WorldManifest local;
         final WorldManifest scanCache;
 
-        if (firstPush) {
-            // Nothing on Drive yet: scan everything. Skipping any file here would
-            // leave a bucket permanently missing content nobody re-dirties.
-            WorldShareMod.LOGGER.info("push: control file has no manifest - first-time push, full scan");
+        if (firstPush || forceAllBuckets) {
+            // Nothing on Drive yet, or a repair: scan everything. Skipping any file
+            // here would leave a bucket permanently missing content nobody
+            // re-dirties - and a repair in particular must not trust the scan cache
+            // or the dirty filter, since prior state is exactly what is in doubt.
+            WorldShareMod.LOGGER.info(firstPush
+                    ? "push: control file has no manifest - first-time push, full scan"
+                    : "repair: full scan, ignoring the scan cache and dirty filter");
             local = WorldFileScanner.scan(worldRoot, ownUuid);
             scanCache = null;
         } else {
@@ -299,7 +348,7 @@ public final class SyncEngine {
             throw new IOException(describeStalePush(staleHere));
         }
 
-        if (changedPaths.isEmpty()) {
+        if (changedPaths.isEmpty() && !forceAllBuckets) {
             WorldShareMod.LOGGER.info("push: nothing changed");
             progress.onStart(0, 0L);
             progress.onComplete();
@@ -315,6 +364,13 @@ public final class SyncEngine {
         }
         final Map<Integer, Set<String>> membersByBucket =
                 groupByBucket(layout, local.files().keySet());
+        if (forceAllBuckets) {
+            // Every bucket that holds anything gets rewritten, so the archives and
+            // the manifest published alongside them agree by construction. Empty
+            // buckets are left alone: their placeholder is already correct, and
+            // uploading an empty archive over it would achieve nothing.
+            dirtyBuckets.addAll(membersByBucket.keySet());
+        }
 
         // Reconcile the manifest against what's actually on disk, for the buckets
         // about to be rewritten.
@@ -609,8 +665,17 @@ public final class SyncEngine {
                         BucketLayout.bucketFilename(bucketIndex));
                 return 0L;
             }
+            // Check the archive before a single byte of it reaches the world.
+            // Extraction used to come first and verification second, which made
+            // this guard a detector rather than a preventer - mismatched content
+            // landed in the world and was then reported.
+            verifyArchive(archive, wantedPaths, expected, bucketIndex);
+
             final List<String> extracted =
                     BucketArchive.extract(archive, worldRoot, wantedPaths);
+            // Kept as a post-check. It costs little and catches something the
+            // pre-check cannot: content that changed between being verified and
+            // being written.
             verifyExtracted(worldRoot, extracted, expected, bucketIndex);
             return size;
         } finally {
@@ -788,6 +853,29 @@ public final class SyncEngine {
      * whatever the archive held and trusted it. Checking here turns a silent wrong
      * -content bug into a clear failure naming the file.
      */
+    /**
+     * Check a downloaded archive against the manifest without writing anything.
+     *
+     * <p>Runs before extraction, so a bucket whose contents disagree with the
+     * published manifest is refused rather than applied and then complained about.
+     */
+    private static void verifyArchive(final Path archive,
+                                      final Set<String> wantedPaths,
+                                      final WorldManifest expected,
+                                      final int bucketIndex) throws IOException {
+        if (expected == null) return;
+        for (final Map.Entry<String, String> hashed
+                : BucketArchive.hashEntries(archive, wantedPaths).entrySet()) {
+            final WorldManifest.Entry entry = expected.get(hashed.getKey());
+            // No manifest entry means the manifest doesn't claim anything about this
+            // file, so there is nothing to disagree with.
+            if (entry == null || entry.sha256 == null) continue;
+            if (!entry.sha256.equals(hashed.getValue())) {
+                throw new IOException(manifestMismatch(hashed.getKey(), bucketIndex));
+            }
+        }
+    }
+
     private static void verifyExtracted(final Path worldRoot,
                                         final List<String> extracted,
                                         final WorldManifest expected,
@@ -798,15 +886,24 @@ public final class SyncEngine {
             if (entry == null || entry.sha256 == null) continue;
             final String actual = SHA256Util.hashFile(worldRoot.resolve(relPath));
             if (!entry.sha256.equals(actual)) {
-                throw new IOException(
-                        "'" + relPath + "' came out of "
-                                + BucketLayout.bucketFilename(bucketIndex)
-                                + " with different content than the world's manifest "
-                                + "describes. The archive and manifest on Drive disagree, "
-                                + "which usually means a push was interrupted. Ask the other "
-                                + "player to push again.");
+                throw new IOException(manifestMismatch(relPath, bucketIndex));
             }
         }
+    }
+
+    /**
+     * The message both verification passes raise.
+     *
+     * <p>Shared so they stay identical - the UI decides whether to offer a retry by
+     * matching on this wording, and two near-copies would eventually drift apart.
+     */
+    private static String manifestMismatch(final String relPath, final int bucketIndex) {
+        return "'" + relPath + "' came out of "
+                + BucketLayout.bucketFilename(bucketIndex)
+                + " with different content than the world's manifest "
+                + "describes. The archive and manifest on Drive disagree, "
+                + "which usually means a push was interrupted. Ask the other "
+                + "player to push again.";
     }
 
     // ---- SCAN CACHE HELPERS ----
