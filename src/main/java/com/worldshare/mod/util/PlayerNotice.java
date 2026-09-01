@@ -42,6 +42,32 @@ public final class PlayerNotice {
     }
 
     /**
+     * Post a toast even when the player is in a world and chat is available.
+     *
+     * <p>For the few things too important to risk being scrolled past. Losing the
+     * session lock mid-session is the case this exists for: everything from that
+     * moment on is unsyncable, and a chat line three messages up is not enough
+     * warning for work measured in hours.
+     */
+    public static void alsoToast(final String message) {
+        try {
+            final Minecraft mc = Minecraft.getInstance();
+            if (mc == null) return;
+            mc.execute(() -> {
+                try {
+                    mc.getToasts().addToast(SystemToast.multiline(
+                            mc, ERROR_ID, Component.literal("WorldShare"),
+                            Component.literal(strip(message))));
+                } catch (final Throwable t) {
+                    WorldShareMod.LOGGER.warn("[notice] couldn't toast: {}", strip(message), t);
+                }
+            });
+        } catch (final Throwable t) {
+            WorldShareMod.LOGGER.debug("PlayerNotice.alsoToast failed", t);
+        }
+    }
+
+    /**
      * @param message   may carry Minecraft colour codes; they are used in chat and
      *                  stripped for the toast, whose pale background makes the
      *                  darker ones effectively invisible

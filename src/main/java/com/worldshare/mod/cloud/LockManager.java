@@ -295,6 +295,11 @@ public final class LockManager {
             postChatMessage("§c[WorldShare] [!] Your session lock was overridden by " + who + ".");
             postChatMessage("§c Your changes from this point on will NOT be saved to Drive.");
             postChatMessage("§7 Save and quit to exit cleanly. Local files preserved.");
+            // And a toast, because chat scrolls. From here nothing this player does
+            // can be saved, so the cost of missing the message is the whole session.
+            com.worldshare.mod.util.PlayerNotice.alsoToast(
+                    who + " took over this world's session lock. Your changes can no "
+                            + "longer be saved to Drive - save and quit.");
             stopHeartbeat();
             heldWorld = null;
             return;
@@ -347,6 +352,8 @@ public final class LockManager {
                         "Heartbeat recovered after {} consecutive failures", prevFailures);
                 postChatMessage("§a[WorldShare] [OK] Reconnected to Drive. "
                         + "Your changes will sync at session end.");
+                com.worldshare.mod.util.PlayerNotice.alsoToast(
+                        "Reconnected to Drive. Your changes will sync at session end.");
             }
         } catch (final Throwable t) {
             // Never let a heartbeat exception propagate - it would kill the scheduler.
@@ -354,6 +361,19 @@ public final class LockManager {
             WorldShareMod.LOGGER.error(
                     "Heartbeat failed (consecutive failure #{}); will retry at next interval",
                     consecutiveHeartbeatFailures, t);
+
+            // Say something on the FIRST failure, not the second.
+            //
+            // Waiting for two meant half an hour of play before the player learned
+            // their session might not be syncable. One heartbeat interval of doubt is
+            // a far better trade than a second interval of false confidence, and a
+            // heartbeat that fails is nearly always just a dropped connection - worth
+            // saying plainly rather than dressing up.
+            if (consecutiveHeartbeatFailures == 1) {
+                com.worldshare.mod.util.PlayerNotice.alsoToast(
+                        "Drive heartbeat failed - connection lost. Your changes are "
+                                + "still saved locally.");
+            }
 
             // Surface to the user once we cross the threshold, then re-warn periodically.
             if (consecutiveHeartbeatFailures == OFFLINE_WARNING_THRESHOLD) {

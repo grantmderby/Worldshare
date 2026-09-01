@@ -132,6 +132,23 @@ public final class ContributorWorldsScreen extends Screen {
         refreshRequested.set(true);
         loadState = LoadState.IDLE;
         startLoading();
+
+        // Rebuild the widgets, or the nav buttons never come back.
+        //
+        // init() skips creating Add World / Refresh / Back while a transfer is
+        // running, so starting a download removes them. Clearing the flag here
+        // isn't enough on its own - nothing re-runs init(), so the screen returns
+        // to the world list with no buttons at all and no way off it except the
+        // remove-subscription dialog.
+        final Minecraft mc = Minecraft.getInstance();
+        if (mc != null) {
+            mc.execute(() -> {
+                if (mc.screen == this) {
+                    this.clearWidgets();
+                    this.init();
+                }
+            });
+        }
     }
 
     private void startLoading() {
