@@ -165,9 +165,13 @@ public final class WorldFileScanner {
      * push quietly carries it forever.
      *
      * <p>So the log names every unfamiliar top-level entry with its size, which is
-     * also how we find out what mods actually write rather than guessing; and
-     * anything genuinely large gets said out loud, because that is a decision the
-     * player needs to make and can, via {@code extraSyncExcludes}.
+     * also how we find out what mods actually write rather than guessing.
+     *
+     * <p>Log only. Telling the player lives in the push, where it can be said
+     * truthfully: a scan sees a large folder whether or not this sync will carry
+     * it, and warning here claimed a 225 MB folder would "sync every time" on every
+     * world open, when in fact it uploads only when it changes. A warning that
+     * cries wolf on every save teaches people to ignore it.
      */
     private static void reportUnfamiliarContent(final WorldManifest manifest) {
         final java.util.Map<String, Long> byTopLevel = new java.util.TreeMap<>();
@@ -187,14 +191,8 @@ public final class WorldFileScanner {
             WorldShareMod.LOGGER.info("WorldFileScanner: also syncing '{}' ({} KB)",
                     e.getKey(), e.getValue() / 1024);
             if (e.getValue() >= LARGE_UNFAMILIAR_BYTES) {
-                WorldShareMod.LOGGER.warn(
-                        "WorldFileScanner: '{}' is {} MB - every sync will carry it",
+                WorldShareMod.LOGGER.warn("WorldFileScanner: '{}' is {} MB",
                         e.getKey(), e.getValue() / (1024 * 1024));
-                com.worldshare.mod.util.PlayerNotice.error(
-                        "§e[WorldShare] '" + e.getKey() + "' is "
-                                + (e.getValue() / (1024 * 1024)) + " MB and will sync every "
-                                + "time. Add it to extraSyncExcludes in the config if you "
-                                + "don't need it shared.");
             }
         }
     }

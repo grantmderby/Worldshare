@@ -78,6 +78,23 @@ public final class SyncEngine {
      */
     private static final int TRANSFER_THREADS = 2;
 
+    /**
+     * How many times to attempt a single archive transfer before giving up.
+     *
+     * <p>Uploading tens of megabytes over a home connection fails occasionally -
+     * "Error writing request body to server" is Drive's side of a dropped
+     * connection, and it happened three times in one afternoon of testing. Without
+     * a retry, one blip on one bucket failed the entire push: the manifest was not
+     * committed, the lock was kept, and the player had to notice and Resume.
+     *
+     * <p>Three attempts turns a transient network hiccup back into what it is,
+     * rather than an event the player has to handle.
+     */
+    private static final int TRANSFER_ATTEMPTS = 3;
+
+    /** Backoff before retrying a failed transfer; doubles each attempt. */
+    private static final long RETRY_BASE_DELAY_MS = 1500L;
+
     private SyncEngine() {}
 
     // ---- STATUS ----
@@ -164,6 +181,25 @@ public final class SyncEngine {
         final Set<String> wantedPaths = new LinkedHashSet<>();
         wantedPaths.addAll(diff.onlyOnDrive);
         wantedPaths.addAll(diff.different);
+
+        // Don't download what this installation has chosen not to sync.
+        //
+        // Excluding a folder used to be one-directional: the local scan skipped it,
+        // so it vanished from the local manifest, so the diff called it Drive-only
+        // and downloaded it straight back - overwriting the local copy with somebody
+        // else's, having just declined to upload our own. Exclusion has to mean the
+        // same thing in both directions or it means nothing.
+        //
+        // Note this leaves the files on Drive untouched: pushing carries Drive-only
+        // entries forward into the new manifest, so excluding a folder never deletes
+        // it for anybody else.
+        final int wantedBefore = wantedPaths.size();
+        wantedPaths.removeIf(relPath -> !TrackedPaths.isTracked(relPath));
+        if (wantedPaths.size() != wantedBefore) {
+            WorldShareMod.LOGGER.info(
+                    "pull: skipping {} file(s) this installation excludes from sync",
+                    wantedBefore - wantedPaths.size());
+        }
 
         if (wantedPaths.isEmpty()) {
             WorldShareMod.LOGGER.info("pull: already up to date ({} files match)",
@@ -478,6 +514,8 @@ public final class SyncEngine {
             toUpload.put(bucket, membersByBucket.getOrDefault(bucket, Set.of()));
         }
 
+        warnAboutLargeUnfamiliarUploads(changedPaths, local);
+
         // From here until commitControl, Drive may hold archives the published
         // manifest doesn't describe. Nobody else may be given the lock in between.
         SyncActivity.markRemoteAheadOfManifest();
@@ -660,7 +698,12 @@ public final class SyncEngine {
                         + BucketLayout.bucketFilename(bucketIndex)
                         + " - this world's setup is incomplete.");
             }
-            CloudModule.driveClient().updateFile(fileId, archive);
+
+            // Only the network call retries. Packing and verification are
+            // deterministic - repeating them would produce the same bytes and the
+            // same verdict, so a retry there would just be slower.
+            withRetry("upload " + BucketLayout.bucketFilename(bucketIndex),
+                    () -> CloudModule.driveClient().updateFile(fileId, archive));
             return size;
         } finally {
             try { Files.deleteIfExists(archive); } catch (final IOException ignored) {}
@@ -686,7 +729,8 @@ public final class SyncEngine {
                         + BucketLayout.bucketFilename(bucketIndex)
                         + " - this world's setup is incomplete.");
             }
-            CloudModule.driveClient().downloadFile(fileId, archive);
+            withRetry("download " + BucketLayout.bucketFilename(bucketIndex),
+                    () -> CloudModule.driveClient().downloadFile(fileId, archive));
             final long size = Files.size(archive);
             if (size == 0L) {
                 // A placeholder nobody has pushed to yet. Nothing to extract, and
@@ -906,6 +950,90 @@ public final class SyncEngine {
      * whatever the archive held and trusted it. Checking here turns a silent wrong
      * -content bug into a clear failure naming the file.
      */
+    /** Unfamiliar content past this size is worth mentioning when it uploads: 128 MB. */
+    private static final long LARGE_UNFAMILIAR_BYTES = 128L * 1024 * 1024;
+
+    private static final Set<String> FAMILIAR_TOP_LEVEL = Set.of(
+            "region", "entities", "poi", "playerdata", "stats", "advancements",
+            "data", "resources", "datapacks", "v_data", "serverconfig",
+            "dim-1", "dim1", "dimensions", "level.dat", "level.dat_old");
+
+    /**
+     * Tell the player when this push is carrying a lot of something we don't
+     * recognise.
+     *
+     * <p>Said here rather than during the scan because here it is true. The scan
+     * sees a large mod folder on every world open, whether or not anything in it
+     * changed - warning there claimed a 225 MB folder would "sync every time", when
+     * it in fact uploads only when it changes, which for a static folder is once.
+     * A warning that fires when nothing is happening is one people learn to dismiss.
+     */
+    private static void warnAboutLargeUnfamiliarUploads(final Set<String> changedPaths,
+                                                        final WorldManifest local) {
+        final Map<String, Long> byTopLevel = new TreeMap<>();
+        for (final String relPath : changedPaths) {
+            final int slash = relPath.indexOf('/');
+            final String top = slash > 0 ? relPath.substring(0, slash) : relPath;
+            if (FAMILIAR_TOP_LEVEL.contains(top.toLowerCase(java.util.Locale.ROOT))) continue;
+            final WorldManifest.Entry entry = local.get(relPath);
+            byTopLevel.merge(top, entry == null ? 0L : entry.size, Long::sum);
+        }
+
+        for (final Map.Entry<String, Long> e : byTopLevel.entrySet()) {
+            if (e.getValue() < LARGE_UNFAMILIAR_BYTES) continue;
+            final long mb = e.getValue() / (1024 * 1024);
+            WorldShareMod.LOGGER.warn("push: uploading {} MB of '{}'", mb, e.getKey());
+            com.worldshare.mod.util.PlayerNotice.info(
+                    "§e[WorldShare] Uploading " + mb + " MB of '" + e.getKey()
+                            + "'. It re-uploads whenever it changes - if that's a cache "
+                            + "you don't need shared, run /worldshare exclude " + e.getKey() + "/");
+        }
+    }
+
+    /** A transfer step that can fail with an IOException. */
+    @FunctionalInterface
+    private interface TransferStep {
+        void run() throws IOException;
+    }
+
+    /**
+     * Run a network transfer, retrying a few times before giving up.
+     *
+     * <p>Wraps only the call that crosses the network. Everything around it -
+     * packing, hashing, extraction, verification - is deterministic, so retrying
+     * those would repeat the same work to reach the same answer.
+     *
+     * <p>An interrupt is not a failure to retry through: it means the game is
+     * shutting down, and the right response is to stop promptly.
+     */
+    private static void withRetry(final String what, final TransferStep step) throws IOException {
+        IOException last = null;
+        for (int attempt = 1; attempt <= TRANSFER_ATTEMPTS; attempt++) {
+            try {
+                step.run();
+                if (attempt > 1) {
+                    WorldShareMod.LOGGER.info("{} succeeded on attempt {}", what, attempt);
+                }
+                return;
+            } catch (final IOException e) {
+                last = e;
+                if (attempt == TRANSFER_ATTEMPTS) break;
+                final long delay = RETRY_BASE_DELAY_MS * (1L << (attempt - 1));
+                WorldShareMod.LOGGER.warn(
+                        "{} failed on attempt {} of {} ({}); retrying in {} ms",
+                        what, attempt, TRANSFER_ATTEMPTS, e.getMessage(), delay);
+                try {
+                    Thread.sleep(delay);
+                } catch (final InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(what + " interrupted during retry backoff", ie);
+                }
+            }
+        }
+        throw new IOException(what + " failed after " + TRANSFER_ATTEMPTS
+                + " attempts: " + (last == null ? "unknown" : last.getMessage()), last);
+    }
+
     /**
      * Check what we just packed still matches the manifest we are about to publish.
      *

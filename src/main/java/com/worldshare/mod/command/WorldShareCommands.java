@@ -122,6 +122,19 @@ public final class WorldShareCommands {
                         // Two words, because it republishes the whole world over
                         // whatever is on Drive. Easy to reach when needed, hard to
                         // fire by accident.
+                        .then(Commands.literal("exclude")
+                                .executes(ctx -> runExcludeList(ctx.getSource()))
+                                .then(Commands.argument("path",
+                                                com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                                        .executes(ctx -> runExcludeAdd(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType
+                                                        .getString(ctx, "path")))))
+                        .then(Commands.literal("include")
+                                .then(Commands.argument("path",
+                                                com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                                        .executes(ctx -> runExcludeRemove(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType
+                                                        .getString(ctx, "path")))))
                         .then(Commands.literal("repair")
                                 .executes(ctx -> explainRepair(ctx.getSource()))
                                 .then(Commands.literal("confirm")
@@ -676,6 +689,77 @@ public final class WorldShareCommands {
     }
 
     // ----- M4 -----
+
+    /**
+     * Show what this installation is leaving out of sync.
+     *
+     * <p>Editing a TOML by hand while the game is running is a poor answer to "this
+     * mod folder is enormous", which is exactly the moment somebody wants to fix it.
+     */
+    private static int runExcludeList(final CommandSourceStack source) {
+        final java.util.List<? extends String> current =
+                WorldShareConfig.get().extraSyncExcludes.get();
+        if (current == null || current.isEmpty()) {
+            sendFeedback(source, "Nothing is excluded - the whole world folder syncs.",
+                    ChatFormatting.GRAY);
+        } else {
+            sendFeedback(source, "Excluded from sync on this installation:",
+                    ChatFormatting.YELLOW);
+            for (final String p : current) {
+                sendClientMessage("§7  " + p);
+            }
+        }
+        sendFeedback(source, "/worldshare exclude <folder/>  or  /worldshare include <folder/>",
+                ChatFormatting.GRAY);
+        sendFeedback(source, "Only affects this installation - see /worldshare exclude "
+                + "for what that means for other players.", ChatFormatting.DARK_GRAY);
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int runExcludeAdd(final CommandSourceStack source, final String rawPath) {
+        final String path = rawPath.trim().replace('\\', '/');
+        if (path.isEmpty()) {
+            sendFeedback(source, "Give a path, e.g. /worldshare exclude bigmod/",
+                    ChatFormatting.RED);
+            return 0;
+        }
+
+        final java.util.List<String> updated =
+                new java.util.ArrayList<>(WorldShareConfig.get().extraSyncExcludes.get());
+        if (updated.contains(path)) {
+            sendFeedback(source, "'" + path + "' is already excluded.", ChatFormatting.GRAY);
+            return Command.SINGLE_SUCCESS;
+        }
+        updated.add(path);
+        WorldShareConfig.get().extraSyncExcludes.set(updated);
+        WorldShareConfig.get().extraSyncExcludes.save();
+
+        sendFeedback(source, "Excluded '" + path + "' from sync.", ChatFormatting.GREEN);
+        sendFeedback(source, "It stays on your disk, and stays on Drive - this stops YOUR "
+                + "copy uploading or downloading it.", ChatFormatting.GRAY);
+        // Worth stating, because the obvious reading is wrong. Excluding is a local
+        // decision: it does not delete anything from Drive, and it does not stop
+        // another player uploading their copy of the same folder.
+        sendFeedback(source, "Other players are unaffected unless they exclude it too.",
+                ChatFormatting.DARK_GRAY);
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int runExcludeRemove(final CommandSourceStack source, final String rawPath) {
+        final String path = rawPath.trim().replace('\\', '/');
+        final java.util.List<String> updated =
+                new java.util.ArrayList<>(WorldShareConfig.get().extraSyncExcludes.get());
+        if (!updated.remove(path)) {
+            sendFeedback(source, "'" + path + "' wasn't excluded. "
+                    + "Run /worldshare exclude to see the list.", ChatFormatting.RED);
+            return 0;
+        }
+        WorldShareConfig.get().extraSyncExcludes.set(updated);
+        WorldShareConfig.get().extraSyncExcludes.save();
+        sendFeedback(source, "'" + path + "' will sync again from your next save.",
+                ChatFormatting.GREEN);
+        return Command.SINGLE_SUCCESS;
+    }
 
     /**
      * Republish this world from the local copy, making Drive self-consistent.
