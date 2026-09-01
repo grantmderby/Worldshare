@@ -410,6 +410,18 @@ bucket 0. So when A pushes, A rewrites B's and C's characters from A's disk.
 - **If B or C loses their inventory, stop.** That is the failure this whole design
   exists to prevent and nothing after it matters.
 
+## Running order
+
+2A first, on a healthy Drive. 2D deliberately breaks Drive and then repairs it, so
+it goes second. 2B and 2C both need a healthy Drive again, so they follow.
+
+| Round | Clients | Needs |
+|---|---|---|
+| 2A — the three unverified fixes | 2 | nothing extra |
+| 2D — failed transfers and repair | 2 | nothing extra |
+| 2B — three-way lock, playerdata | 3 | third Google account |
+| 2C — e4mc live co-op | 2–3 | e4mc (already in all run dirs) |
+
 ## Round 2C — e4mc live co-op
 
 The jar is now in `run/mods`, `run2/mods` and `run3/mods`; in round 1 only `run/`
@@ -424,6 +436,28 @@ had it, which is why client B reported it missing.
   rather than treating it as a WorldShare bug.
 - 5.5: A stops hosting → the presence file is **cleared, not deleted**, keeping the
   same Drive file ID.
+
+### 2C.2 — The asymmetric case
+
+e4mc is a **host-side** requirement. The only `isAvailable()` checks are in
+`/worldshare invite` and the doctor report; `onJoin` hands `presence.e4mc_link`
+straight to `ConnectScreen.startConnecting`, which is an ordinary server
+connection. So a guest without e4mc should still be able to join.
+
+Test it by removing the jar from `run3/mods/` and having C join A's live session.
+
+- **Expect:** C joins normally.
+- **Watch for a mod-list rejection instead.** `neoforge.mods.toml` declares no
+  `displayTest`, so how NeoForge negotiates an asymmetric mod list here is not
+  settled by reading the code. If C is refused at the handshake, that is the finding
+  - and it would mean e4mc has to be documented as required on both sides.
+
+Then the reverse: give C the jar back, remove it from `run/mods/`, and have **A**
+run `/worldshare invite`.
+
+- **Expect:** *"Live co-op needs the e4mc mod, which isn't installed."* and no
+  presence file. C's own copy of e4mc must not change this - hosting is what needs
+  it.
 
 **Fallback if the relay refuses dev accounts.** WorldShare's side is still fully
 testable: `onJoin` hands `presence.e4mc_link` straight to
