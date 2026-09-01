@@ -104,10 +104,17 @@ public final class AutoSyncListener {
                 return;
             }
 
-            // Lock is held — auto-open to LAN via e4mc so guests can join
-            // without needing /worldshare invite.
+            // Lock is held. Hosting is opt-in: it publishes a public relay address,
+            // and doing that as a side effect of opening a world means anyone who
+            // installed e4mc once is broadcasting every session thereafter.
+            if (!com.worldshare.mod.config.WorldShareConfig.get().autoHostOnOpen.get()) {
+                WorldShareMod.LOGGER.debug(
+                        "AutoSync: lock held, but autoHostOnOpen is off - "
+                                + "use /worldshare host to go live");
+                return;
+            }
             WorldShareMod.LOGGER.info(
-                    "AutoSync: lock held, auto-opening world to LAN via e4mc");
+                    "AutoSync: lock held and autoHostOnOpen is on, opening world to LAN via e4mc");
             final Minecraft mc = Minecraft.getInstance();
             mc.execute(() -> {
                 new Thread(() -> {

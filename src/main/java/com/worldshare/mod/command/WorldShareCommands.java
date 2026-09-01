@@ -105,8 +105,14 @@ public final class WorldShareCommands {
                                         .executes(ctx -> runDoctor(ctx.getSource(), true))))
                         .then(Commands.literal("push")
                                 .executes(ctx -> runPush(ctx.getSource())))
+                        // Two ways to invite somebody, and they do genuinely
+                        // different things, so they get names that say which.
+                        // "invite" adds a contributor who will sync through Drive;
+                        // "host" opens the world for live co-op right now.
                         .then(Commands.literal("invite")
-                                .executes(ctx -> runInvite(ctx.getSource())))
+                                .executes(ctx -> runDriveInvite(ctx.getSource())))
+                        .then(Commands.literal("host")
+                                .executes(ctx -> runHost(ctx.getSource())))
                         .then(Commands.literal("modpack")
                                 .then(Commands.literal("generate")
                                         .executes(ctx -> runModpackGenerate(ctx.getSource()))))
@@ -635,7 +641,48 @@ public final class WorldShareCommands {
 
     // ----- M4 -----
 
-    private static int runInvite(final CommandSourceStack source) {
+    /**
+     * Print the Drive link that lets somebody else contribute to this world.
+     *
+     * <p>Separate from {@link #runHost}, because the two invitations are not the
+     * same thing and conflating them under one word would guarantee the wrong one
+     * gets used. This one is permanent and asynchronous - the other player joins
+     * the world, syncs through Drive, and plays whenever they like. Hosting is
+     * temporary and simultaneous.
+     *
+     * <p>The link was previously only printed by {@code /worldshare setup}, which
+     * meant recovering it after that message scrolled away required reading the
+     * doctor report.
+     */
+    private static int runDriveInvite(final CommandSourceStack source) {
+        final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
+        if (ctx.isEmpty()) {
+            sendFeedback(source, "No world is currently loaded.", ChatFormatting.RED);
+            return 0;
+        }
+        final RemoteFileSet remote = WorldLink.readRemote(ctx.get().worldRoot);
+        if (remote == null || remote.driveFolderId == null) {
+            sendFeedback(source,
+                    "This world isn't set up for sharing yet. Run /worldshare setup first.",
+                    ChatFormatting.RED);
+            return 0;
+        }
+
+        sendClientMessage("§a[WorldShare] Invite someone to contribute to '"
+                + ctx.get().name + "':");
+        postCopyableInviteLink(remote.driveFolderId);
+        sendClientMessage("§7Share that Drive folder with them as Editor, then send the link.");
+        sendClientMessage("§8To play together right now instead, use /worldshare host.");
+        return Command.SINGLE_SUCCESS;
+    }
+
+    /**
+     * Open this world for live co-op through e4mc.
+     *
+     * <p>Was {@code /worldshare invite}, which described the Drive flow just as
+     * well and so said nothing useful about either.
+     */
+    private static int runHost(final CommandSourceStack source) {
         final Minecraft mc = Minecraft.getInstance();
         if (mc.getSingleplayerServer() == null) {
             sendFeedback(source,
@@ -662,6 +709,9 @@ public final class WorldShareCommands {
         sendFeedback(source,
                 "Opening world to LAN via e4mc... waiting for relay domain.",
                 ChatFormatting.GREEN);
+        sendFeedback(source,
+                "Others can join from Contributor Worlds once the domain appears.",
+                ChatFormatting.GRAY);
         E4mcCoordinator.startHosting();
         return Command.SINGLE_SUCCESS;
     }

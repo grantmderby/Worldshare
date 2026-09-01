@@ -63,6 +63,17 @@ public final class WorldShareConfig {
     /** If true, detailed sync logs are written to worldshare.log. */
     public final ModConfigSpec.BooleanValue verboseLogging;
 
+    /**
+     * Whether opening a shared world automatically starts an e4mc live session.
+     *
+     * <p>Off by default, and that default is the point. This used to happen
+     * unconditionally whenever you held the lock, so anyone who installed e4mc for
+     * a single session was publishing a public relay address every time they played
+     * afterwards - without asking, and without WorldShare ever mentioning it.
+     * Hosting is now something you choose, with /worldshare host.
+     */
+    public final ModConfigSpec.BooleanValue autoHostOnOpen;
+
     private WorldShareConfig(final ModConfigSpec.Builder builder) {
         builder.comment("WorldShare settings")
                 .push("general");
@@ -87,6 +98,13 @@ public final class WorldShareConfig {
         verboseLogging = builder
                 .comment("Write detailed sync logs to worldshare.log for debugging.")
                 .define("verboseLogging", false);
+
+        autoHostOnOpen = builder
+                .comment("Automatically start an e4mc live session when you open a shared "
+                        + "world you hold the lock on. Off by default: hosting publishes a "
+                        + "public relay address, which should be a choice rather than a "
+                        + "side effect. Use /worldshare host to start one on demand.")
+                .define("autoHostOnOpen", false);
 
         builder.pop();
     }
