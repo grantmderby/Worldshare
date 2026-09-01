@@ -85,7 +85,24 @@ Neither the lock's race-safety nor the concurrency model gets worse under this d
 
 ## Questions since answered
 
-- **Default for *N*** — settled at **16**. Initially set to 8 on the assumption that the count was bounded by how much clicking a joining player would tolerate. Then the picker's actual selection behaviour was checked: files toggle on a plain click, no modifier key, so eighteen selections is a few seconds in one dialog. With that constraint removed the measured cost decides it — for a session covering a 3x3 region area, 16 buckets re-uploads 16.2% of the world's region bytes against 34.0% at 8, and 36.4% against 66.4% in the worst case. Returns flatten past 16. Note that **2 is the worst possible value**, not a middle ground: with one bucket reserved for non-region files it leaves a single region bucket, so every session re-uploads all of it.
+- **Default for *N*** — settled at **24**. Initially 8, on the assumption that the count was bounded by how much clicking a joining player would tolerate. Then the picker's actual selection behaviour was checked: files toggle on a plain click, no modifier key, so twenty-six selections is a few seconds in one dialog. With that constraint removed, what decides it is how often unrelated tiles share a bucket.
+
+  The first answer was 16, chosen on session-size measurements alone — how much a session covering a 3x3 region area re-uploads. That measure misses the failure that actually bites. A session dirties a few tiles, but what gets uploaded is every bucket those tiles landed in, **whole**, so a bucket holding three unrelated tiles means editing one drags the other two across the network. Measured on a real save at 16 buckets, a session at spawn cost **75% of the world**, because a flight corridor and a slice of the End had hashed into spawn's buckets.
+
+  Share of the world re-uploaded per session, modelled across world maturity:
+
+  | world size | 16 buckets | 24 buckets | 32 buckets |
+  |---|---|---|---|
+  | young (16 tiles) | 13% | 10% | 10% |
+  | established (32) | 10% | 8% | 9% |
+  | mature (64) | 10% | 7% | 7% |
+  | large (128) | 9% | 7% | 6% |
+
+  16 to 24 takes roughly a quarter off at every size; 24 to 32 buys a point or two more for eight further selections. The model gives every tile the same size and so *understates* the gain — real tiles vary enormously, which is how a world the model puts at 13% measured 75%.
+
+  **Existing worlds are unaffected.** `bucketCount` is written into each world's control file at setup and read from there by both push and pull, never from the constant — so a world created at 16 stays at 16 on every client forever, including ones that default to 24. Re-running setup on an existing folder adopts the count already there rather than re-partitioning. Changing a world's count is not a supported operation and would mean a new Drive folder and every player re-joining.
+
+  Note that **2 is the worst possible value**, not a middle ground: with one bucket reserved for non-region files it leaves a single region bucket, so every session re-uploads all of it.
 - **`control.json`'s lock+manifest combination** — kept merged, and it turned out to have a benefit beyond saving a pick: a push writes the manifest and the lock state that produced it in one `files.update()`, so another player can never observe a new manifest beside a stale lock. It also introduced a hazard that needed handling — the heartbeat thread and the sync thread now write the same document, so a heartbeat holding a pre-push copy could erase a freshly published manifest. `ControlFileClient.update()` serialises every read-modify-write behind one monitor to close that window. Presence was *not* merged; see the layout section for why.
 
 ## Open questions for whoever picks this up next

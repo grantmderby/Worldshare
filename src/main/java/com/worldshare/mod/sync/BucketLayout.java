@@ -54,33 +54,48 @@ public final class BucketLayout {
      * <p>One of these is the reserved {@link #HOT_BUCKET}, so sixteen buckets
      * means fifteen region buckets plus one for everything else.
      *
-     * <p><b>Why sixteen.</b> A joining player must select every remote file by hand
-     * - {@code bucketCount + 2} of them - because a Picker folder grant conveys no
-     * access to the folder's contents. That made the count look like it was bounded
-     * by patience, and it was set to 8 on that basis. Then the picker's selection
-     * behaviour was actually checked: files toggle on a plain click, with no
-     * modifier key, so eighteen selections is a few seconds of clicking in a single
-     * dialog rather than a chore.
+     * <p><b>Why twenty-four.</b> A joining player must select every remote file by
+     * hand - {@code bucketCount + 2} of them - because a Picker folder grant conveys
+     * no access to the folder's contents. That made the count look like it was
+     * bounded by patience, and it was set to 8 on that basis, then 16. Then the
+     * picker's selection behaviour was actually checked: files toggle on a plain
+     * click, with no modifier key, so twenty-six selections is a few seconds of
+     * clicking in a single dialog rather than a chore.
      *
-     * <p>With that constraint gone, the measured cost decides it. As a share of the
-     * world's region bytes re-uploaded for a session covering a 3x3 region area:
+     * <p>With that constraint gone, what decides it is how often unrelated tiles end
+     * up sharing a bucket. A session dirties a few tiles, but what gets uploaded is
+     * every bucket those tiles landed in, whole - so a bucket holding three tiles
+     * means editing one drags the other two across the network. Measured on a real
+     * save at 16 buckets, a session at spawn cost 75% of the world, because a flight
+     * corridor and a slice of the End had hashed into spawn's buckets.
+     *
+     * <p>Share of the world re-uploaded per session, modelled over world maturity:
      *
      * <pre>
-     *   buckets   selections   average    worst case
-     *      4          6         53.8%        -
-     *      8         10         34.0%       66.4%
-     *     12         14         19.5%       44.0%
-     *     16         18         16.2%       36.4%
-     *     24         26         11.5%        -
+     *                      16 buckets          24 buckets          32 buckets
+     *   world size         avg worst 4-tile    avg worst 4-tile    avg worst 4-tile
+     *   young (16 tiles)   13%  14%   23%      10%  14%   17%      10%  14%   18%
+     *   established (32)   10%  17%   19%       8%  14%   14%       9%  17%   15%
+     *   mature (64)        10%  13%   17%       7%  11%   13%       7%  10%   11%
+     *   large (128)         9%  11%   15%       7%  10%   12%       6%  10%   10%
      * </pre>
      *
-     * <p>Sixteen roughly halves both the average and the worst case against eight,
-     * for eight more clicks once. Returns flatten after that. The count is frozen
-     * per world at setup and carried in the control file, so erring high is the
-     * recoverable direction: too many buckets costs a one-time handful of clicks,
-     * too few costs bandwidth for the life of the world.
+     * <p>Sixteen to twenty-four takes roughly a quarter off at every size, for eight
+     * more clicks once. Twenty-four to thirty-two buys a point or two more. Note the
+     * model gives every tile the same size and so <em>understates</em> the gain -
+     * real tiles vary enormously, which is how a world the model puts at 13% measured
+     * 75%.
+     *
+     * <p>A minor bonus, not a reason on its own: the region buckets number
+     * {@code bucketCount - 1}, so 24 gives 23 and 32 gives 31, both prime, where 16
+     * gives 15. A prime modulus spreads a weak hash more evenly, though the mixer
+     * below is good enough that it should hardly matter.
+     *
+     * <p>The count is frozen per world at setup and carried in the control file, so
+     * erring high is the recoverable direction: too many buckets costs a one-time
+     * handful of clicks, too few costs bandwidth for the life of the world.
      */
-    public static final int DEFAULT_BUCKET_COUNT = 16;
+    public static final int DEFAULT_BUCKET_COUNT = 24;
 
     /**
      * Lower bound on bucket count. One bucket is legal - it means "one big archive".

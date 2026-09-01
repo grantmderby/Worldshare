@@ -128,7 +128,7 @@ public final class WorldSetup {
             // The bucket count is whatever the existing world already uses; the
             // caller's preference doesn't get to re-partition an established world.
             final String existingControlId = existing.get(BucketLayout.CONTROL_FILENAME);
-            final int existingBuckets = readBucketCount(existingControlId);
+            final int existingBuckets = readBucketCount(existingControlId, existing);
             remote = RemoteFileSet.empty(existingBuckets);
             remote.acceptPicked(existing);
             WorldShareMod.LOGGER.info(
@@ -278,7 +278,7 @@ public final class WorldSetup {
 
         // Now the authoritative bucket count is readable. Re-match against it, so a
         // world set up with a non-default layout lands in the right slots.
-        final int actualBucketCount = readBucketCount(remote.controlFileId);
+        final int actualBucketCount = readBucketCount(remote.controlFileId, nameToId);
         if (actualBucketCount != remote.bucketCount) {
             WorldShareMod.LOGGER.info("join: world uses {} buckets, not the default {}",
                     actualBucketCount, remote.bucketCount);
@@ -294,17 +294,59 @@ public final class WorldSetup {
     }
 
     /**
-     * Read a world's bucket count straight from its control file.
+     * How many buckets a world uses: what its control file says, or failing that,
+     * how many bucket files it actually has.
      *
-     * <p>Falls back to the default when the control file is still an empty
-     * placeholder - a world whose creator set it up but never pushed. That's the
-     * right guess, because a creator who never pushed also never departed from the
-     * default, and if they somehow did, the layout mismatch guard in the sync
-     * engine catches it loudly on the first sync rather than corrupting anything.
+     * <p>The control file is authoritative when it has been written. Until somebody
+     * pushes, it is an empty placeholder that says nothing - and this used to fall
+     * back to {@link BucketLayout#DEFAULT_BUCKET_COUNT} at that point, on the
+     * reasoning that a creator who never pushed never departed from the default.
+     * True of the creator, and irrelevant: the default is a property of <em>the
+     * client asking</em>, and clients disagree across versions.
+     *
+     * <p>Raising the default from 16 to 24 made that concrete. A 24-bucket client
+     * meeting a never-pushed 16-bucket world would either report eight buckets
+     * missing that never existed, when joining, or - worse, when re-running setup -
+     * create those eight and re-partition a world that already had a layout, which
+     * is the one thing the adoption path exists to prevent.
+     *
+     * <p>The files are the better witness anyway. They <em>are</em> the layout, they
+     * are present whether or not anyone has pushed, and counting them cannot
+     * disagree with itself between versions.
+     *
+     * @param present the world's remote files by name, as the caller already has
+     *                them - picked files when joining, folder contents when adopting
      */
-    private static int readBucketCount(final String controlFileId) throws IOException {
+    private static int readBucketCount(final String controlFileId,
+                                       final Map<String, String> present) throws IOException {
         final ControlFile control = ControlFileClient.read(controlFileId);
-        return (control == null) ? BucketLayout.DEFAULT_BUCKET_COUNT : control.bucketCount;
+        if (control != null && control.bucketCount > 0) {
+            return control.bucketCount;
+        }
+        final int counted = countBucketFiles(present);
+        if (counted > 0) {
+            WorldShareMod.LOGGER.info(
+                    "setup: control file is still empty; taking the layout from the {} "
+                            + "bucket file(s) present", counted);
+            return counted;
+        }
+        // No control file content and no bucket files: genuinely a new world, so the
+        // asking client's default is the right answer.
+        return BucketLayout.DEFAULT_BUCKET_COUNT;
+    }
+
+    /** How many {@code worldshare-bucket_NN.zip} files are in this name set. */
+    private static int countBucketFiles(final Map<String, String> present) {
+        if (present == null) return 0;
+        int count = 0;
+        for (final String name : present.keySet()) {
+            if (name != null
+                    && name.startsWith(BucketLayout.BUCKET_PREFIX)
+                    && name.endsWith(BucketLayout.BUCKET_SUFFIX)) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /**

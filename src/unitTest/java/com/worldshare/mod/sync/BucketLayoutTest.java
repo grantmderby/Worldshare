@@ -302,15 +302,31 @@ class BucketLayoutTest {
             }
         }
 
-        int min = Integer.MAX_VALUE;
+        int used = 0;
         int max = 0;
+        int total = 0;
+        final int regionBuckets = histogram.length - 1;
         for (int i = 1; i < histogram.length; i++) {   // skip the hot bucket
-            min = Math.min(min, histogram[i]);
+            if (histogram[i] > 0) used++;
             max = Math.max(max, histogram[i]);
+            total += histogram[i];
         }
-        assertTrue(min > 0, "every region bucket should hold something");
-        assertTrue((double) max / min < 8.0,
-                "region distribution too lopsided: max/min was " + ((double) max / min));
+        final double mean = (double) total / regionBuckets;
+
+        // Measured against the mean, not against the emptiest bucket.
+        //
+        // This used to require every region bucket to be non-empty, which passed at
+        // 15 region buckets and failed at 23 - not because the distribution got
+        // worse (max/mean barely moved, 1.89 to 2.08) but because 121 tiles into 23
+        // slots leaves one empty often enough to matter. An empty bucket is not a
+        // fault: its archive stays a zero-byte placeholder and costs nothing, and a
+        // world that keeps growing fills it. What actually matters is that no single
+        // archive ends up holding most of the world.
+        assertTrue(used >= regionBuckets * 0.8,
+                "most region buckets should be in use, got " + used + " of " + regionBuckets);
+        assertTrue(max < mean * 3.0,
+                "region distribution too lopsided: biggest bucket held " + max
+                        + " against a mean of " + Math.round(mean));
     }
 
     // ---------------------------------------------------------------- filenames

@@ -68,6 +68,13 @@ it says later.
 
 ---
 
+> **Bucket counts in this document assume a world created at the current default of
+> 24.** A world set up by an older version keeps whatever count it was created with -
+> the number lives in its control file and never changes - so an older world will
+> still say `dirty N of 16`. That is correct, not a regression: see
+> `BucketLayout.DEFAULT_BUCKET_COUNT` for why the default moved and why existing
+> worlds are deliberately left alone.
+
 ## Phase 1 — Setup, account A (creator)
 
 | # | Action | Expected |
@@ -75,13 +82,13 @@ it says later.
 | 1.1 | Launch, open or create a singleplayer world | World loads normally |
 | 1.2 | Run `/worldshare setup` | Chat shows *"Opening Google sign-in. Pick (or create) a Drive folder..."*, browser opens |
 | 1.3 | Consent, then pick or create a Drive folder | Browser shows the success page |
-| 1.4 | Return to game | Chat: *"Set up '<world>' for sharing"* and *"Created 18 files in your Drive folder"* |
-| 1.5 | Check the Drive folder in a browser | Exactly **18** files: `worldshare-control.json`, `worldshare-presence.json`, `worldshare-bucket_00.zip` … `_15.zip`. All 0 bytes |
+| 1.4 | Return to game | Chat: *"Set up '<world>' for sharing"* and *"Created 26 files in your Drive folder"* |
+| 1.5 | Check the Drive folder in a browser | Exactly **26** files: `worldshare-control.json`, `worldshare-presence.json`, `worldshare-bucket_00.zip` … `_23.zip`. All 0 bytes |
 
 **Log check:** `Setting up world '<name>' in Drive folder` followed by
-`setup: 0 file(s) already present, 18 created`.
+`setup: 0 file(s) already present, 26 created`.
 
-> **Watch for:** more than 18 files, or duplicate names. That would mean the
+> **Watch for:** more than 26 files, or duplicate names. That would mean the
 > adoption logic in `WorldSetup.createNewWorld` didn't fire and it created a
 > second set — the exact bug that logic exists to prevent.
 
@@ -92,10 +99,10 @@ Run `/worldshare setup` **again** in the same world.
 - **Expect:** *"This world is already set up for sharing."* No browser, no new files.
 - Then delete `<world>/worldshare-link.json`, restart, and run `/worldshare setup`
   once more, picking **the same folder**.
-- **Expect:** chat reports setup succeeded, and the folder **still has exactly 18
+- **Expect:** chat reports setup succeeded, and the folder **still has exactly 26
   files**. Log says `setup: adopting the existing world already in this folder`
-  and `18 file(s) already present, 0 created`.
-- **If the folder now has 36 files, stop.** That's silent world-orphaning and
+  and `26 file(s) already present, 0 created`.
+- **If the folder now has 52 files, stop.** That's silent world-orphaning and
   everything after it is invalid.
 
 ---
@@ -109,12 +116,12 @@ Run `/worldshare setup` **again** in the same world.
 | 2.3 | `/worldshare status` | Reports files differing from Drive (everything, on a first push) |
 | 2.4 | `/worldshare push` | Progress messages naming **bucket archives**, not individual files |
 | 2.5 | Check Drive | Bucket zips now have real sizes; `worldshare-control.json` is no longer 0 bytes |
-| 2.6 | Open `worldshare-control.json` in Drive's viewer | Valid JSON with `bucketCount: 16`, a populated `manifest.files`, and `lock.status: "hosting"` |
+| 2.6 | Open `worldshare-control.json` in Drive's viewer | Valid JSON with `bucketCount: 24`, a populated `manifest.files`, and `lock.status: "hosting"` |
 
-**Log check:** `push: N changed file(s) dirty M of 16 bucket(s)` then
+**Log check:** `push: N changed file(s) dirty M of 24 bucket(s)` then
 `commitControl: published manifest with N entries`.
 
-> **Watch for:** most of the 16 buckets dirty on a *second* push after a small
+> **Watch for:** most of the 24 buckets dirty on a *second* push after a small
 > change. **Two or three** is the expected figure — bucket 0 (the hot bucket,
 > holding `level.dat`, playerdata, stats and `data/`, which Minecraft rewrites
 > every session) plus the one or two region tiles covering wherever you played.
@@ -125,10 +132,10 @@ Run `/worldshare setup` **again** in the same world.
 
 Play a little more in **one area**, then `/worldshare push` again.
 
-- **Expect:** 2–3 dirty buckets (hot + the region tile you played in), not 16.
+- **Expect:** 2–3 dirty buckets (hot + the region tile you played in), not 24.
   Regions are grouped into 4×4 tiles, so wandering within a 2048-block square
   should stay in one region bucket.
-- Note the reported MB. That's the number that says whether 16 is the right
+- Note the reported MB. That's the number that says whether 24 is the right
   count — report it back either way.
 
 ---
@@ -142,10 +149,10 @@ Play a little more in **one area**, then `/worldshare push` again.
 | 3.3 | As B, **Contributor Worlds** → **Add World**, paste the link | — |
 | 3.4 | Click *Sign in and pick world files* | Picker opens showing **only that folder** — not B's whole Drive |
 | 3.5 | Try to select the folder itself | **Not selectable.** It can only be opened |
-| 3.6 | Open it, select **all 18** `worldshare-*` files | Returns to Contributor Worlds, world appears in the list |
+| 3.6 | Open it, select **all 26** `worldshare-*` files | Returns to Contributor Worlds, world appears in the list |
 | 3.7 | Select the world → download/open | Pull runs, world opens with A's terrain and buildings |
 
-**Log check on 3.6:** `join: matched 18 of 18 required file(s)`.
+**Log check on 3.6:** `join: matched 26 of 26 required file(s)`.
 
 > **Step 3.4 and 3.5 are the point of this phase.** Scoping the picker to the
 > invite folder and making that folder unselectable are what stop the commonest

@@ -38,8 +38,8 @@ The "host" is whoever creates the world. You only do this once per world.
 2. **Launch Minecraft** and open the world you want to share.
 3. **Run `/worldshare setup`.** Your browser opens; sign in with Google and pick
    (or create) a Drive folder to keep the world in.
-4. WorldShare creates eighteen files in that folder — a settings file, a
-   presence file, and sixteen world archives — and publishes your mod list so
+4. WorldShare creates twenty-six files in that folder — a settings file, a
+   presence file, and twenty-four world archives — and publishes your mod list so
    your friend's game knows what it needs.
 5. **Share that Drive folder** with your friend by email. **Set their permission
    to Editor**, not Viewer; they cannot sync without write access.
@@ -130,11 +130,13 @@ Worlds set up with WorldShare should be loaded from the singleplayer tab only fo
 
 ## How it works (briefly)
 
-- **Drive folder** holds a fixed set of eighteen files:
+- **Drive folder** holds a fixed set of twenty-six files:
   `worldshare-control.json` (file hashes, session lock state, and the mod list),
-  `worldshare-presence.json` (live session info), and sixteen
+  `worldshare-presence.json` (live session info), and twenty-four
   `worldshare-bucket_NN.zip` archives holding the world itself. The set never
   grows, which is what lets each player grant access to it once and never again.
+  The world is spread across those archives by location, so an evening spent in
+  one area re-uploads a couple of them rather than the whole world.
 - **Session lock** is a JSON file on Drive. Acquiring it writes your machine ID and a heartbeat timestamp. Other players see "Locked by <name>" in the Contributor tab.
 - **Sync** uses SHA-256 hashes — only files that actually changed get uploaded. Initial upload is a few MB to several hundred. Subsequent syncs are usually a few hundred KB to a few MB.
 - **Live co-op** uses [e4mc](https://modrinth.com/mod/e4mc) for hole-punched relay connections. Your friend doesn't need to know your IP, set up port forwarding, or use Hamachi.
