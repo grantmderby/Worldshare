@@ -38,14 +38,15 @@ runs {
         systemProperty 'forge.logging.console.level', 'debug'
         modSource project.sourceSets.main
 
-        // 2 GB each, not the usual dev-client default.
+        // 6 GB each. This started at 2 GB, on the reasoning that three clients
+        // side by side is more memory than a 32 GB machine has left after
+        // Windows, and that test worlds are small anyway.
         //
-        // Testing this mod means running three clients side by side, and three
-        // instances at their normal allocation is more memory than a 32 GB machine
-        // has left after Windows. These worlds are test worlds - a few dozen
-        // megabytes and a small render distance - so the heap is not what limits
-        // them. Raise it if a real modpack ever gets loaded in here.
-        jvmArgument '-Xmx2G'
+        // That held until the testing became exploration: generating terrain for
+        // thousands of blocks is the one thing these clients do that a small
+        // world does not bound. Two clients at 6 GB still fits; if a third is
+        // needed at the same time, drop this back.
+        jvmArgument '-Xmx6G'
         jvmArgument '-Xms512M'
 
         // Add Google libs explicitly to the run classpath
