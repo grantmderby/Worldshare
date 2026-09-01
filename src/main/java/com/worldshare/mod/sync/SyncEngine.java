@@ -979,14 +979,34 @@ public final class SyncEngine {
             byTopLevel.merge(top, entry == null ? 0L : entry.size, Long::sum);
         }
 
+        // Collected into one message rather than one per folder. Minecraft stacks
+        // five toasts down the screen edge and queues the rest, so a world with
+        // several large mod folders would spend a while trickling warnings at
+        // somebody who has already got the point.
+        final List<String> large = new ArrayList<>();
+        long largeBytes = 0L;
         for (final Map.Entry<String, Long> e : byTopLevel.entrySet()) {
             if (e.getValue() < LARGE_UNFAMILIAR_BYTES) continue;
-            final long mb = e.getValue() / (1024 * 1024);
-            WorldShareMod.LOGGER.warn("push: uploading {} MB of '{}'", mb, e.getKey());
+            large.add(e.getKey());
+            largeBytes += e.getValue();
+            WorldShareMod.LOGGER.warn("push: uploading {} MB of '{}'",
+                    e.getValue() / (1024 * 1024), e.getKey());
+        }
+        if (large.isEmpty()) return;
+
+        final long totalMb = largeBytes / (1024 * 1024);
+        if (large.size() == 1) {
+            final String name = large.get(0);
             com.worldshare.mod.util.PlayerNotice.info(
-                    "§e[WorldShare] Uploading " + mb + " MB of '" + e.getKey()
-                            + "'. It re-uploads whenever it changes - if that's a cache "
-                            + "you don't need shared, run /worldshare exclude " + e.getKey() + "/");
+                    "§e[WorldShare] Uploading " + totalMb + " MB of '" + name
+                            + "'. It will be re-uploaded whenever it changes. If it is "
+                            + "unneeded, run \"/worldshare exclude " + name + "/\"");
+        } else {
+            com.worldshare.mod.util.PlayerNotice.info(
+                    "§e[WorldShare] Uploading " + totalMb + " MB of extra content: "
+                            + String.join(", ", large) + ". Each will be re-uploaded "
+                            + "whenever it changes. Run \"/worldshare exclude\" to see "
+                            + "how to leave any of them out.");
         }
     }
 
