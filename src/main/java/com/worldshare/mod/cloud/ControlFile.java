@@ -72,8 +72,9 @@ public final class ControlFile {
      * made every pre-versioning world claim to be current and silently disabled
      * the check this field exists for.
      *
-     * <p>Set explicitly on every write by {@link #touch}, which is what keeps
-     * "what this world was written with" honest.
+     * <p>Stamped by {@code SyncEngine.commitControl} - the one write that publishes
+     * a manifest for archives this client just packed, and so the only one entitled
+     * to make a claim about how they are laid out.
      */
     public int layoutVersion = LAYOUT_VERSION_BEFORE_VERSIONING;
 
@@ -85,6 +86,19 @@ public final class ControlFile {
      * entirely. That mapping is version 1 whether or not it ever said so.
      */
     public static final int LAYOUT_VERSION_BEFORE_VERSIONING = 1;
+
+    /**
+     * What the world is called, as the person who set it up sees it.
+     *
+     * <p>Nothing on Drive carried this, so everyone who joined a world saw it listed
+     * as "Shared World" - tolerable with one, useless with three. The joiner cannot
+     * work it out for themselves: the Picker hands back file IDs, and the bucket
+     * archives are named after their index rather than the world.
+     *
+     * <p>Null for a world last written by a version that didn't record it; callers
+     * fall back to the generic name.
+     */
+    public String worldName;
 
     /**
      * Canonical per-file state of the world: relative path to hash/size/mtime.

@@ -512,7 +512,7 @@ public final class SyncEngine {
             return new PushResult(transfer.bucketsOk, transfer.filesOk, 0, 0, bytes);
         }
 
-        commitControl(remote, local);
+        commitControl(remote, local, worldRoot);
         // The manifest now describes what the archives actually hold.
         SyncActivity.clearRemoteAheadOfManifest();
         saveScanCache(local, scanCache, worldRoot);
@@ -748,7 +748,8 @@ public final class SyncEngine {
      * session look expired to the other player.
      */
     private static void commitControl(final RemoteFileSet remote,
-                                      final WorldManifest manifest) throws IOException {
+                                      final WorldManifest manifest,
+                                      final Path worldRoot) throws IOException {
         manifest.generatedAt = Instant.now().toString();
         if (manifest.generatedByMachineId == null) {
             manifest.generatedByMachineId = MachineId.get();
@@ -757,6 +758,11 @@ public final class SyncEngine {
         ControlFileClient.update(remote.controlFileId, remote.bucketCount, control -> {
             control.manifest = manifest;
             control.bucketCount = remote.bucketCount;
+            // Carry the world's name so joiners have something to call it. Only the
+            // host knows it - a joiner sees file IDs and numbered archives.
+            if (worldRoot != null && worldRoot.getFileName() != null) {
+                control.worldName = worldRoot.getFileName().toString();
+            }
             // The only write entitled to claim a layout version: this manifest
             // describes archives this client packed under the current mapping. Any
             // other write - taking the lock, a heartbeat - would be asserting

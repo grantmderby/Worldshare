@@ -185,7 +185,7 @@ public final class WorldStateResolver {
             // Stale or absent presence = fall through to the lock check.
 
             // 2. Read manifest (needed for conflict detection).
-            final WorldManifest driveManifest = readManifest(remote);
+            final WorldManifest driveManifest = readManifest(remote, sub);
 
             // 3. No local folder yet.
             if (!sub.hasLocalFolder()) {
@@ -306,10 +306,28 @@ public final class WorldStateResolver {
      * Callers treat either as "we can't compare, assume local is newer", which errs
      * toward an unnecessary upload rather than silently overwriting somebody's work.
      */
-    private static WorldManifest readManifest(final RemoteFileSet remote) {
+    private static WorldManifest readManifest(final RemoteFileSet remote,
+                                              final WorldSubscription sub) {
         try {
             final ControlFile control = ControlFileClient.read(remote.controlFileId);
-            return control == null ? null : control.manifestOrEmpty();
+            if (control == null) return null;
+
+            // Adopt the world's real name if we joined before the host published
+            // one, or before this client knew to ask. Cheap here because the
+            // control file is already open, and it means an existing subscription
+            // stops saying "Shared World" on its next refresh rather than needing
+            // to be removed and re-added.
+            if (sub != null && control.worldName != null && !control.worldName.isBlank()
+                    && !control.worldName.equals(sub.displayName)) {
+                final boolean generic = sub.displayName == null
+                        || sub.displayName.isBlank()
+                        || "Shared World".equals(sub.displayName);
+                if (generic) {
+                    sub.displayName = control.worldName;
+                    SubscriptionStore.get().flushQuietly();
+                }
+            }
+            return control.manifestOrEmpty();
         } catch (final Exception e) {
             WorldShareMod.LOGGER.debug("WorldStateResolver: couldn't read manifest: {}",
                     e.getMessage());

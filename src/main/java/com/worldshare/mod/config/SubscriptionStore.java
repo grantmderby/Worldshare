@@ -288,6 +288,18 @@ public final class SubscriptionStore {
 
     // ----- Disk I/O -----
 
+    /**
+     * Persist the store after a caller edited a subscription in place.
+     *
+     * <p>For incidental corrections rather than deliberate changes - adopting a
+     * world's real name once the host has published it, say. {@link #flush} already
+     * swallows its own errors, so a failed write here costs nothing but a repeat of
+     * the same correction next time.
+     */
+    public synchronized void flushQuietly() {
+        flush();
+    }
+
     private void flush() {
         final Path file = storePath();
         try {

@@ -196,7 +196,21 @@ public final class AddSubscriptionScreen extends Screen {
                     return;
                 }
 
-                final String displayName = "Shared World";
+                // Ask the world what it's called rather than inventing a name. The
+                // control file has just been picked, so this costs one read on a
+                // path that is already several Drive round trips deep.
+                String displayName = "Shared World";
+                try {
+                    final com.worldshare.mod.cloud.ControlFile control =
+                            com.worldshare.mod.cloud.ControlFileClient.read(remote.controlFileId);
+                    if (control != null && control.worldName != null
+                            && !control.worldName.isBlank()) {
+                        displayName = control.worldName;
+                    }
+                } catch (final Throwable t) {
+                    WorldShareMod.LOGGER.debug(
+                            "AddSubscription: couldn't read the world's name", t);
+                }
                 SubscriptionStore.get().subscribe(remote, displayName);
                 WorldShareMod.LOGGER.info(
                         "AddSubscription: subscribed to world {}", remote.controlFileId);
