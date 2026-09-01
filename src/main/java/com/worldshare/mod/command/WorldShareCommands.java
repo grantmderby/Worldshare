@@ -113,6 +113,13 @@ public final class WorldShareCommands {
                                 .executes(ctx -> runDriveInvite(ctx.getSource())))
                         .then(Commands.literal("host")
                                 .executes(ctx -> runHost(ctx.getSource())))
+                        // Two words, because it republishes the whole world over
+                        // whatever is on Drive. Easy to reach when needed, hard to
+                        // fire by accident.
+                        .then(Commands.literal("repair")
+                                .executes(ctx -> explainRepair(ctx.getSource()))
+                                .then(Commands.literal("confirm")
+                                        .executes(ctx -> runRepair(ctx.getSource()))))
                         .then(Commands.literal("modpack")
                                 .then(Commands.literal("generate")
                                         .executes(ctx -> runModpackGenerate(ctx.getSource()))))
@@ -640,6 +647,69 @@ public final class WorldShareCommands {
     }
 
     // ----- M4 -----
+
+    /**
+     * Republish this world from the local copy, making Drive self-consistent.
+     *
+     * <p>{@code RepairWorldScreen} covers the case where a pull fails and the
+     * player cannot open the world at all. This covers the opposite: the world
+     * opens fine, but its remote state is suspect - archives and manifest written
+     * by different versions, or a bucket mapping the control file misreports. There
+     * is no failure to hang a screen off, so it needs to be asked for.
+     *
+     * <p>Deliberately available rather than hidden. A world whose remote is subtly
+     * wrong has no other way back, and the alternative to a documented command is
+     * somebody deleting the Drive folder - which mints new file IDs and cuts every
+     * other player off permanently.
+     */
+    private static int explainRepair(final CommandSourceStack source) {
+        sendFeedback(source, "Repair re-uploads this ENTIRE world and rebuilds the "
+                + "index on Drive.", ChatFormatting.YELLOW);
+        sendFeedback(source, "Your copy becomes the authoritative one. Anything another "
+                + "player pushed that you haven't downloaded is lost.", ChatFormatting.GRAY);
+        sendFeedback(source, "Run /worldshare repair confirm if that's what you want.",
+                ChatFormatting.GRAY);
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int runRepair(final CommandSourceStack source) {
+        final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
+        if (ctx.isEmpty()) {
+            sendFeedback(source, "No world loaded.", ChatFormatting.RED);
+            return 0;
+        }
+        final WorldContext.CurrentWorld world = ctx.get();
+        final RemoteFileSet remote = requireRemoteForCurrentWorld(source);
+        if (remote == null) return 0;
+
+        if (!LockManager.weHoldLock(remote)) {
+            sendFeedback(source, "Repair needs this world's session lock.",
+                    ChatFormatting.RED);
+            sendFeedback(source, "Save and quit, then open it from Contributor Worlds.",
+                    ChatFormatting.YELLOW);
+            return 0;
+        }
+
+        sendFeedback(source, "Repairing '" + world.name + "' - re-uploading every bucket...",
+                ChatFormatting.YELLOW);
+
+        final SyncProgress chatProgress = newChatProgressReporter();
+        CloudModule.executor().submit(() -> {
+            try {
+                final SyncEngine.PushResult r = SyncEngine.repair(
+                        world.worldRoot, remote, world.playerUuid, chatProgress);
+                sendClientMessage("§a[WorldShare] Repaired: " + r.bucketsUploaded
+                        + " bucket(s) republished, " + r.filesUploaded + " file(s), "
+                        + (r.bytes / (1024 * 1024)) + " MB.");
+                sendClientMessage("§7Drive now matches your copy. Other players can pull again.");
+            } catch (final Throwable t) {
+                WorldShareMod.LOGGER.error("repair command failed", t);
+                sendClientMessage("§c[WorldShare] Repair failed: " + t.getMessage());
+                sendClientMessage("§7Nothing was committed; your local world is untouched.");
+            }
+        });
+        return Command.SINGLE_SUCCESS;
+    }
 
     /**
      * Print the Drive link that lets somebody else contribute to this world.

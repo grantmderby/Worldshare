@@ -160,14 +160,20 @@ public final class ControlFile {
     /**
      * Stamp {@link #updatedAt} to now. Called on every write path.
      *
-     * <p>Also records the bucket mapping this client is about to write with. It
-     * belongs here rather than at each call site precisely because "every write
-     * path" already funnels through this method - a world is only ever stamped
-     * with the layout that actually produced its archives.
+     * <p><b>Deliberately does not touch {@link #layoutVersion}.</b> It did briefly,
+     * on the reasoning that every write funnels through here - which is true and
+     * exactly why it was wrong. Taking the session lock is a write, and so is every
+     * heartbeat, so a world written under the old bucket mapping was promoted to
+     * the new version merely by being opened, without a single archive being
+     * repacked. That is worse than not checking at all: the world then claims a
+     * layout its archives don't have, and nothing will ever notice again.
+     *
+     * <p>{@code layoutVersion} is stamped by the one write that makes the claim
+     * true - publishing a manifest for archives this client just packed. See
+     * {@code SyncEngine.commitControl}.
      */
     public ControlFile touch(final Instant now) {
         this.updatedAt = now.toString();
-        this.layoutVersion = BucketLayout.LAYOUT_VERSION;
         return this;
     }
 

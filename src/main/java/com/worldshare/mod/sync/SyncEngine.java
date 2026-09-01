@@ -757,6 +757,11 @@ public final class SyncEngine {
         ControlFileClient.update(remote.controlFileId, remote.bucketCount, control -> {
             control.manifest = manifest;
             control.bucketCount = remote.bucketCount;
+            // The only write entitled to claim a layout version: this manifest
+            // describes archives this client packed under the current mapping. Any
+            // other write - taking the lock, a heartbeat - would be asserting
+            // something about bytes it never touched.
+            control.layoutVersion = BucketLayout.LAYOUT_VERSION;
         });
 
         WorldShareMod.LOGGER.info("commitControl: published manifest with {} entries", manifest.size());
