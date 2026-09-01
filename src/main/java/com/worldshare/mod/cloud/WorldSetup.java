@@ -46,6 +46,13 @@ import java.util.function.Consumer;
  */
 public final class WorldSetup {
 
+    /** Name of the folder that new world folders are created inside. */
+    private static final String LIBRARY_FOLDER_NAME = "WorldShare";
+
+    /** Private tag identifying that folder, so renaming it doesn't lose us. */
+    private static final String LIBRARY_TAG_KEY = "worldshare";
+    private static final String LIBRARY_TAG_VALUE = "library";
+
     /**
      * Content type for the placeholder bucket archives.
      *
@@ -125,10 +132,11 @@ public final class WorldSetup {
             // access to what it created, which is the same property the bucket
             // files already rely on.
             CloudModule.refreshCredential(OAuthHelper.authorize(urlPresenter));
+            final String library = ensureLibraryFolder(CloudModule.driveClient());
             final String folderName = "WorldShare - " + worldName;
-            folderId = CloudModule.driveClient().createFolder(folderName, null);
-            WorldShareMod.LOGGER.info("setup: created Drive folder '{}' ({})",
-                    folderName, folderId);
+            folderId = CloudModule.driveClient().createFolder(folderName, library);
+            WorldShareMod.LOGGER.info("setup: created Drive folder '{}' ({}) in the library ({})",
+                    folderName, folderId, library);
         }
 
         final DriveClient client = CloudModule.driveClient();
@@ -391,6 +399,37 @@ public final class WorldSetup {
      * an empty result is a legitimate answer meaning "the grant doesn't reach
      * these", not an error.
      */
+    /**
+     * The one folder that holds every world this player creates, made on demand.
+     *
+     * <p>Without it each world drops a folder into the root of My Drive, and
+     * somebody who shares four worlds has four of ours sitting among their own
+     * files. One parent keeps that to a single entry.
+     *
+     * <p>Found by app property rather than by name, because the player owns this
+     * folder and is free to rename or move it - a name search would quietly stop
+     * matching and start minting duplicates. The tag is private to this app and
+     * travels with the folder. If the folder is in the trash the search skips it
+     * and we make a new one, which is the right answer: a trashed folder is one
+     * the player was done with.
+     *
+     * <p>The world folders keep their {@code WorldShare - } prefix even though
+     * the parent already says as much. The redundancy shows up once, in a listing
+     * the creator understands; the name is read without that context by the
+     * person they share it with, who sees it alone under "Shared with me".
+     */
+    private static String ensureLibraryFolder(final DriveClient client) throws IOException {
+        final String found = client.findFolderByAppProperty(LIBRARY_TAG_KEY, LIBRARY_TAG_VALUE);
+        if (found != null) {
+            return found;
+        }
+        final String created = client.createFolder(
+                LIBRARY_FOLDER_NAME, null, Map.of(LIBRARY_TAG_KEY, LIBRARY_TAG_VALUE));
+        WorldShareMod.LOGGER.info("setup: created the '{}' library folder ({})",
+                LIBRARY_FOLDER_NAME, created);
+        return created;
+    }
+
     private static Map<String, String> listChildren(final DriveClient client,
                                                     final String folderId) throws IOException {
         final Map<String, String> out = new LinkedHashMap<>();

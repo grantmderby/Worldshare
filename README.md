@@ -36,8 +36,11 @@ The "host" is whoever creates the world. You only do this once per world.
 1. **Install the mod.** Drop `worldshare-0.1.0.jar` into your NeoForge 1.21.1
    mods folder. Add `e4mc` too if you want live co-op.
 2. **Launch Minecraft** and open the world you want to share.
-3. **Run `/worldshare setup`.** Your browser opens; sign in with Google and pick
-   (or create) a Drive folder to keep the world in.
+3. **Run `/worldshare setup`.** Your browser opens; sign in with Google. That is
+   the whole of it — WorldShare makes the folder itself, as
+   `WorldShare/WorldShare - <world name>` in your My Drive, so however many worlds
+   you share they stay in one place. (Already have a folder holding a world from a
+   previous install? Use `/worldshare setup existing` and pick it.)
 4. WorldShare creates twenty-six files in that folder — a settings file, a
    presence file, and twenty-four world archives — and publishes your mod list so
    your friend's game knows what it needs.

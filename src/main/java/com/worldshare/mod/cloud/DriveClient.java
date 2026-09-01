@@ -19,6 +19,7 @@ import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -43,7 +44,6 @@ public final class DriveClient {
     /** MIME type used for manifest.json and session.lock uploads. */
     public static final String MIME_TYPE_JSON = "application/json";
 
-    /** Default fields we request from Drive for file metadata — id+name+size+md5+modifiedTime. */
     /**
      * Default fields requested for file metadata. Drive only returns the fields
      * you explicitly ask for via {@code setFields}, so {@code mimeType} MUST be
@@ -291,11 +291,28 @@ public final class DriveClient {
      * @return Drive ID of the new folder
      */
     public String createFolder(final String name, final String parentFolderId) throws IOException {
+        return createFolder(name, parentFolderId, null);
+    }
+
+    /**
+     * Create a folder on Drive, optionally tagged so we can find it again.
+     *
+     * @param appProperties private key/value tags to attach, or {@code null}.
+     *                      These are visible only to this app and are searchable
+     *                      with {@link #findFolderByAppProperty}. Unlike a name,
+     *                      they survive the user renaming the folder.
+     */
+    public String createFolder(final String name,
+                               final String parentFolderId,
+                               final Map<String, String> appProperties) throws IOException {
         final File metadata = new File();
         metadata.setName(name);
         metadata.setMimeType(MIME_TYPE_FOLDER);
         if (parentFolderId != null) {
             metadata.setParents(Collections.singletonList(parentFolderId));
+        }
+        if (appProperties != null && !appProperties.isEmpty()) {
+            metadata.setAppProperties(appProperties);
         }
         final File created = drive.files().create(metadata)
                 .setFields("id")
@@ -303,6 +320,45 @@ public final class DriveClient {
         WorldShareMod.LOGGER.debug("Created drive folder '{}' (id {}) in parent {}",
                 name, created.getId(), parentFolderId);
         return created.getId();
+    }
+
+    /**
+     * Find a folder this app created and tagged with the given app property.
+     *
+     * <p>Searching by tag rather than by name is deliberate: the user is free to
+     * rename or move anything we put in their Drive, and a name search would
+     * quietly stop matching and start creating duplicates. App properties are
+     * attached to the file itself, are private to this app, and move with it.
+     *
+     * <p>The oldest match wins, so that if duplicates ever do arise - two
+     * installations racing on first setup, say - every client afterwards settles
+     * on the same one instead of alternating.
+     *
+     * @return the folder's Drive ID, or {@code null} if there is no such folder
+     */
+    public String findFolderByAppProperty(final String key, final String value) throws IOException {
+        final String q = "mimeType = '" + MIME_TYPE_FOLDER + "'"
+                + " and trashed = false"
+                + " and appProperties has { key = '" + key + "' and value = '" + value + "' }";
+
+        final FileList result = drive.files().list()
+                .setQ(q)
+                .setFields("files(id, name)")
+                .setOrderBy("createdTime")
+                .setPageSize(10)
+                .execute();
+
+        final List<File> files = result.getFiles();
+        if (files == null || files.isEmpty()) {
+            return null;
+        }
+        if (files.size() > 1) {
+            WorldShareMod.LOGGER.warn(
+                    "Drive holds {} folders tagged {}={}; using the oldest ('{}'). "
+                            + "The others are harmless but can be deleted.",
+                    files.size(), key, value, files.get(0).getName());
+        }
+        return files.get(0).getId();
     }
 
     /**
