@@ -547,7 +547,7 @@ public final class SyncEngine {
                 final long start = System.currentTimeMillis();
                 try {
                     final long moved = uploading
-                            ? uploadBucket(remote, bucket, worldRoot, paths)
+                            ? uploadBucket(remote, bucket, worldRoot, paths, manifestForSizes)
                             : downloadBucket(remote, bucket, worldRoot, paths, manifestForSizes);
                     // A pull that found an empty placeholder moved no bytes and
                     // restored nothing; counting its expected files as restored
@@ -622,11 +622,13 @@ public final class SyncEngine {
     private static long uploadBucket(final RemoteFileSet remote,
                                      final int bucketIndex,
                                      final Path worldRoot,
-                                     final Set<String> paths) throws IOException {
+                                     final Set<String> paths,
+                                     final WorldManifest expected) throws IOException {
         final Path archive = Files.createTempFile(
                 "worldshare-bucket-" + bucketIndex + "-", ".zip");
         try {
-            BucketArchive.build(worldRoot, paths, archive);
+            final Map<String, String> packed = BucketArchive.build(worldRoot, paths, archive);
+            verifyPacked(packed, paths, expected, bucketIndex);
             final long size = Files.size(archive);
 
             final String fileId = remote.bucketFileId(bucketIndex);
@@ -858,6 +860,50 @@ public final class SyncEngine {
      * whatever the archive held and trusted it. Checking here turns a silent wrong
      * -content bug into a clear failure naming the file.
      */
+    /**
+     * Check what we just packed still matches the manifest we are about to publish.
+     *
+     * <p>The manifest is produced by a scan that finishes before any archive is
+     * built, and the world is not frozen in between. The gap is small but reachable:
+     * "Continue in Background" leaves an upload running while the player is free to
+     * reopen that same world from vanilla Singleplayer, which is the one route into
+     * a world that doesn't queue behind {@code CloudModule.executor()}. Minecraft
+     * then rewrites chunks underneath the pack.
+     *
+     * <p>Without this, the push would succeed and publish a manifest describing
+     * content the archives no longer hold - discovered later by the other player's
+     * pull failing verification, which blames the wrong person at the worst moment.
+     * Failing here instead costs one upload, and the existing machinery does the
+     * rest: the manifest is never committed and the lock stays held.
+     *
+     * <p>An absent path is the other case in the same family - the world folder
+     * deleted mid-push - and is caught by the same check.
+     */
+    private static void verifyPacked(final Map<String, String> packed,
+                                     final Set<String> requested,
+                                     final WorldManifest expected,
+                                     final int bucketIndex) throws IOException {
+        if (expected == null) return;
+        for (final String relPath : requested) {
+            final WorldManifest.Entry entry = expected.get(relPath);
+            if (entry == null || entry.sha256 == null) continue;
+
+            final String actual = packed.get(relPath);
+            if (actual == null) {
+                throw new IOException("'" + relPath + "' disappeared while packing "
+                        + BucketLayout.bucketFilename(bucketIndex)
+                        + ". The world changed mid-upload - is it open in another "
+                        + "window? Nothing was uploaded; try saving again.");
+            }
+            if (!entry.sha256.equals(actual)) {
+                throw new IOException("'" + relPath + "' changed while packing "
+                        + BucketLayout.bucketFilename(bucketIndex)
+                        + ". The world changed mid-upload - is it open in another "
+                        + "window? Nothing was uploaded; try saving again.");
+            }
+        }
+    }
+
     /**
      * Check a downloaded archive against the manifest without writing anything.
      *

@@ -186,9 +186,23 @@ public final class ContributorWorldsScreen extends Screen {
     private void renderLoading(final GuiGraphics gfx) {
         final int cx = this.width / 2;
         if (!dlActive || dlTotalFiles == 0) {
+            // Everything here runs on the single-threaded Drive executor, so a
+            // backgrounded upload makes this wait rather than race. Safe, but from
+            // the outside it looks like the screen has hung.
+            final boolean queuedBehindUpload =
+                    com.worldshare.mod.sync.SyncActivity.isSyncing();
             gfx.drawCenteredString(this.font,
-                    Component.literal("Checking Drive...").withStyle(ChatFormatting.GRAY),
+                    Component.literal(queuedBehindUpload
+                                    ? "Finishing an upload first..."
+                                    : "Checking Drive...")
+                            .withStyle(ChatFormatting.GRAY),
                     cx, this.height / 2, 0xFFFFFF);
+            if (queuedBehindUpload) {
+                gfx.drawCenteredString(this.font,
+                        Component.literal("This will continue on its own.")
+                                .withStyle(ChatFormatting.DARK_GRAY),
+                        cx, this.height / 2 + 14, 0xFFFFFF);
+            }
             return;
         }
         gfx.drawCenteredString(this.font,

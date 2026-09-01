@@ -23,6 +23,30 @@ public final class TitleScreenButtonInjector {
 
     private TitleScreenButtonInjector() {}
 
+    /**
+     * Warn when the world list opens while an upload is still finishing.
+     *
+     * <p>Vanilla Singleplayer is the one route into a world that does not queue
+     * behind the Drive executor, so it is the only way to have Minecraft writing a
+     * world's chunks while WorldShare is packing them. The push refuses in that
+     * case rather than publishing an archive its manifest doesn't describe, but a
+     * refused save is a poor way to learn this - better to say so before the click.
+     *
+     * <p>Best-effort by design: it informs, it cannot prevent. The guard that
+     * actually holds is in the push itself.
+     */
+    @SubscribeEvent
+    public static void onWorldSelectInit(final ScreenEvent.Init.Post event) {
+        if (!(event.getScreen()
+                instanceof net.minecraft.client.gui.screens.worldselection.SelectWorldScreen)) {
+            return;
+        }
+        if (!com.worldshare.mod.sync.SyncActivity.isSyncing()) return;
+
+        com.worldshare.mod.util.PlayerNotice.info(
+                "An upload is still finishing. Opening that world now will cancel its save.");
+    }
+
     @SubscribeEvent
     public static void onTitleScreenInit(final ScreenEvent.Init.Post event) {
         if (!(event.getScreen() instanceof TitleScreen)) return;

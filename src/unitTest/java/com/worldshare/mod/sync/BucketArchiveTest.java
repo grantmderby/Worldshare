@@ -284,6 +284,50 @@ class BucketArchiveTest {
                 "tampering has to be visible before a single byte reaches the world");
     }
 
+    // ------------------------------------------------------------- hashing on pack
+
+    @Test
+    @DisplayName("build reports the hash of every entry it wrote")
+    void buildHashesWhatItPacks(@TempDir Path tmp) throws Exception {
+        final Path world = tmp.resolve("world");
+        final Map<String, byte[]> original = sampleWorld(world);
+
+        final Path zip = tmp.resolve("bucket.zip");
+        final Map<String, String> packed = BucketArchive.build(world, original.keySet(), zip);
+
+        assertEquals(original.keySet(), packed.keySet());
+
+        // Hashing while packing has to agree with hashing the finished archive,
+        // otherwise the push-side and pull-side guards would disagree about the
+        // same bytes.
+        assertEquals(BucketArchive.hashEntries(zip, null), packed);
+
+        // And with the source files, which is what the manifest holds.
+        for (final String relPath : original.keySet()) {
+            assertEquals(sha256(world.resolve(relPath)), packed.get(relPath),
+                    relPath + " packed with a hash that doesn't match the file");
+        }
+    }
+
+    @Test
+    @DisplayName("a file that vanishes mid-pack is absent from the result, not silently ignored")
+    void buildReportsVanishedFiles(@TempDir Path tmp) throws Exception {
+        final Path world = tmp.resolve("world");
+        final Map<String, byte[]> original = sampleWorld(world);
+
+        // The world-deleted-mid-upload case. build() skips it rather than throwing,
+        // deliberately - but the caller has to be able to tell, or it would publish
+        // a manifest claiming content the archive doesn't have.
+        Files.delete(world.resolve("region/r.1.-2.mca"));
+
+        final Path zip = tmp.resolve("bucket.zip");
+        final Map<String, String> packed = BucketArchive.build(world, original.keySet(), zip);
+
+        assertFalse(packed.containsKey("region/r.1.-2.mca"),
+                "a deleted file must not appear in the result");
+        assertEquals(original.size() - 1, packed.size());
+    }
+
     private static String sha256(final Path p) throws Exception {
         final byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
                 .digest(Files.readAllBytes(p));

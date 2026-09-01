@@ -7,6 +7,7 @@ import com.worldshare.mod.cloud.LockManager;
 import com.worldshare.mod.config.WorldLink;
 import com.worldshare.mod.sync.AutoSyncListener;
 import com.worldshare.mod.sync.OnlineChecker;
+import com.worldshare.mod.sync.SyncActivity;
 import com.worldshare.mod.sync.SyncEngine;
 import com.worldshare.mod.sync.SyncProgress;
 import com.worldshare.mod.sync.WorldContext;
@@ -350,6 +351,11 @@ public final class SaveAndUploadScreen extends Screen {
             } catch (final Throwable t) {
                 WorldShareMod.LOGGER.error("SaveAndUpload flow failed", t);
                 fail("Upload failed: " + t.getMessage());
+            } finally {
+                // The push is over either way, so the token has done its job. Held
+                // until here rather than released at returnToTitle(), which fires
+                // the moment the player backgrounds the upload.
+                AutoSyncListener.clearSuppressionToken();
             }
         }, "WorldShare-SaveAndUpload");
         orchestrator.setDaemon(true);
@@ -398,7 +404,15 @@ public final class SaveAndUploadScreen extends Screen {
     }
 
     private void returnToTitle() {
-        AutoSyncListener.clearSuppressionToken();
+        // Don't drop the suppression token while the push is still running. It
+        // exists to stop AutoSyncListener pushing a world this screen is already
+        // handling, and "Continue in Background" reaches here with the upload very
+        // much still in progress. The executor serialises the two today, so
+        // clearing early happened to be harmless - but that made the invariant true
+        // by luck rather than by design.
+        if (!SyncActivity.isSyncing()) {
+            AutoSyncListener.clearSuppressionToken();
+        }
         final Minecraft mc = Minecraft.getInstance();
         mc.execute(() -> mc.setScreen(new TitleScreen()));
     }

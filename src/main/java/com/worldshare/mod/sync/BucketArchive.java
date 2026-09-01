@@ -10,6 +10,8 @@ import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.security.DigestInputStream;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -69,20 +71,26 @@ public final class BucketArchive {
     /**
      * Write the given world files into a zip.
      *
-     * <p>Paths that no longer exist on disk are skipped rather than failing the
-     * build: a world file can legitimately vanish between the scan and the pack
-     * (Minecraft trimming an empty region, say), and losing the whole push over
-     * that would be worse than shipping an archive without it.
+     * <p>Paths that no longer exist on disk are skipped rather than failing here.
+     * Whether that is acceptable is the caller's judgement, not this method's, and
+     * the return value is what lets it decide: a path that was asked for and is
+     * absent from the result vanished during the pack.
+     *
+     * <p>Each entry is hashed <em>as it is written</em>, in the same pass that
+     * copies it. That matters because the manifest a push publishes was computed by
+     * an earlier scan, and anything that rewrote the world in between - most
+     * plausibly the player reopening it while a background upload runs - would
+     * otherwise produce an archive the manifest does not describe. Hashing here
+     * costs nothing extra; the bytes are already in hand.
      *
      * @param worldRoot the local world folder that {@code relPaths} are relative to
      * @param relPaths  forward-slash relative paths to include
      * @param destZip   file to create; overwritten if it already exists
-     * @return the relative paths actually written, sorted, so the caller can
-     *         reconcile against what it asked for
+     * @return each path actually written, mapped to the SHA-256 of what was written
      */
-    public static List<String> build(final Path worldRoot,
-                                     final Collection<String> relPaths,
-                                     final Path destZip) throws IOException {
+    public static Map<String, String> build(final Path worldRoot,
+                                            final Collection<String> relPaths,
+                                            final Path destZip) throws IOException {
         if (destZip.getParent() != null) {
             Files.createDirectories(destZip.getParent());
         }
@@ -90,7 +98,11 @@ public final class BucketArchive {
         // Sorted for determinism: two machines packing identical content produce
         // byte-identical entry ordering, which keeps diffs and debugging sane.
         final Set<String> ordered = new TreeSet<>(relPaths);
-        final List<String> written = new ArrayList<>(ordered.size());
+        // Path to the hash of what actually went into the archive. Computed here,
+        // during the one read we already make, so the caller can check the bytes it
+        // packed against the manifest it is about to publish - see the caller for
+        // why that gap matters.
+        final Map<String, String> written = new LinkedHashMap<>();
 
         try (OutputStream fileOut = Files.newOutputStream(destZip);
              ZipOutputStream zip = new ZipOutputStream(fileOut)) {
@@ -110,9 +122,13 @@ public final class BucketArchive {
                 // change?" answerable by hashing the archive.
                 entry.setTime(0L);
                 zip.putNextEntry(entry);
-                Files.copy(source, zip);
+                final MessageDigest digest = SHA256Util.newSha256();
+                try (InputStream in = new DigestInputStream(
+                        Files.newInputStream(source), digest)) {
+                    in.transferTo(zip);
+                }
                 zip.closeEntry();
-                written.add(relPath);
+                written.put(relPath, SHA256Util.hex(digest.digest()));
             }
         }
 

@@ -74,6 +74,23 @@ public final class SHA256Util {
         return toHex(digest.digest());
     }
 
+    /**
+     * A fresh SHA-256 digest, for callers that need to hash a stream they are
+     * already reading for another purpose.
+     *
+     * <p>{@code BucketArchive.build} packs and hashes in a single pass rather than
+     * reading every region file twice, which needs the digest itself rather than
+     * one of the finished helpers above.
+     */
+    public static MessageDigest newSha256() {
+        return newDigest();
+    }
+
+    /** Hex-encode a digest produced by {@link #newSha256()}. */
+    public static String hex(final byte[] bytes) {
+        return toHex(bytes);
+    }
+
     private static MessageDigest newDigest() {
         try {
             return MessageDigest.getInstance("SHA-256");
