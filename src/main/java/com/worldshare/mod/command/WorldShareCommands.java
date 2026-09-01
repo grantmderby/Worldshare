@@ -660,11 +660,48 @@ public final class WorldShareCommands {
             sendFeedback(source, "No world is currently loaded.", ChatFormatting.RED);
             return 0;
         }
-        final RemoteFileSet remote = WorldLink.readRemote(ctx.get().worldRoot);
-        if (remote == null || remote.driveFolderId == null) {
+        // Three different reasons this can fail, and telling them apart matters:
+        // "run setup" is actively wrong advice for a legacy world, because setup
+        // refuses while a link file exists. That combination - invite saying not
+        // set up, setup saying already set up - leaves the player with two
+        // contradictory messages and no way forward.
+        final WorldLink link = WorldLink.read(ctx.get().worldRoot);
+        if (link == null) {
             sendFeedback(source,
                     "This world isn't set up for sharing yet. Run /worldshare setup first.",
                     ChatFormatting.RED);
+            return 0;
+        }
+        if (link.isLegacy()) {
+            sendFeedback(source,
+                    "This world was linked by an older version of WorldShare, before "
+                            + "it moved to per-file Drive access.",
+                    ChatFormatting.YELLOW);
+            sendFeedback(source,
+                    "Run /worldshare clearDriveLink, then /worldshare setup to relink it.",
+                    ChatFormatting.GRAY);
+            return 0;
+        }
+        final RemoteFileSet remote = link.remote;
+        if (remote == null || !remote.isComplete()) {
+            sendFeedback(source,
+                    "This world's setup was never finished - still missing "
+                            + (remote == null ? "everything" : remote.missingFilenames())
+                            + ". Re-run /worldshare setup.",
+                    ChatFormatting.RED);
+            return 0;
+        }
+        if (remote.driveFolderId == null) {
+            // A world joined through the Picker knows its files but not the folder
+            // they live in, so there is no link to hand out. The person who created
+            // the world has it.
+            sendFeedback(source,
+                    "You joined this world rather than creating it, so WorldShare "
+                            + "doesn't know its Drive folder.",
+                    ChatFormatting.YELLOW);
+            sendFeedback(source,
+                    "Ask whoever set it up to run /worldshare invite and send you the link.",
+                    ChatFormatting.GRAY);
             return 0;
         }
 
