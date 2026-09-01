@@ -476,7 +476,7 @@ public final class SyncEngine {
         // Only now, with every dirty archive safely on Drive, does the manifest that
         // describes them become the published truth. Re-checked because a long upload
         // leaves a window after the pre-upload check.
-        if (!LockManager.weHoldLock()) {
+        if (!LockManager.weHoldLock(remote)) {
             WorldShareMod.LOGGER.error(
                     "push: lock lost during upload, aborting control-file commit. "
                             + "{} bucket(s) were uploaded but the manifest is unchanged.",

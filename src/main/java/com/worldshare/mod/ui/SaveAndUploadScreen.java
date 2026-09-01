@@ -230,7 +230,7 @@ public final class SaveAndUploadScreen extends Screen {
             return;
         }
 
-        if (!LockManager.weHoldLock()) {
+        if (!LockManager.weHoldLock(remote)) {
             stage = "[!] No session lock held - upload blocked.";
             errorMessage = "You must hold the session lock to upload. "
                     + "Run /worldshare lock first, or open this world "
@@ -317,7 +317,7 @@ public final class SaveAndUploadScreen extends Screen {
                             = new java.util.concurrent.CompletableFuture<>();
                     CloudModule.executor().submit(() -> {
                         try {
-                            if (LockManager.weHoldLock()) {
+                            if (LockManager.weHoldLock(remote)) {
                                 LockManager.release();
                             }
                             releaseFuture.complete(null);

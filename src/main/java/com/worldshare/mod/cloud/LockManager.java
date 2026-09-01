@@ -216,9 +216,42 @@ public final class LockManager {
         }
     }
 
-    /** @return true if we currently hold a lock. */
+    /**
+     * @return true if we hold a lock on <em>some</em> world.
+     *
+     * <p>Prefer {@link #weHoldLock(RemoteFileSet)} anywhere a particular world is
+     * in question. This answers "is a lock held by this game", which is a different
+     * and usually less useful question - see that method for what went wrong when
+     * the two were treated as the same.
+     */
     public static boolean weHoldLock() {
         return heldWorld != null;
+    }
+
+    /**
+     * @return true if the lock we hold is <em>this</em> world's
+     *
+     * <p>{@link #heldWorld} is a single static, so the argument-less check cannot
+     * tell one world from another. That mattered as soon as it became possible to
+     * reach the title screen still holding a lock - by backgrounding an upload, or
+     * by a failed push deliberately keeping it. Opening a second shared world then
+     * found {@code weHoldLock()} true, suppressed its "no lock held, changes will
+     * not be saved" warning, and let the session run under an assumption that was
+     * false. Nothing was corrupted, because push re-reads the lock from Drive before
+     * writing, but the player only discovered it when their save was refused.
+     */
+    public static boolean weHoldLock(final RemoteFileSet remote) {
+        final RemoteFileSet held = heldWorld;
+        return held != null
+                && remote != null
+                && held.controlFileId != null
+                && held.controlFileId.equals(remote.controlFileId);
+    }
+
+    /** The control file of whatever world we hold a lock on, or null. */
+    public static String heldControlFileId() {
+        final RemoteFileSet held = heldWorld;
+        return held == null ? null : held.controlFileId;
     }
 
     // ----- Heartbeat -----

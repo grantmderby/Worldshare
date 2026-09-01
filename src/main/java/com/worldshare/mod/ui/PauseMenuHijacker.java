@@ -50,7 +50,7 @@ public final class PauseMenuHijacker {
 // M5 safety: if no lock is held (e.g. opened from vanilla Singleplayer),
 // leave the vanilla "Save and Quit" button alone. AutoSyncListener will
 // also skip the auto-push since no lock is held.
-        if (!LockManager.weHoldLock()) {
+        if (!LockManager.weHoldLock(link.remote)) {
             return;
         }
 
