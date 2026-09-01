@@ -65,10 +65,26 @@ public final class ControlFile {
      * send the player to a repair, which republishes every bucket and is exactly
      * what a migration needs.
      *
-     * <p>Absent from control files written before this existed, where Gson leaves
-     * it 0 - which is the correct answer for them.
+     * <p><b>Defaults to 1, and must.</b> This class has a public no-arg
+     * constructor, so Gson builds it that way and the field initialisers run -
+     * a control file with no {@code layoutVersion} key therefore deserialises to
+     * whatever this line says, not to 0. Initialising it to the current version
+     * made every pre-versioning world claim to be current and silently disabled
+     * the check this field exists for.
+     *
+     * <p>Set explicitly on every write by {@link #touch}, which is what keeps
+     * "what this world was written with" honest.
      */
-    public int layoutVersion = BucketLayout.LAYOUT_VERSION;
+    public int layoutVersion = LAYOUT_VERSION_BEFORE_VERSIONING;
+
+    /**
+     * What a control file predating {@link #layoutVersion} is retroactively called.
+     *
+     * <p>Worlds written before the field existed used the original mapping, which
+     * put every dimension's regions in one bucket and lost oversized chunks
+     * entirely. That mapping is version 1 whether or not it ever said so.
+     */
+    public static final int LAYOUT_VERSION_BEFORE_VERSIONING = 1;
 
     /**
      * Canonical per-file state of the world: relative path to hash/size/mtime.
@@ -109,6 +125,7 @@ public final class ControlFile {
     public static ControlFile initial(final int bucketCount, final Instant now) {
         final ControlFile control = new ControlFile();
         control.schemaVersion = CURRENT_SCHEMA_VERSION;
+        control.layoutVersion = BucketLayout.LAYOUT_VERSION;
         control.bucketCount = bucketCount;
         control.updatedAt = now.toString();
         control.manifest = new WorldManifest();
@@ -140,9 +157,17 @@ public final class ControlFile {
         return lock;
     }
 
-    /** Stamp {@link #updatedAt} to now. Called on every write path. */
+    /**
+     * Stamp {@link #updatedAt} to now. Called on every write path.
+     *
+     * <p>Also records the bucket mapping this client is about to write with. It
+     * belongs here rather than at each call site precisely because "every write
+     * path" already funnels through this method - a world is only ever stamped
+     * with the layout that actually produced its archives.
+     */
     public ControlFile touch(final Instant now) {
         this.updatedAt = now.toString();
+        this.layoutVersion = BucketLayout.LAYOUT_VERSION;
         return this;
     }
 

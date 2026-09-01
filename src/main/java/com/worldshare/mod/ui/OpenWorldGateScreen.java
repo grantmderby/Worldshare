@@ -51,6 +51,9 @@ public final class OpenWorldGateScreen extends Screen {
     private final RemoteFileSet remote;
     private final Verdict verdict;
 
+    private static final int BUTTON_WIDTH = 220;
+    private static final int BUTTON_HEIGHT = 20;
+
     /**
      * Refined lock state from Drive, once it arrives. Null until then.
      *
@@ -109,8 +112,12 @@ public final class OpenWorldGateScreen extends Screen {
 
     @Override
     protected void init() {
+        // One column, one width. Three buttons of three sizes read as three
+        // unrelated controls; stacking them makes it obvious they are alternatives
+        // to the same question, and puts the safe choice under the cursor first.
         final int cx = this.width / 2;
-        final int buttonY = this.height - 60;
+        final int w = BUTTON_WIDTH;
+        int y = this.height - 24 - BUTTON_HEIGHT;
 
         if (verdict == Verdict.UPLOADING) {
             // The only hard stop. Opening now would have Minecraft rewriting chunks
@@ -119,7 +126,7 @@ public final class OpenWorldGateScreen extends Screen {
             this.addRenderableWidget(Button.builder(
                             Component.literal("Back"),
                             b -> Minecraft.getInstance().setScreen(parent))
-                    .bounds(cx - 100, buttonY, 200, 20).build());
+                    .bounds(cx - w / 2, y, w, BUTTON_HEIGHT).build());
             return;
         }
 
@@ -131,21 +138,23 @@ public final class OpenWorldGateScreen extends Screen {
                     || driveStatus.state == LockManager.LockState.HELD_BY_US_EXPIRED);
 
         this.addRenderableWidget(Button.builder(
+                        Component.literal("Back"),
+                        b -> Minecraft.getInstance().setScreen(parent))
+                .bounds(cx - w / 2, y, w, BUTTON_HEIGHT).build());
+        y -= BUTTON_HEIGHT + 4;
+
+        this.addRenderableWidget(Button.builder(
+                        Component.literal("Play offline anyway"),
+                        b -> openAnyway())
+                .bounds(cx - w / 2, y, w, BUTTON_HEIGHT).build());
+        y -= BUTTON_HEIGHT + 4;
+
+        this.addRenderableWidget(Button.builder(
                         Component.literal(resumable
                                 ? "Resume this session properly"
                                 : "Open via Contributor Worlds"),
                         b -> Minecraft.getInstance().setScreen(new ContributorWorldsScreen()))
-                .bounds(cx - 155, buttonY, 200, 20).build());
-
-        this.addRenderableWidget(Button.builder(
-                        Component.literal("Play offline"),
-                        b -> openAnyway())
-                .bounds(cx + 55, buttonY, 100, 20).build());
-
-        this.addRenderableWidget(Button.builder(
-                        Component.literal("Back"),
-                        b -> Minecraft.getInstance().setScreen(parent))
-                .bounds(cx - 100, buttonY + 24, 200, 20).build());
+                .bounds(cx - w / 2, y, w, BUTTON_HEIGHT).build());
 
         if (!checkingDrive && !driveChecked && remote != null) {
             startDriveCheck();
@@ -213,18 +222,17 @@ public final class OpenWorldGateScreen extends Screen {
     private List<String> bodyLines() {
         final List<String> lines = new ArrayList<>();
         if (verdict == Verdict.UPLOADING) {
-            lines.add("It's still uploading to Drive.");
+            lines.add("The world is still uploading to Drive.");
             lines.add("");
-            lines.add("Opening it now would interrupt the upload, and the save");
-            lines.add("would be refused rather than reaching the other players.");
-            lines.add("");
-            lines.add("Wait for it to finish, then open it again.");
+            lines.add("Please wait for it to finish, then try again.");
             return lines;
         }
 
         if (!driveChecked) {
+            // Occupies the line the answer will land on. Letting it vanish shifted
+            // everything below it upward, which reads as the screen having changed
+            // its mind when in fact the text is the same.
             lines.add("Checking who has it open...");
-            lines.add("");
         } else if (driveStatus != null) {
             switch (driveStatus.state) {
                 case HELD_BY_US, HELD_BY_US_EXPIRED -> {
@@ -249,6 +257,12 @@ public final class OpenWorldGateScreen extends Screen {
             }
         }
 
+        if (driveChecked) {
+            // Keeps the block the same height once the check resolves, so nothing
+            // below it jumps.
+            lines.add("Nobody else has it open.");
+        }
+        lines.add("");
         lines.add("Changes made here will NOT be saved to Drive,");
         lines.add("and your copy may already be out of date.");
         lines.add("");
