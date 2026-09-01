@@ -948,6 +948,48 @@ public final class WorldShareCommands {
     }
 
     /**
+     * Top-level entries in the world folder that aren't part of a vanilla save,
+     * mapped to their total size on disk.
+     *
+     * <p>Walks the folder directly rather than reading the manifest, so it reports
+     * what is there right now even if nothing has been pushed yet.
+     */
+    private static java.util.Map<String, Long> unfamiliarTopLevelEntries(
+            final java.nio.file.Path worldRoot) throws java.io.IOException {
+        final java.util.Set<String> familiar = java.util.Set.of(
+                "region", "entities", "poi", "playerdata", "stats", "advancements",
+                "data", "resources", "datapacks", "v_data", "serverconfig",
+                "dim-1", "dim1", "dimensions", "level.dat", "level.dat_old",
+                "session.lock", "icon.png",
+                "worldshare-link.json", "worldshare-scan-cache.json");
+
+        final java.util.Map<String, Long> sizes = new java.util.TreeMap<>();
+        try (java.util.stream.Stream<java.nio.file.Path> top =
+                     java.nio.file.Files.list(worldRoot)) {
+            for (final java.nio.file.Path entry : (Iterable<java.nio.file.Path>) top::iterator) {
+                final String name = entry.getFileName().toString();
+                if (familiar.contains(name.toLowerCase(java.util.Locale.ROOT))) continue;
+
+                long bytes = 0L;
+                if (java.nio.file.Files.isDirectory(entry)) {
+                    try (java.util.stream.Stream<java.nio.file.Path> walk =
+                                 java.nio.file.Files.walk(entry)) {
+                        for (final java.nio.file.Path f : (Iterable<java.nio.file.Path>) walk::iterator) {
+                            if (java.nio.file.Files.isRegularFile(f)) {
+                                bytes += java.nio.file.Files.size(f);
+                            }
+                        }
+                    }
+                } else {
+                    bytes = java.nio.file.Files.size(entry);
+                }
+                sizes.put(name, bytes);
+            }
+        }
+        return sizes;
+    }
+
+    /**
      * Write the full diagnostic somewhere it can be read and pasted.
      *
      * <p>Goes next to the game directory rather than into the log, because
@@ -1154,6 +1196,31 @@ public final class WorldShareCommands {
             }
         } catch (final Exception e) {
             out.add("§cCouldn't compare local to Drive: §f" + e.getMessage());
+        }
+
+        // ---- what we're carrying that we don't recognise ----
+        //
+        // WorldShare syncs the whole world folder now, so a mod's data comes along
+        // whether or not we've heard of it. That is the right default, but it means
+        // a bug report about a slow or enormous sync needs to name what is actually
+        // being carried - otherwise the answer is guesswork about which mod is
+        // responsible.
+        try {
+            final java.util.Map<String, Long> unfamiliar =
+                    unfamiliarTopLevelEntries(world.worldRoot);
+            if (unfamiliar.isEmpty()) {
+                out.add("§7Extra content: §fnone beyond vanilla");
+            } else {
+                out.add("§7Extra content synced (from mods or added by hand):");
+                for (final java.util.Map.Entry<String, Long> e : unfamiliar.entrySet()) {
+                    final long mb = e.getValue() / (1024 * 1024);
+                    out.add("§7  " + e.getKey() + " §f"
+                            + (mb > 0 ? mb + " MB" : (e.getValue() / 1024) + " KB")
+                            + (mb >= 128 ? " §c(large - every sync carries this)" : ""));
+                }
+            }
+        } catch (final Exception e) {
+            out.add("§7Extra content: §funknown (" + e.getMessage() + ")");
         }
     }
 
