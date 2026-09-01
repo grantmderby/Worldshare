@@ -82,6 +82,7 @@ public final class WorldShareCommands {
                 Commands.literal("worldshare")
                         .requires(src -> src.hasPermission(0))
                         .then(Commands.literal("test")
+                                .requires(WorldShareCommands::devCommandsEnabled)
                                 .executes(ctx -> runDriveTest(ctx.getSource())))
                         .then(Commands.literal("signout")
                                 .executes(ctx -> runSignOut(ctx.getSource())))
@@ -90,12 +91,16 @@ public final class WorldShareCommands {
                         .then(Commands.literal("clearDriveLink")
                                 .executes(ctx -> runClearDriveLink(ctx.getSource())))
                         .then(Commands.literal("lock")
+                                .requires(WorldShareCommands::devCommandsEnabled)
                                 .executes(ctx -> runLock(ctx.getSource())))
                         .then(Commands.literal("unlock")
+                                .requires(WorldShareCommands::devCommandsEnabled)
                                 .executes(ctx -> runUnlock(ctx.getSource())))
                         .then(Commands.literal("lockinfo")
+                                .requires(WorldShareCommands::devCommandsEnabled)
                                 .executes(ctx -> runLockInfo(ctx.getSource())))
                         .then(Commands.literal("heartbeat")
+                                .requires(WorldShareCommands::devCommandsEnabled)
                                 .executes(ctx -> runHeartbeat(ctx.getSource())))
                         .then(Commands.literal("status")
                                 .executes(ctx -> runStatus(ctx.getSource())))
@@ -104,6 +109,7 @@ public final class WorldShareCommands {
                                 .then(Commands.literal("full")
                                         .executes(ctx -> runDoctor(ctx.getSource(), true))))
                         .then(Commands.literal("push")
+                                .requires(WorldShareCommands::devCommandsEnabled)
                                 .executes(ctx -> runPush(ctx.getSource())))
                         // Two ways to invite somebody, and they do genuinely
                         // different things, so they get names that say which.
@@ -121,6 +127,7 @@ public final class WorldShareCommands {
                                 .then(Commands.literal("confirm")
                                         .executes(ctx -> runRepair(ctx.getSource()))))
                         .then(Commands.literal("modpack")
+                                .requires(WorldShareCommands::devCommandsEnabled)
                                 .then(Commands.literal("generate")
                                         .executes(ctx -> runModpackGenerate(ctx.getSource()))))
         );
@@ -128,6 +135,28 @@ public final class WorldShareCommands {
     }
 
     // ----- M1 -----
+
+    /**
+     * Whether the debugging subcommands are exposed.
+     *
+     * <p>Off by default. Seven of the fifteen subcommands exist for developing the
+     * mod rather than playing with it, and two of those are actively harmful in a
+     * player's hands: {@code push} publishes a world from memory-backed state that
+     * hasn't been written yet, and {@code lock}/{@code unlock} move the Drive lock
+     * without the local session knowing, which is the disagreement half this
+     * session's bugs came from.
+     *
+     * <p>Hidden rather than deleted. They are how the next confusing sync gets
+     * diagnosed, and Brigadier's {@code requires} keeps them out of tab-completion
+     * entirely, so nothing is lost but the temptation.
+     */
+    static boolean devCommandsEnabled(final CommandSourceStack ignored) {
+        try {
+            return WorldShareConfig.get().devCommands.get();
+        } catch (final Throwable t) {
+            return false;
+        }
+    }
 
     private static int runDriveTest(final CommandSourceStack source) {
         sendFeedback(source, "Starting Google Drive round-trip test.", ChatFormatting.GRAY);
@@ -690,8 +719,32 @@ public final class WorldShareCommands {
             return 0;
         }
 
+        // Flush the world to disk before reading it.
+        //
+        // An open world holds state Minecraft hasn't written: chunks modified since
+        // the last autosave live in memory, and player inventory and position live
+        // in the ServerPlayer until a save or a logout. Packing without this uploads
+        // a world missing the current session - a rollback for whoever pulls it, and
+        // one the archive checks cannot detect, because the archive is perfectly
+        // consistent with a manifest that simply describes an older world.
+        //
+        // This is what SaveAndUploadScreen gets for free by waiting for the server
+        // to stop. A command has no such moment, so it has to ask.
+        sendFeedback(source, "Saving '" + world.name + "' to disk first...",
+                ChatFormatting.GRAY);
+        try {
+            source.getServer().saveEverything(true, true, true);
+        } catch (final Throwable t) {
+            WorldShareMod.LOGGER.error("repair: world save failed", t);
+            sendFeedback(source, "Couldn't save the world first, so nothing was uploaded.",
+                    ChatFormatting.RED);
+            return 0;
+        }
+
         sendFeedback(source, "Repairing '" + world.name + "' - re-uploading every bucket...",
                 ChatFormatting.YELLOW);
+        sendFeedback(source, "Stay still until it finishes - the world writing to disk "
+                + "mid-upload will abort it.", ChatFormatting.GRAY);
 
         final SyncProgress chatProgress = newChatProgressReporter();
         CloudModule.executor().submit(() -> {

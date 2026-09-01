@@ -88,6 +88,18 @@ public final class WorldShareConfig {
      */
     public final ModConfigSpec.IntValue backgroundButtonDelaySeconds;
 
+    /**
+     * Whether the developer subcommands appear at all.
+     *
+     * <p>Off by default, and two of them are the reason: {@code /worldshare push}
+     * uploads a world that is still open, so what reaches Drive is missing whatever
+     * the session hasn't written to disk; and {@code lock}/{@code unlock} change the
+     * Drive lock without the running client knowing, producing exactly the
+     * disagreement between local and remote lock state that several bugs here came
+     * from. The rest are diagnostics that {@code /worldshare doctor} already covers.
+     */
+    public final ModConfigSpec.BooleanValue devCommands;
+
     private WorldShareConfig(final ModConfigSpec.Builder builder) {
         builder.comment("WorldShare settings")
                 .push("general");
@@ -125,6 +137,13 @@ public final class WorldShareConfig {
                         + "\"Continue in Background\". 0 shows it immediately. "
                         + "Default 3.")
                 .defineInRange("backgroundButtonDelaySeconds", 3, 0, 300);
+
+        devCommands = builder
+                .comment("Expose the developer subcommands (push, lock, unlock, "
+                        + "heartbeat, lockinfo, test, modpack). Off by default: several "
+                        + "of them can damage a shared world if used at the wrong "
+                        + "moment. /worldshare doctor covers the diagnostics.")
+                .define("devCommands", false);
 
         builder.pop();
     }

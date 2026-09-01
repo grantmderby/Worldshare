@@ -23,6 +23,58 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class ControlFileTest {
 
+    // -------------------------------------------------------------- layout version
+
+    @Test
+    @DisplayName("a control file with no layoutVersion reads as the old layout")
+    void missingLayoutVersionMeansOldLayout() {
+        // The bug this exists for, and it got past review twice.
+        //
+        // ControlFile has a public no-arg constructor, so Gson builds it that way
+        // and the field initialisers RUN - a key absent from the JSON is left at
+        // whatever the field declaration says, not at 0. Initialising layoutVersion
+        // to the current version therefore made every world written before the field
+        // existed claim to be current, silently disabling the check whose entire job
+        // is to stop a changed bucket mapping losing files.
+        final ControlFile parsed = ControlFile.fromJson(
+                "{\"schemaVersion\":1,\"bucketCount\":16}");
+
+        assertNotNull(parsed);
+        assertEquals(ControlFile.LAYOUT_VERSION_BEFORE_VERSIONING, parsed.layoutVersion,
+                "a control file that never mentioned a layout must not claim the current one");
+    }
+
+    @Test
+    @DisplayName("layoutVersion survives a round trip")
+    void layoutVersionRoundTrips() {
+        final ControlFile control = ControlFile.initial(16, Instant.now());
+        assertEquals(BucketLayout.LAYOUT_VERSION, control.layoutVersion,
+                "a brand new world is written with the current layout");
+
+        final ControlFile parsed = ControlFile.fromJson(control.toJson());
+        assertEquals(BucketLayout.LAYOUT_VERSION, parsed.layoutVersion);
+    }
+
+    @Test
+    @DisplayName("touching a control file does not promote its layout version")
+    void touchDoesNotClaimTheCurrentLayout() {
+        // The second bug, which was worse than the first: touch() runs on every
+        // control-file write, and taking the session lock is a write, as is every
+        // heartbeat. Stamping the version here promoted an old world to the current
+        // layout merely by opening it - no archive repacked, the check permanently
+        // unable to fire, and the evidence erased.
+        //
+        // Only the write that publishes a manifest for freshly packed archives may
+        // make that claim. See SyncEngine.commitControl.
+        final ControlFile old = ControlFile.fromJson(
+                "{\"schemaVersion\":1,\"bucketCount\":16}");
+
+        old.touch(Instant.now());
+
+        assertEquals(ControlFile.LAYOUT_VERSION_BEFORE_VERSIONING, old.layoutVersion,
+                "writing the lock or a heartbeat says nothing about how the buckets are laid out");
+    }
+
     @Test
     @DisplayName("a control file round-trips through JSON")
     void roundTripsThroughJson() {
