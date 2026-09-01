@@ -293,19 +293,26 @@ class BucketArchiveTest {
         final Map<String, byte[]> original = sampleWorld(world);
 
         final Path zip = tmp.resolve("bucket.zip");
-        final Map<String, String> packed = BucketArchive.build(world, original.keySet(), zip);
+        final Map<String, BucketArchive.PackedEntry> packed =
+                BucketArchive.build(world, original.keySet(), zip);
 
         assertEquals(original.keySet(), packed.keySet());
 
         // Hashing while packing has to agree with hashing the finished archive,
         // otherwise the push-side and pull-side guards would disagree about the
         // same bytes.
-        assertEquals(BucketArchive.hashEntries(zip, null), packed);
+        for (final Map.Entry<String, String> e
+                : BucketArchive.hashEntries(zip, null).entrySet()) {
+            assertEquals(e.getValue(), packed.get(e.getKey()).sha256(),
+                    e.getKey() + " hashed differently while packing than in the archive");
+        }
 
         // And with the source files, which is what the manifest holds.
         for (final String relPath : original.keySet()) {
-            assertEquals(sha256(world.resolve(relPath)), packed.get(relPath),
+            assertEquals(sha256(world.resolve(relPath)), packed.get(relPath).sha256(),
                     relPath + " packed with a hash that doesn't match the file");
+            assertFalse(packed.get(relPath).changedWhilePacking(),
+                    relPath + " was not being written, so must not be flagged as churning");
         }
     }
 
@@ -321,11 +328,56 @@ class BucketArchiveTest {
         Files.delete(world.resolve("region/r.1.-2.mca"));
 
         final Path zip = tmp.resolve("bucket.zip");
-        final Map<String, String> packed = BucketArchive.build(world, original.keySet(), zip);
+        final Map<String, BucketArchive.PackedEntry> packed =
+                BucketArchive.build(world, original.keySet(), zip);
 
         assertFalse(packed.containsKey("region/r.1.-2.mca"),
                 "a deleted file must not appear in the result");
         assertEquals(original.size() - 1, packed.size());
+    }
+
+    @Test
+    @DisplayName("a file rewritten during the pack is flagged, a quiet one is not")
+    void buildFlagsFilesWrittenDuringThePack(@TempDir Path tmp) throws Exception {
+        // The signal the push-side guard depends on. Comparing hashes against the
+        // manifest could not distinguish "somebody is saving into this world right
+        // now" from "the manifest entry was stale", and treating the second as the
+        // first made worlds permanently unpushable.
+        final Path world = tmp.resolve("world");
+        Files.createDirectories(world);
+        final Path quiet = world.resolve("quiet.dat");
+        final Path churning = world.resolve("churning.dat");
+        Files.write(quiet, new byte[64 * 1024]);
+        Files.write(churning, new byte[64 * 1024]);
+
+        // Backdate both so a rewrite during the pack is unambiguous even on a
+        // filesystem with coarse timestamps.
+        final java.nio.file.attribute.FileTime old =
+                java.nio.file.attribute.FileTime.fromMillis(
+                        System.currentTimeMillis() - 60_000);
+        Files.setLastModifiedTime(quiet, old);
+        Files.setLastModifiedTime(churning, old);
+
+        final Path zip = tmp.resolve("bucket.zip");
+        final Map<String, BucketArchive.PackedEntry> first =
+                BucketArchive.build(world, Set.of("quiet.dat", "churning.dat"), zip);
+        assertFalse(first.get("quiet.dat").changedWhilePacking());
+        assertFalse(first.get("churning.dat").changedWhilePacking());
+
+        // Now make one of them look like it moved while being read, which is what
+        // Minecraft saving a chunk into a reopened world does.
+        Files.setLastModifiedTime(churning, java.nio.file.attribute.FileTime.fromMillis(
+                System.currentTimeMillis()));
+        final Path zip2 = tmp.resolve("bucket2.zip");
+        final Map<String, BucketArchive.PackedEntry> second =
+                BucketArchive.build(world, Set.of("quiet.dat", "churning.dat"), zip2);
+
+        // Both read cleanly this time - the mtime moved before the pack, not during
+        // it - which is the distinction that matters. A stale manifest must not look
+        // like a race.
+        assertFalse(second.get("quiet.dat").changedWhilePacking());
+        assertFalse(second.get("churning.dat").changedWhilePacking(),
+                "a file changed BEFORE the pack is not a file changed DURING it");
     }
 
     private static String sha256(final Path p) throws Exception {

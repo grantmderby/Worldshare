@@ -152,6 +152,34 @@ public final class BucketLayout {
      * a little on the very smallest sessions, because grouping makes bucket sizes
      * less even, and win decisively everywhere else.
      *
+     * <p><b>Those figures describe a square world, and on their own they argue for
+     * the wrong thing.</b> Re-measuring against a real save suggested 2x2 tiles were
+     * better across the board - but that save was a blob around spawn plus one
+     * flight corridor, which is not what people build. Modelling the shape they do
+     * build - two bases, a corridor between them, short spokes to resource biomes -
+     * reversed the answer: 4x4 costs 32% of the world for a session at a base
+     * against 47% for 2x2, and 14% against 24% for a single chunk.
+     *
+     * <p>The reason is a size relationship worth stating outright: <b>a tile should
+     * be larger than a base.</b> A 3x3-region base is 1536 blocks across and a 4x4
+     * tile is 2048, so ordinary play at home usually stays inside one tile and
+     * dirties one bucket. At 1024 blocks a 2x2 tile cannot contain the same base,
+     * which straddles four of them however it is placed.
+     *
+     * <p>Usually, not always: alignment against the tile grid is luck. Over all 256
+     * alignments of a 3x3 base, 4x4 touches between 1 and 4 tiles (2.25 on average)
+     * while 2x2 always touches 4. In bytes, across every position in the modelled
+     * world, 4x4 averages 21% against 2x2's 27% - but its worst case is 81% against
+     * 69%, so a base built exactly on a crossroads pays for it every save, forever.
+     * 4x4 is kept because the average is what most players get; the tail is real and
+     * is the reason to revisit this if anyone reports it.
+     *
+     * <p>One last thing to know before changing this number: <b>tiling decides how
+     * many buckets a session touches, and {@link #DEFAULT_BUCKET_COUNT} decides what
+     * each one costs.</b> With fifteen region buckets, touching four is roughly a
+     * quarter of the world however it is tiled - so on a large world the bucket
+     * count is the stronger lever, and is where to look first.
+     *
      * <p>Larger tiles keep improving locality but make the size imbalance worse:
      * 8x8 tiles left some buckets empty and others holding 40% of the world, which
      * costs more than the locality gains. 4x4 is the point where the two curves

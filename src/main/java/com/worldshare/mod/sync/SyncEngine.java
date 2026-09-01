@@ -226,7 +226,7 @@ public final class SyncEngine {
 
         final TransferResult transfer = transferBuckets(
                 pathsByBucket, remote, worldRoot, driveManifest, false, progress,
-                wantedPaths.size(), totalBytes);
+                wantedPaths.size(), totalBytes, null);
 
         final int downloaded = transfer.filesOk;
         final int failed = transfer.bucketsFailed;
@@ -520,9 +520,14 @@ public final class SyncEngine {
         // manifest doesn't describe. Nobody else may be given the lock in between.
         SyncActivity.markRemoteAheadOfManifest();
 
+        // Collected from the workers, which run in parallel, so it has to be
+        // thread-safe.
+        final Map<String, BucketArchive.PackedEntry> packed =
+                new java.util.concurrent.ConcurrentHashMap<>();
+
         final TransferResult transfer = transferBuckets(
                 toUpload, remote, worldRoot, local, true, progress,
-                repackedFiles, totalBytes);
+                repackedFiles, totalBytes, packed);
 
         final int failed = transfer.bucketsFailed;
         final long bytes = transfer.bytesMoved;
@@ -548,6 +553,28 @@ public final class SyncEngine {
                             + "the other player's state. Your changes are still saved "
                             + "locally. Coordinate with them before retrying."));
             return new PushResult(transfer.bucketsOk, transfer.filesOk, 0, 0, bytes);
+        }
+
+        // The manifest must describe the archives, so it takes its entries from the
+        // bytes that were actually written rather than from the scan that guessed at
+        // them. An incremental scan deliberately skips files it believes unchanged,
+        // and its belief can be wrong - which is exactly what left three files
+        // permanently unpushable. Correcting here means the published manifest and
+        // the archives agree by construction.
+        int corrected = 0;
+        for (final Map.Entry<String, BucketArchive.PackedEntry> e : packed.entrySet()) {
+            final BucketArchive.PackedEntry p = e.getValue();
+            final WorldManifest.Entry existing = local.get(e.getKey());
+            if (existing == null || !p.sha256().equals(existing.sha256)) {
+                corrected++;
+            }
+            local.put(e.getKey(),
+                    new WorldManifest.Entry(p.sha256(), p.size(), p.mtime()));
+        }
+        if (corrected > 0) {
+            WorldShareMod.LOGGER.info(
+                    "push: manifest corrected for {} file(s) the scan had stale or missing",
+                    corrected);
         }
 
         commitControl(remote, local, worldRoot);
@@ -584,7 +611,9 @@ public final class SyncEngine {
                                                   final boolean uploading,
                                                   final SyncProgress progress,
                                                   final int totalFiles,
-                                                  final long totalBytes) throws IOException {
+                                                  final long totalBytes,
+                                                  final Map<String, BucketArchive.PackedEntry> packedOut)
+            throws IOException {
         if (pathsByBucket.isEmpty()) {
             return new TransferResult(0, 0, 0, 0L, null);
         }
@@ -608,7 +637,7 @@ public final class SyncEngine {
                 final long start = System.currentTimeMillis();
                 try {
                     final long moved = uploading
-                            ? uploadBucket(remote, bucket, worldRoot, paths, manifestForSizes)
+                            ? uploadBucket(remote, bucket, worldRoot, paths, packedOut)
                             : downloadBucket(remote, bucket, worldRoot, paths, manifestForSizes);
                     // A pull that found an empty placeholder moved no bytes and
                     // restored nothing; counting its expected files as restored
@@ -684,12 +713,17 @@ public final class SyncEngine {
                                      final int bucketIndex,
                                      final Path worldRoot,
                                      final Set<String> paths,
-                                     final WorldManifest expected) throws IOException {
+                                     final Map<String, BucketArchive.PackedEntry> packedOut)
+            throws IOException {
         final Path archive = Files.createTempFile(
                 "worldshare-bucket-" + bucketIndex + "-", ".zip");
         try {
-            final Map<String, String> packed = BucketArchive.build(worldRoot, paths, archive);
-            verifyPacked(packed, paths, expected, bucketIndex);
+            final Map<String, BucketArchive.PackedEntry> packed =
+                    BucketArchive.build(worldRoot, paths, archive);
+            verifyPacked(packed, paths, bucketIndex);
+            if (packedOut != null) {
+                packedOut.putAll(packed);
+            }
             final long size = Files.size(archive);
 
             final String fileId = remote.bucketFileId(bucketIndex);
@@ -1055,45 +1089,44 @@ public final class SyncEngine {
     }
 
     /**
-     * Check what we just packed still matches the manifest we are about to publish.
+     * Refuse to upload an archive that may hold a torn copy of a file.
      *
-     * <p>The manifest is produced by a scan that finishes before any archive is
-     * built, and the world is not frozen in between. The gap is small but reachable:
-     * "Continue in Background" leaves an upload running while the player is free to
-     * reopen that same world from vanilla Singleplayer, which is the one route into
-     * a world that doesn't queue behind {@code CloudModule.executor()}. Minecraft
-     * then rewrites chunks underneath the pack.
+     * <p><b>This used to compare the packed hash against the manifest, and that was
+     * wrong.</b> A push scans incrementally - the dirty filter can skip a hundred
+     * files - so a file inside a dirty bucket may have a manifest entry that was
+     * never derived from its current bytes, carried over from the scan cache or from
+     * the Drive manifest. Comparing a fresh hash against a stale entry then reported
+     * "changed while packing" for a world nobody had touched, and because the entry
+     * stayed stale the next attempt failed identically. The world became permanently
+     * unpushable, which is worse than the inconsistency the check was added to stop.
      *
-     * <p>Without this, the push would succeed and publish a manifest describing
-     * content the archives no longer hold - discovered later by the other player's
-     * pull failing verification, which blames the wrong person at the worst moment.
-     * Failing here instead costs one upload, and the existing machinery does the
-     * rest: the manifest is never committed and the lock stays held.
+     * <p>Two different problems looked alike. A stale manifest entry means the
+     * manifest is wrong and should be corrected from the bytes we just wrote - the
+     * caller does that. A file being rewritten <em>while</em> we read it means the
+     * archive may hold half of one version and half of another, and no hash of those
+     * bytes describes anything that ever existed. Only the second is a reason to
+     * stop, and only {@link BucketArchive.PackedEntry#changedWhilePacking} can tell
+     * us about it.
      *
-     * <p>An absent path is the other case in the same family - the world folder
-     * deleted mid-push - and is caught by the same check.
+     * <p>A path that was requested and is absent vanished during the pack - the
+     * world folder deleted mid-push - and is the same family of problem.
      */
-    private static void verifyPacked(final Map<String, String> packed,
+    private static void verifyPacked(final Map<String, BucketArchive.PackedEntry> packed,
                                      final Set<String> requested,
-                                     final WorldManifest expected,
                                      final int bucketIndex) throws IOException {
-        if (expected == null) return;
         for (final String relPath : requested) {
-            final WorldManifest.Entry entry = expected.get(relPath);
-            if (entry == null || entry.sha256 == null) continue;
-
-            final String actual = packed.get(relPath);
-            if (actual == null) {
-                throw new IOException("'" + relPath + "' disappeared while packing "
-                        + BucketLayout.bucketFilename(bucketIndex)
-                        + ". The world changed mid-upload - is it open in another "
-                        + "window? Nothing was uploaded; try saving again.");
+            final BucketArchive.PackedEntry entry = packed.get(relPath);
+            if (entry == null) {
+                // Skipped because it no longer exists. Fine on its own - a world
+                // legitimately drops region files - so leave the caller's manifest
+                // reconciliation to notice, and don't fail the push over it.
+                continue;
             }
-            if (!entry.sha256.equals(actual)) {
-                throw new IOException("'" + relPath + "' changed while packing "
-                        + BucketLayout.bucketFilename(bucketIndex)
-                        + ". The world changed mid-upload - is it open in another "
-                        + "window? Nothing was uploaded; try saving again.");
+            if (entry.changedWhilePacking()) {
+                throw new IOException("'" + relPath + "' was being written while "
+                        + BucketLayout.bucketFilename(bucketIndex) + " was packed, so "
+                        + "the copy in it may be incomplete. Is this world open in "
+                        + "another window? Nothing was uploaded; try saving again.");
             }
         }
     }

@@ -69,6 +69,20 @@ public final class BucketArchive {
     }
 
     /**
+     * What packing one entry observed: the bytes written, and whether the file was
+     * being rewritten underneath us while we read it.
+     *
+     * @param sha256          hash of exactly the bytes that went into the archive
+     * @param size            size of those bytes
+     * @param mtime           the file's modification time after writing
+     * @param changedWhilePacking true if size or mtime moved between the samples
+     *                        taken before and after reading - meaning the archive
+     *                        may hold a torn copy
+     */
+    public record PackedEntry(String sha256, long size, String mtime,
+                              boolean changedWhilePacking) {}
+
+    /**
      * Write the given world files into a zip.
      *
      * <p>Paths that no longer exist on disk are skipped rather than failing here.
@@ -86,11 +100,11 @@ public final class BucketArchive {
      * @param worldRoot the local world folder that {@code relPaths} are relative to
      * @param relPaths  forward-slash relative paths to include
      * @param destZip   file to create; overwritten if it already exists
-     * @return each path actually written, mapped to the SHA-256 of what was written
+     * @return each path actually written, mapped to what packing it observed
      */
-    public static Map<String, String> build(final Path worldRoot,
-                                            final Collection<String> relPaths,
-                                            final Path destZip) throws IOException {
+    public static Map<String, PackedEntry> build(final Path worldRoot,
+                                                 final Collection<String> relPaths,
+                                                 final Path destZip) throws IOException {
         if (destZip.getParent() != null) {
             Files.createDirectories(destZip.getParent());
         }
@@ -102,7 +116,7 @@ public final class BucketArchive {
         // during the one read we already make, so the caller can check the bytes it
         // packed against the manifest it is about to publish - see the caller for
         // why that gap matters.
-        final Map<String, String> written = new LinkedHashMap<>();
+        final Map<String, PackedEntry> written = new LinkedHashMap<>();
 
         try (OutputStream fileOut = Files.newOutputStream(destZip);
              ZipOutputStream zip = new ZipOutputStream(fileOut)) {
@@ -121,14 +135,32 @@ public final class BucketArchive {
                 // rather than differing only by mtime. Makes "did this actually
                 // change?" answerable by hashing the archive.
                 entry.setTime(0L);
+
+                // Sampled either side of the read. If the file is rewritten while we
+                // are streaming it - Minecraft saving a chunk into a world somebody
+                // reopened mid-upload - the copy in the archive may be half of one
+                // version and half of another, and the hash of those bytes describes
+                // nothing that ever existed on disk.
+                final long sizeBefore = Files.size(source);
+                final long mtimeBefore = Files.getLastModifiedTime(source).toMillis();
+
                 zip.putNextEntry(entry);
                 final MessageDigest digest = SHA256Util.newSha256();
+                long copied;
                 try (InputStream in = new DigestInputStream(
                         Files.newInputStream(source), digest)) {
-                    in.transferTo(zip);
+                    copied = in.transferTo(zip);
                 }
                 zip.closeEntry();
-                written.put(relPath, SHA256Util.hex(digest.digest()));
+
+                final long mtimeAfter = Files.getLastModifiedTime(source).toMillis();
+                final boolean churned = mtimeAfter != mtimeBefore || copied != sizeBefore;
+
+                written.put(relPath, new PackedEntry(
+                        SHA256Util.hex(digest.digest()),
+                        copied,
+                        java.time.Instant.ofEpochMilli(mtimeAfter).toString(),
+                        churned));
             }
         }
 
