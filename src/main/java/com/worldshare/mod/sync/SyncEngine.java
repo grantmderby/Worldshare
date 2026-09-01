@@ -184,10 +184,17 @@ public final class SyncEngine {
         DirtyRegionTracker.resetAfterPull();
 
         if (failed > 0) {
-            progress.onError(new IOException(failed + " bucket(s) failed to download"));
+            // Report the cause, not the count. The per-bucket message already says
+            // which file disagreed with the manifest and that the other player needs
+            // to push again; discarding it left the screen advising a retry, which
+            // for a verification failure can only fail again.
+            final String detail = transfer.firstError != null
+                    ? transfer.firstError
+                    : failed + " bucket(s) failed to download.";
+            progress.onError(new IOException(detail));
             WorldShareMod.LOGGER.error("pull: {} files restored, {} bucket(s) FAILED, {} bytes",
                     downloaded, failed, bytes);
-            throw new IOException(failed + " bucket(s) failed to download. Retry pull.");
+            throw new IOException(detail);
         }
 
         progress.onComplete();
@@ -457,7 +464,7 @@ public final class SyncEngine {
                                                   final int totalFiles,
                                                   final long totalBytes) throws IOException {
         if (pathsByBucket.isEmpty()) {
-            return new TransferResult(0, 0, 0, 0L);
+            return new TransferResult(0, 0, 0, 0L, null);
         }
 
         final ExecutorService pool = Executors.newFixedThreadPool(TRANSFER_THREADS, r -> {
@@ -499,6 +506,7 @@ public final class SyncEngine {
         int bucketsFailed = 0;
         int filesOk = 0;
         long bytesMoved = 0L;
+        String firstError = null;
         // Progress is accounted separately from bytesMoved, and the distinction is
         // the whole point: bytesMoved is what actually crossed the wire (compressed
         // archive bytes), while totalBytes is the uncompressed size of the world
@@ -520,6 +528,11 @@ public final class SyncEngine {
                             res.fileCount, res.bytesMoved, res.elapsedMs);
                 } else {
                     bucketsFailed++;
+                    if (firstError == null) {
+                        firstError = res.error.getMessage() == null
+                                ? res.error.getClass().getSimpleName()
+                                : res.error.getMessage();
+                    }
                     WorldShareMod.LOGGER.error("{}: failed {}: {}",
                             uploading ? "push" : "pull", archiveName, res.error.getMessage());
                 }
@@ -537,7 +550,7 @@ public final class SyncEngine {
             throw new IOException("Unexpected bucket transfer failure", e.getCause());
         }
 
-        return new TransferResult(bucketsOk, bucketsFailed, filesOk, bytesMoved);
+        return new TransferResult(bucketsOk, bucketsFailed, filesOk, bytesMoved, firstError);
     }
 
     /**
@@ -831,12 +844,23 @@ public final class SyncEngine {
         final int filesOk;
         /** Archive bytes actually moved over the network. */
         final long bytesMoved;
+        /**
+         * Why the first failing bucket failed, or null if none did.
+         *
+         * <p>Carried rather than only logged. "1 bucket(s) failed to download"
+         * tells a player nothing they can act on, while the underlying message
+         * usually names the file and the fix - and a verification failure in
+         * particular needs the other player to push again, not a retry.
+         */
+        final String firstError;
 
         TransferResult(final int bucketsOk, final int bucketsFailed,
-                       final int filesOk, final long bytesMoved) {
+                       final int filesOk, final long bytesMoved,
+                       final String firstError) {
             this.bucketsOk = bucketsOk;
             this.bucketsFailed = bucketsFailed;
             this.filesOk = filesOk;
+            this.firstError = firstError;
             this.bytesMoved = bytesMoved;
         }
     }

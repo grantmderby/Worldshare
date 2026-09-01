@@ -50,6 +50,16 @@ public final class ContributorWorldsScreen extends Screen {
 
     private volatile LoadState loadState = LoadState.IDLE;
     private volatile String loadError = null;
+    /**
+     * Headline above {@link #loadError}, and whether Refresh can help.
+     *
+     * <p>Both used to be hardcoded: every failure was titled "Could not reach
+     * Drive." and every failure offered a retry. A bucket that fails its content
+     * check reached Drive perfectly well, and retrying it can only fail the same
+     * way - the fix is for the other player to push again.
+     */
+    private volatile String loadErrorTitle = "Could not reach Drive.";
+    private volatile boolean loadErrorRetryable = true;
     private volatile int dlFilesDone = 0;
     private volatile int dlTotalFiles = 0;
     private volatile long dlBytesDone = 0L;
@@ -149,7 +159,7 @@ public final class ContributorWorldsScreen extends Screen {
                 loadState = LoadState.DONE;
             } catch (final Throwable t) {
                 WorldShareMod.LOGGER.error("ContributorWorldsScreen: load failed", t);
-                loadError = formatDriveError(t, "Could not reach Drive");
+                setLoadError("Could not reach Drive.", formatDriveError(t, "Could not reach Drive"), true);
                 loadState = LoadState.ERROR;
             }
         });
@@ -205,17 +215,25 @@ public final class ContributorWorldsScreen extends Screen {
     }
 
     private void renderLoadError(final GuiGraphics gfx) {
+        final int cx = this.width / 2;
+        int y = this.height / 2 - 30;
         gfx.drawCenteredString(this.font,
-                Component.literal("Could not reach Drive.").withStyle(ChatFormatting.RED),
-                this.width / 2, this.height / 2 - 20, 0xFFFFFF);
+                Component.literal(loadErrorTitle).withStyle(ChatFormatting.RED),
+                cx, y, 0xFFFFFF);
+        y += 16;
         if (loadError != null) {
-            gfx.drawCenteredString(this.font,
-                    Component.literal(loadError).withStyle(ChatFormatting.GRAY),
-                    this.width / 2, this.height / 2, 0xCCCCCC);
+            // Wrapped, because these messages now name a file and a remedy and no
+            // longer fit on one line.
+            for (final net.minecraft.util.FormattedCharSequence line
+                    : this.font.split(Component.literal(loadError), (int) (this.width * 0.8))) {
+                gfx.drawCenteredString(this.font, line, cx, y, 0xCCCCCC);
+                y += this.font.lineHeight + 2;
+            }
         }
-        gfx.drawCenteredString(this.font,
-                Component.literal("Use [Refresh] to try again."),
-                this.width / 2, this.height / 2 + 20, 0xAAAAAA);
+        if (loadErrorRetryable) {
+            gfx.drawCenteredString(this.font,
+                    Component.literal("Use [Refresh] to try again."), cx, y + 6, 0xAAAAAA);
+        }
     }
 
     private void renderWorldList(final GuiGraphics gfx, final int mouseX, final int mouseY) {
@@ -461,7 +479,8 @@ public final class ContributorWorldsScreen extends Screen {
             } catch (final Throwable t) {
                 downloadInProgress = false;  // M7: re-show nav buttons on error
                 WorldShareMod.LOGGER.error("ContributorWorlds: download failed", t);
-                loadError = formatDriveError(t, "Download failed");
+                setLoadError("Download failed.", formatDriveError(t, "Download failed"),
+                        isRetryable(t));
                 loadState = LoadState.ERROR;
                 Minecraft.getInstance().execute(() -> {
                     this.clearWidgets();
@@ -548,7 +567,8 @@ public final class ContributorWorldsScreen extends Screen {
                 }
 
                 downloadInProgress = false;
-                loadError = formatDriveError(t, "Could not open world");
+                setLoadError("Could not open world.", formatDriveError(t, "Could not open world"),
+                        isRetryable(t));
                 loadState = LoadState.ERROR;
                 Minecraft.getInstance().execute(() -> {
                     this.clearWidgets();
@@ -719,6 +739,25 @@ public final class ContributorWorldsScreen extends Screen {
         return UUID.randomUUID();
     }
 
+    private void setLoadError(final String title, final String detail, final boolean retryable) {
+        loadErrorTitle = title;
+        loadError = detail;
+        loadErrorRetryable = retryable;
+    }
+
+    /**
+     * Whether offering [Refresh] is honest for this failure.
+     *
+     * <p>A bucket that failed its content check will fail identically on every
+     * retry - the archives on Drive disagree with the manifest, and only the other
+     * player pushing again can change that. Telling the player to retry sends them
+     * round a loop that cannot terminate.
+     */
+    private static boolean isRetryable(final Throwable t) {
+        final String msg = t.getMessage();
+        return msg == null || !msg.contains("than the world's manifest describes");
+    }
+
     private static String formatDriveError(final Throwable t, final String defaultPrefix) {
         final String msg = t.getMessage() != null ? t.getMessage() : "";
         if (msg.contains("403")) {
@@ -728,7 +767,12 @@ public final class ContributorWorldsScreen extends Screen {
             return "Drive folder not found - it may have been deleted or moved. "
                     + "Run /worldshare clearDriveLink in your world, then re-add via Contributor Worlds.";
         }
-        return defaultPrefix + ": " + (msg.isEmpty() ? t.getClass().getSimpleName() : msg);
+        if (msg.isEmpty()) {
+            return defaultPrefix + ": " + t.getClass().getSimpleName();
+        }
+        // The title above already says what failed, so don't repeat it in front of a
+        // message that is a full explanation in its own right.
+        return msg;
     }
 
     @Override
