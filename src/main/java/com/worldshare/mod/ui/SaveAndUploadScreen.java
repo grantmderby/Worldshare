@@ -291,48 +291,49 @@ public final class SaveAndUploadScreen extends Screen {
                 };
 
                 stage = "Uploading world to Drive...";
+
+                // Push and release go in ONE task, not two.
+                //
+                // They used to be submitted separately, with this thread waiting on
+                // the first before submitting the second - which left a gap on a
+                // single-threaded executor for anything queued in between to run.
+                // Opening Contributor Worlds during an upload did exactly that: its
+                // world-list read slotted into the gap, saw the lock still held, and
+                // showed "Resume" until a later refresh corrected it to "Open".
+                // Releasing the lock is part of finishing the push, so it belongs in
+                // the same unit of work.
                 final java.util.concurrent.CompletableFuture<SyncEngine.PushResult> pushFuture
                         = new java.util.concurrent.CompletableFuture<>();
                 CloudModule.executor().submit(() -> {
                     try {
                         final SyncEngine.PushResult r = SyncEngine.push(
                                 worldRoot, remote, playerUuid, prog);
+
+                        // Release the lock only if the push actually landed.
+                        //
+                        // A failed push has already replaced some bucket archives
+                        // without publishing the manifest describing them. Handing
+                        // the lock over in that state lets the next player pull
+                        // archives the manifest disagrees with, and their extraction
+                        // check rejects the world. Keeping the lock costs them a
+                        // wait; releasing it costs them a world they cannot open.
+                        if (r.failed == 0) {
+                            stage = "Releasing session lock...";
+                            if (LockManager.weHoldLock(remote)) {
+                                LockManager.release();
+                            }
+                        } else {
+                            WorldShareMod.LOGGER.warn(
+                                    "SaveAndUpload: {} bucket(s) failed; keeping the session "
+                                            + "lock so nobody pulls a world the manifest "
+                                            + "doesn't match", r.failed);
+                        }
                         pushFuture.complete(r);
                     } catch (final Throwable t) {
                         pushFuture.completeExceptionally(t);
                     }
                 });
                 final SyncEngine.PushResult result = pushFuture.get();
-
-                // Release the lock only if the push actually landed.
-                //
-                // A failed push has already replaced some bucket archives without
-                // publishing the manifest that describes them. Handing the lock over
-                // in that state lets the next player pull archives the manifest
-                // disagrees with, and their extraction check rejects the world.
-                // Keeping the lock costs them a wait; releasing it costs them a
-                // world they cannot open.
-                if (result.failed == 0) {
-                    stage = "Releasing session lock...";
-                    final java.util.concurrent.CompletableFuture<Void> releaseFuture
-                            = new java.util.concurrent.CompletableFuture<>();
-                    CloudModule.executor().submit(() -> {
-                        try {
-                            if (LockManager.weHoldLock(remote)) {
-                                LockManager.release();
-                            }
-                            releaseFuture.complete(null);
-                        } catch (final Throwable t) {
-                            releaseFuture.completeExceptionally(t);
-                        }
-                    });
-                    releaseFuture.get();
-                } else {
-                    WorldShareMod.LOGGER.warn(
-                            "SaveAndUpload: {} bucket(s) failed; keeping the session lock "
-                                    + "so nobody pulls a world the manifest doesn't match",
-                            result.failed);
-                }
 
                 if (result.failed == 0) {
                     final String summary = result.filesUploaded + " files synced ("
