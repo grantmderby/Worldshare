@@ -74,6 +74,20 @@ public final class WorldShareConfig {
      */
     public final ModConfigSpec.BooleanValue autoHostOnOpen;
 
+    /**
+     * Seconds before "Continue in Background" appears on the save-and-upload screen.
+     *
+     * <p>Three seconds, down from a hardcoded thirty. That thirty was chosen when a
+     * push meant re-uploading most of the world; bucket tiling and dirty tracking
+     * cut a typical save to about fifteen seconds, at which point the button was
+     * arriving with a third of the upload left and the paths behind it - the
+     * background toast among them - had never been exercised at all.
+     *
+     * <p>It is a reasonable preference in its own right: on a slow connection you
+     * may want the button immediately.
+     */
+    public final ModConfigSpec.IntValue backgroundButtonDelaySeconds;
+
     private WorldShareConfig(final ModConfigSpec.Builder builder) {
         builder.comment("WorldShare settings")
                 .push("general");
@@ -105,6 +119,12 @@ public final class WorldShareConfig {
                         + "public relay address, which should be a choice rather than a "
                         + "side effect. Use /worldshare host to start one on demand.")
                 .define("autoHostOnOpen", false);
+
+        backgroundButtonDelaySeconds = builder
+                .comment("Seconds before the save-and-upload screen offers "
+                        + "\"Continue in Background\". 0 shows it immediately. "
+                        + "Default 3.")
+                .defineInRange("backgroundButtonDelaySeconds", 3, 0, 300);
 
         builder.pop();
     }

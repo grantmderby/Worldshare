@@ -38,7 +38,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   <li>Return to title screen</li>
  * </ol>
  *
- * <p>After 30 seconds, a "Continue in Background" button appears.
+ * <p>A "Continue in Background" button appears after
+ * {@code backgroundButtonDelaySeconds} (default 10).
  *
  * <p><b>M5 change:</b> The Drive folder ID is now read from the world's
  * {@code worldshare-link.json} file rather than the global config. This
@@ -56,7 +57,10 @@ public final class SaveAndUploadScreen extends Screen {
      * way of an ordinary save while making it available on the slow connection or
      * large world it exists for.
      */
-    private static final long BACKGROUND_BUTTON_DELAY_MS = 10_000L;
+    private static long backgroundButtonDelayMs() {
+        return 1000L * com.worldshare.mod.config.WorldShareConfig.get()
+                .backgroundButtonDelaySeconds.get();
+    }
 
     private volatile String stage = "Checking connection to Drive...";
     private volatile int filesDone = 0;
@@ -119,7 +123,7 @@ public final class SaveAndUploadScreen extends Screen {
     public void tick() {
         super.tick();
         if (!done && !errored && !backgroundButton.visible
-                && System.currentTimeMillis() - openTime > BACKGROUND_BUTTON_DELAY_MS) {
+                && System.currentTimeMillis() - openTime >= backgroundButtonDelayMs()) {
             backgroundButton.visible = true;
         }
 
@@ -180,12 +184,13 @@ public final class SaveAndUploadScreen extends Screen {
             final long mbDone = bytesDone / (1024 * 1024);
             final long mbTotal = totalBytes / (1024 * 1024);
             gfx.drawCenteredString(this.font,
-                    // "MB" here is world data processed, not bytes over the wire -
-                    // the archives compress, and their size isn't known until each
-                    // one is built. Labelled so nobody compares it to Drive and
-                    // concludes the upload lost something.
+                    // This MB figure is world data processed, not bytes over the
+                    // wire - the archives compress, and their size isn't known until
+                    // each is built. Left unqualified on screen because the caveat
+                    // matters to whoever compares it against Drive, which is not the
+                    // person watching a progress bar.
                     Component.literal(filesDone + " / " + totalFiles + " files  -  "
-                            + mbDone + " / " + mbTotal + " MB of world data"),
+                            + mbDone + " / " + mbTotal + " MB"),
                     cx, barY + barH + 10, 0xCCCCCC);
         }
 
