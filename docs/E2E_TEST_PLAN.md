@@ -281,3 +281,148 @@ Log:      push: nothing changed (0 file(s) left to the other player)
 
 Phases 1, 2 and 4 are the ones that decide whether this design works at all.
 5 and 6 can wait if time is short.
+
+---
+
+# Round 2 — what the first live run left behind
+
+The first run passed Phases 1–4: setup created 18 Drive files, incremental pushes
+dirtied 4 of 16 buckets, the two-account round trip worked and inventories
+survived. It also turned up five defects, fixed across `9264423`, `6fd6aae` and
+`e0a4685`. **Three of those fixes have never been seen working**, because they
+were written after the clients were shut down.
+
+This section is only what's left. Phases 1–4 above do not need repeating.
+
+## Round 2A — the three unverified fixes (two clients, ~20 min)
+
+### 2A.1 — The download progress bar appears (`6fd6aae`)
+
+The bug: `triggerRefresh()` both set `refreshRequested` and called `startLoading()`
+directly, so the flag stayed set for the next `init()` to find — and that `init()`
+was the one `onDownload` triggers to swap in the progress bar. It started a second
+world-list load that finished first and painted over the download.
+
+Getting back to a `Download` state does **not** need the picker again.
+`hasLocalFolder()` only checks the stored name, so with client B **closed**:
+
+```bash
+python -c "import json,io;p='run2/config/worldshare/subscriptions.json';d=json.load(io.open(p,encoding='utf-8'));[s.update(localFolderName='') for s in d];json.dump(d,io.open(p,'w',encoding='utf-8'),indent=1)"
+```
+
+Then launch client B → **Contributor Worlds**:
+
+1. Click **Refresh** first. This is what leaves the stale flag; without it the bug
+   never fired and the test proves nothing.
+2. Click **Download**.
+
+- **Expect:** "Downloading from Drive..." with a progress bar that stays put and
+  runs to 100%.
+- **Fail:** the screen blinks and returns to the world list with **Download** still
+  showing, and clicking it again appears to do nothing.
+
+### 2A.2 — Progress never exceeds its own total (`6fd6aae`)
+
+`onStart` passed the *changed*-file count while `transferBuckets` counts off *full
+bucket membership*, so the bar read "25 / 15 files".
+
+On client A: open the world via Contributor Worlds, place a few blocks, save and
+quit. Watch the line under the bar.
+
+- **Expect:** the left number never exceeds the right, and they end equal.
+- **Cross-check the log**, which now prints both numbers:
+  `push: 15 changed file(s) dirty 4 of 16 bucket(s); repacking 25 file(s), 16 MB`
+  The bar's denominator must be the **repacking** figure (25), not the changed one.
+
+### 2A.3 — Toast, and the lock surviving a failed push (`9264423` + `e0a4685`)
+
+One test covers both, because the same failure exercises them.
+
+> **Do not try renaming a bucket file in Drive to force this.** Drive addresses
+> files by ID, so a rename changes nothing the mod can notice — that attempt in
+> round 1 was a no-op, not a pass.
+
+On client A, in the world:
+
+1. Save and quit.
+2. Wait 30 seconds for **Continue in Background** to appear, and click it.
+3. At the title screen, **disable wifi** while the upload is still running.
+
+Expect, in order:
+
+- **A toast, top right:** *"WorldShare — '\<world\>' did not sync: …"*. This is the
+  first time the toast path has ever been exercised; before `9264423` this message
+  went only to the log.
+- **Log:** `SaveAndUpload: N bucket(s) failed; keeping the session lock so nobody
+  pulls a world the manifest doesn't match`
+- Re-enable wifi. `worldshare-control.json` still reads `lock.status: "hosting"`.
+- **Client B's row: Locked.** This is the point of the whole fix — B must be kept
+  out of a world whose archives the manifest no longer describes.
+- **Client A reopens: the row reads Resume.** Open it, save and quit; that push
+  commits the manifest, releases the lock, and B's row goes back to Available.
+
+## Round 2B — three clients
+
+Needs the **third Google account**, and the Drive folder shared with it as Editor.
+`playerCap` already defaults to 5.
+
+```bash
+./gradlew runClient
+./gradlew runClientTwo
+./gradlew runClientThree
+```
+
+### 2B.1 — Three-way lock contest
+
+1. A opens the world and stays in it.
+2. B and C both click Open.
+
+- **Expect:** both blocked, both showing **Locked by \<A\>**, neither let in.
+- A saves and quits. B opens it. **C must now show Locked by \<B\>** — not
+  Available, and not a second successful entry.
+
+### 2B.2 — Playerdata under repack (the one that matters)
+
+This is why the third client exists. A bucket is repacked **whole** from the
+pushing player's copy of the files, and `playerdata/` for *every* player lives in
+bucket 0. So when A pushes, A rewrites B's and C's characters from A's disk.
+
+1. A opens, puts **64 dirt** in their inventory, saves and quits.
+2. B opens, puts **64 cobblestone** in theirs, saves and quits.
+3. C opens, puts **64 sand** in theirs, saves and quits.
+4. A opens again, changes **only A's own** inventory, saves and quits.
+5. B opens. Then C opens.
+
+- **Expect:** B still has the cobblestone and C still has the sand.
+- **Watch for** `pull: stripped Player tag from level.dat` on every pull. That strip
+  is what stops the singleplayer host's character in `level.dat` overwriting the
+  per-player file — without it, whoever pulls inherits the pusher's inventory.
+- **If B or C loses their inventory, stop.** That is the failure this whole design
+  exists to prevent and nothing after it matters.
+
+## Round 2C — e4mc live co-op
+
+The jar is now in `run/mods`, `run2/mods` and `run3/mods`; in round 1 only `run/`
+had it, which is why client B reported it missing.
+
+1. A holds the lock and runs `/worldshare invite`.
+
+- **Expect:** e4mc assigns a `*.e4mc.link` domain and `worldshare-presence.json`
+  gains content. B's and C's rows flip to **LIVE** with a **Join** button.
+- **Unknown going in:** whether e4mc's relay completes its handshake for *offline
+  dev accounts*. If it hangs with no domain assigned, that is the answer — say so
+  rather than treating it as a WorldShare bug.
+- 5.5: A stops hosting → the presence file is **cleared, not deleted**, keeping the
+  same Drive file ID.
+
+**Fallback if the relay refuses dev accounts.** WorldShare's side is still fully
+testable: `onJoin` hands `presence.e4mc_link` straight to
+`ConnectScreen.startConnecting`, so writing a presence file pointing at a localhost
+LAN port exercises presence → LIVE badge → Join without the relay being involved.
+
+## Still unrun from Round 1
+
+Cheap, and worth doing before release: **3.8** (blank invite link — the picker opens
+on the whole Drive and selection still works), **3.9** (partial selection names the
+missing files and refuses to half-add the world), and **Phase 6**'s failure modes,
+of which the offline push is now partly covered by 2A.3.
