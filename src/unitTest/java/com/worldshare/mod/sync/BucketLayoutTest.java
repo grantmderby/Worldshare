@@ -106,6 +106,89 @@ class BucketLayoutTest {
         }
     }
 
+    // ------------------------------------------------------------ opaque paths
+
+    @Test
+    @DisplayName("everything that synced before still maps where it did")
+    void existingAssignmentsAreUnchanged() {
+        final BucketLayout layout = BucketLayout.defaultLayout();
+
+        // This is the assertion behind shipping the denylist without a layout
+        // version bump. Adding files is additive and safe; moving an existing one
+        // is the silent-loss case, because a push only rewrites buckets whose
+        // contents changed - an untouched file would stay in its old archive while
+        // the new mapping looked somewhere else.
+        assertEquals(BucketLayout.HOT_BUCKET, layout.indexFor("level.dat"));
+        assertEquals(BucketLayout.HOT_BUCKET, layout.indexFor("level.dat_old"));
+        assertEquals(BucketLayout.HOT_BUCKET,
+                layout.indexFor("playerdata/aed5efd4-551b-3965-bc28-ae21aa072a66.dat"));
+        assertEquals(BucketLayout.HOT_BUCKET, layout.indexFor("stats/abc.json"));
+        assertEquals(BucketLayout.HOT_BUCKET, layout.indexFor("advancements/abc.json"));
+        assertEquals(BucketLayout.HOT_BUCKET, layout.indexFor("data/raids.dat"));
+        assertEquals(BucketLayout.HOT_BUCKET, layout.indexFor("resources/pack.png"));
+        assertEquals(BucketLayout.HOT_BUCKET, layout.indexFor("datapacks/p/pack.mcmeta"));
+        assertEquals(BucketLayout.HOT_BUCKET, layout.indexFor("v_data/anything.dat"));
+    }
+
+    @Test
+    @DisplayName("a mod's folder gets one bucket of its own, away from the hot one")
+    void modFoldersGroupOutsideTheHotBucket() {
+        final BucketLayout layout = BucketLayout.defaultLayout();
+
+        final int bucket = layout.indexFor("create_aeronautics/contraptions.dat");
+        assertEquals(bucket, layout.indexFor("create_aeronautics/other.dat"),
+                "one mod's data belongs in one archive");
+        assertEquals(bucket, layout.indexFor("create_aeronautics/nested/deep/file.bin"),
+                "however deep it nests");
+
+        // Not the hot bucket, which is repacked on essentially every push because
+        // level.dat and stats always change. A mod folder there would be
+        // re-uploaded every session whether or not it changed.
+        org.junit.jupiter.api.Assertions.assertNotEquals(
+                BucketLayout.HOT_BUCKET, bucket);
+    }
+
+    @Test
+    @DisplayName("different mod folders generally land in different buckets")
+    void modFoldersSpread() {
+        final BucketLayout layout = BucketLayout.defaultLayout();
+        final java.util.Set<Integer> buckets = new java.util.HashSet<>();
+        for (final String mod : new String[] {
+                "create_aeronautics", "ftbteams", "computercraft", "ae2",
+                "mekanism", "botania", "thermal", "immersiveengineering"}) {
+            buckets.add(layout.indexFor(mod + "/data.dat"));
+        }
+        assertTrue(buckets.size() >= 4,
+                "eight mod folders should not all collide; got " + buckets.size());
+    }
+
+    @Test
+    @DisplayName("a mod's own data/ folder is not mistaken for Minecraft's")
+    void modDataFoldersAreNotHot() {
+        final BucketLayout layout = BucketLayout.defaultLayout();
+
+        // Minecraft keeps a data/ folder per dimension, so DIM-1/data/raids.dat is
+        // housekeeping and belongs in the hot bucket. A mod folder that happens to
+        // contain a data/ subfolder is not, and putting it in the hot bucket would
+        // re-upload it on every save - which is the cost this rule exists to avoid.
+        assertEquals(BucketLayout.HOT_BUCKET, layout.indexFor("dim-1/data/raids.dat"));
+        assertEquals(BucketLayout.HOT_BUCKET, layout.indexFor("dim1/data/raids.dat"));
+        assertEquals(BucketLayout.HOT_BUCKET,
+                layout.indexFor("dimensions/twilightforest/twilight_forest/data/x.dat"));
+
+        org.junit.jupiter.api.Assertions.assertNotEquals(
+                BucketLayout.HOT_BUCKET, layout.indexFor("create_aeronautics/data/big.bin"),
+                "a mod's data folder gets its own bucket, not the hot one");
+    }
+
+    @Test
+    @DisplayName("a loose file at the world root goes to the hot bucket")
+    void looseRootFilesAreHot() {
+        // No folder to group by, and near certainly small.
+        assertEquals(BucketLayout.HOT_BUCKET,
+                BucketLayout.defaultLayout().indexFor("notes.txt"));
+    }
+
     // ---------------------------------------------------------------- locality
 
     @Test

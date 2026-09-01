@@ -138,7 +138,65 @@ public final class WorldFileScanner {
                 totalBytes / (1024 * 1024),
                 cacheHits,
                 trackedFiles.size() - cacheHits);
+        reportUnfamiliarContent(manifest);
         return manifest;
+    }
+
+    /**
+     * Top-level entries Minecraft itself is known to write.
+     *
+     * <p>Only used for reporting. Nothing here affects what syncs - the point is to
+     * be able to say "this came from a mod" without pretending to know which.
+     */
+    private static final java.util.Set<String> FAMILIAR_TOP_LEVEL = java.util.Set.of(
+            "region", "entities", "poi", "playerdata", "stats", "advancements",
+            "data", "resources", "datapacks", "v_data", "serverconfig",
+            "dim-1", "dim1", "dimensions", "level.dat", "level.dat_old");
+
+    /** A single unfamiliar entry big enough to be worth a warning: 128 MB. */
+    private static final long LARGE_UNFAMILIAR_BYTES = 128L * 1024 * 1024;
+
+    /**
+     * Say what we're carrying that we don't recognise.
+     *
+     * <p>Syncing everything by default is the right trade - a file that silently
+     * never syncs costs somebody their work - but it must not become a different
+     * kind of silence, where a mod parks a large cache in the world folder and every
+     * push quietly carries it forever.
+     *
+     * <p>So the log names every unfamiliar top-level entry with its size, which is
+     * also how we find out what mods actually write rather than guessing; and
+     * anything genuinely large gets said out loud, because that is a decision the
+     * player needs to make and can, via {@code extraSyncExcludes}.
+     */
+    private static void reportUnfamiliarContent(final WorldManifest manifest) {
+        final java.util.Map<String, Long> byTopLevel = new java.util.TreeMap<>();
+        for (final java.util.Map.Entry<String, WorldManifest.Entry> e
+                : manifest.files().entrySet()) {
+            final String rel = e.getKey();
+            final int slash = rel.indexOf('/');
+            final String top = slash > 0 ? rel.substring(0, slash) : rel;
+            if (FAMILIAR_TOP_LEVEL.contains(top.toLowerCase(java.util.Locale.ROOT))) {
+                continue;
+            }
+            byTopLevel.merge(top, e.getValue() == null ? 0L : e.getValue().size, Long::sum);
+        }
+        if (byTopLevel.isEmpty()) return;
+
+        for (final java.util.Map.Entry<String, Long> e : byTopLevel.entrySet()) {
+            WorldShareMod.LOGGER.info("WorldFileScanner: also syncing '{}' ({} KB)",
+                    e.getKey(), e.getValue() / 1024);
+            if (e.getValue() >= LARGE_UNFAMILIAR_BYTES) {
+                WorldShareMod.LOGGER.warn(
+                        "WorldFileScanner: '{}' is {} MB - every sync will carry it",
+                        e.getKey(), e.getValue() / (1024 * 1024));
+                com.worldshare.mod.util.PlayerNotice.error(
+                        "§e[WorldShare] '" + e.getKey() + "' is "
+                                + (e.getValue() / (1024 * 1024)) + " MB and will sync every "
+                                + "time. Add it to extraSyncExcludes in the config if you "
+                                + "don't need it shared.");
+            }
+        }
     }
 
     /**

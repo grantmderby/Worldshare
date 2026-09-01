@@ -102,6 +102,23 @@ public final class WorldShareConfig {
      */
     public final ModConfigSpec.BooleanValue devCommands;
 
+    /**
+     * Extra world-relative paths to keep out of sync, on top of the built-in list.
+     *
+     * <p>WorldShare syncs everything in the world folder except a short list of
+     * per-machine things, because a file that silently never syncs costs somebody
+     * their work. The cost of that default is that a mod parking a large cache in
+     * the world folder makes every push carry it, and we cannot enumerate every mod
+     * ahead of time - a mod update can turn a small folder into a huge one.
+     *
+     * <p>This is the lever for that, so the answer to an unsyncable world is a
+     * config line rather than waiting for a WorldShare release.
+     *
+     * <p>Entries ending in {@code /} match a folder, entries beginning with
+     * {@code *} match a suffix, anything else matches one exact path.
+     */
+    public final ModConfigSpec.ConfigValue<java.util.List<? extends String>> extraSyncExcludes;
+
     private WorldShareConfig(final ModConfigSpec.Builder builder) {
         builder.comment("WorldShare settings")
                 .push("general");
@@ -142,6 +159,17 @@ public final class WorldShareConfig {
                         + "of them can damage a shared world if used at the wrong "
                         + "moment. /worldshare doctor covers the diagnostics.")
                 .define("devCommands", false);
+
+        extraSyncExcludes = builder
+                .comment("Extra paths inside the world folder to leave out of sync, "
+                        + "relative to the world folder. Use for a mod that keeps a "
+                        + "large cache there. \"somemod/cache/\" excludes a folder, "
+                        + "\"*.bin\" a suffix, \"notes.txt\" one file.",
+                        "Set the same excludes on every player's install: excluding a "
+                        + "folder here stops you uploading it, it does not remove it "
+                        + "from anyone else's world.")
+                .defineList("extraSyncExcludes", java.util.List.of(),
+                        () -> "", o -> o instanceof String);
 
         builder.pop();
     }

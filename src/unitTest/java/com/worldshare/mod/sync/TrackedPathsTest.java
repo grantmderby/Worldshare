@@ -65,6 +65,32 @@ class TrackedPathsTest {
         assertFalse(TrackedPaths.isMcaFile("region/c.0.0.mcc"));
     }
 
+    // ------------------------------------------------------- everything else syncs
+
+    @Test
+    @DisplayName("NeoForge per-world mod config syncs")
+    void serverConfigIsTracked() {
+        // Not client settings - NeoForge keeps CLIENT and COMMON config in the game
+        // directory, and only SERVER config, scoped to one world, lands here. Two
+        // players running the same world under different ore generation or machine
+        // rates, with nothing to tell them, is what this being unsynced meant.
+        assertTrue(tracked("serverconfig/somemod-server.toml"));
+        assertTrue(tracked("serverconfig/SomeMod/config-server.toml"));
+    }
+
+    @Test
+    @DisplayName("a folder no one has heard of syncs")
+    void unknownModFoldersAreTracked() {
+        // The whole point of the inversion. Under the old allowlist each of these
+        // was silently dropped - no error, just a mod's data that never left the
+        // machine. We cannot enumerate what mods will write, so the default has to
+        // be to carry it.
+        assertTrue(tracked("create_aeronautics/contraptions.dat"));
+        assertTrue(tracked("ftbteams/teams.snbt"));
+        assertTrue(tracked("computercraft/computer/0/startup.lua"));
+        assertTrue(tracked("notes.txt"));
+    }
+
     // --------------------------------------------------------------- world state
 
     @Test
@@ -101,6 +127,15 @@ class TrackedPathsTest {
         assertFalse(tracked("data/DistantHorizons.sqlite"));
         assertFalse(tracked("data/DistantHorizons.sqlite-wal"));
         assertFalse(tracked("data/DistantHorizons.sqlite-shm"));
+    }
+
+    @Test
+    @DisplayName("transient and OS litter is excluded")
+    void litterIsExcluded() {
+        assertFalse(tracked("region/r.0.0.mca.tmp"));
+        assertFalse(tracked("somemod/download.part"));
+        assertFalse(tracked(".DS_Store"));
+        assertFalse(tracked("somemod/Thumbs.db"));
     }
 
     @Test

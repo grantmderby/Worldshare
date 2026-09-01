@@ -292,9 +292,25 @@ public final class BucketLayout {
             // rather than somewhere 32 times further out.
             regionX = Long.parseLong(external.group(1)) >> CHUNK_TO_REGION_SHIFT;
             regionZ = Long.parseLong(external.group(2)) >> CHUNK_TO_REGION_SHIFT;
-        } else {
-            // Not chunk storage: it goes in the hot bucket. See HOT_BUCKET.
+        } else if (isKnownHotPath(normalized)) {
+            // Minecraft's own per-session churn. See HOT_BUCKET.
             return HOT_BUCKET;
+        } else {
+            // Something we don't recognise - a mod's own folder, most likely.
+            //
+            // These used not to sync at all, so nothing here is moving buckets;
+            // this rule only ever applies to paths absent from every existing
+            // manifest. That is what lets the denylist ship without a layout
+            // version bump, and equally why this rule has to be right the first
+            // time - changing it later would move files that by then do sync.
+            //
+            // Hashed by top-level folder rather than dropped in the hot bucket,
+            // because the hot bucket is repacked on essentially every push
+            // (level.dat and stats always change). A mod folder living there would
+            // be re-uploaded every session whether or not it changed. Its own
+            // bucket means it travels only when it actually changes, and a whole
+            // mod's data stays together.
+            return bucketForOpaquePath(normalized);
         }
 
         // Hash the *tile* rather than the region, so neighbouring regions share a
@@ -385,6 +401,82 @@ public final class BucketLayout {
      * the high bits down, because the low bits are all {@code floorMod} actually
      * looks at.
      */
+    /**
+     * Paths Minecraft itself rewrites every session, which belong in the hot bucket.
+     *
+     * <p>Listed explicitly rather than inferred. These are exactly the paths that
+     * reach {@link #HOT_BUCKET} today, and letting any of them fall through to the
+     * opaque-path rule would move it to a different bucket - which for files that
+     * already sync is the silent-loss case {@link #LAYOUT_VERSION} exists to catch.
+     * Adding to this list is a layout change; adding to the denylist is not.
+     */
+    private static final java.util.List<String> HOT_PREFIXES = java.util.List.of(
+            "playerdata/", "stats/", "advancements/",
+            "data/", "resources/", "datapacks/", "v_data/");
+
+    private static boolean isKnownHotPath(final String normalized) {
+        if (normalized.equals("level.dat") || normalized.equals("level.dat_old")) {
+            return true;
+        }
+        // Checked after stripping any dimension prefix, because Minecraft keeps a
+        // data/ folder per dimension - DIM-1/data/raids.dat is housekeeping in
+        // exactly the way data/raids.dat is. Stripping precisely rather than
+        // matching "/data/" anywhere keeps a mod's own data folder,
+        // somemod/data/big.bin, out of the hot bucket and in its own.
+        final String withoutDimension = stripDimensionPrefix(normalized);
+        for (final String prefix : HOT_PREFIXES) {
+            if (withoutDimension.startsWith(prefix)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Remove a leading dimension folder, if the path has one.
+     *
+     * <p>{@code dim-1/}, {@code dim1/}, or {@code dimensions/<namespace>/<path>/}
+     * for a datapack or modded dimension. Anything else is returned untouched.
+     */
+    private static String stripDimensionPrefix(final String normalized) {
+        if (normalized.startsWith("dim-1/")) return normalized.substring(6);
+        if (normalized.startsWith("dim1/")) return normalized.substring(5);
+        if (normalized.startsWith("dimensions/")) {
+            // dimensions/<namespace>/<path>/... - drop three segments.
+            int cut = normalized.indexOf('/');
+            for (int i = 0; i < 2 && cut >= 0; i++) {
+                cut = normalized.indexOf('/', cut + 1);
+            }
+            if (cut >= 0 && cut + 1 < normalized.length()) {
+                return normalized.substring(cut + 1);
+            }
+        }
+        return normalized;
+    }
+
+    /**
+     * A stable bucket for a path we know nothing about, keyed on its top-level
+     * folder so one mod's data stays in one archive.
+     *
+     * <p>A loose file at the world root has no folder to group by and is almost
+     * certainly small, so it goes to the hot bucket.
+     */
+    private int bucketForOpaquePath(final String normalized) {
+        final int slash = normalized.indexOf('/');
+        if (slash <= 0) {
+            return HOT_BUCKET;
+        }
+        final String topFolder = normalized.substring(0, slash);
+
+        final int regionBuckets = bucketCount - 1;
+        if (regionBuckets <= 0) {
+            return HOT_BUCKET;
+        }
+        // Reuses the region hash with zeroed coordinates so the folder name alone
+        // decides, and so opaque folders share the same spread as region tiles
+        // rather than needing a second hash function to reason about.
+        final long hash = regionHash(0L, 0L, topFolder);
+        return HOT_BUCKET + 1 + (int) Math.floorMod(hash, (long) regionBuckets);
+    }
+
     /** The dimension a chunk-storage path belongs to; empty for the Overworld. */
     private static String dimensionOf(final String normalized) {
         final Matcher m = DIMENSION_PREFIX.matcher(normalized);
