@@ -117,7 +117,7 @@ public final class RepairWorldScreen extends Screen {
             return;
         }
 
-        for (final String line : new String[] {
+        final String[] body = {
                 "Someone's upload was interrupted, so part of the world on Drive",
                 "is newer than the index that describes it. Until that's fixed,",
                 "nobody can download this world.",
@@ -127,7 +127,14 @@ public final class RepairWorldScreen extends Screen {
                 "",
                 "Anything " + holderName() + " never finished uploading will be lost.",
                 "Your local copy is backed up first.",
-        }) {
+        };
+
+        int blockWidth = 0;
+        for (final String line : body) {
+            blockWidth = Math.max(blockWidth, this.font.width(line));
+        }
+
+        for (final String line : body) {
             if (!line.isEmpty()) {
                 gfx.drawCenteredString(this.font, Component.literal(line), cx, y, 0xCCCCCC);
             }
@@ -135,11 +142,17 @@ public final class RepairWorldScreen extends Screen {
         }
 
         if (failureDetail != null) {
-            y += 6;
+            // Wrapped to the block above rather than to the window. Wrapping at a
+            // fraction of the screen let this run to a single line several times
+            // wider than the hand-wrapped text it sits under, which on a wide
+            // monitor reads as a stray sentence rather than part of the same
+            // message. Grey made it worse; it is the one line naming the actual
+            // problem, so it gets the same weight as everything else.
+            y += 8;
             for (final net.minecraft.util.FormattedCharSequence line
-                    : this.font.split(Component.literal(failureDetail), (int) (this.width * 0.8))) {
-                gfx.drawCenteredString(this.font, line, cx, y, 0x888888);
-                y += this.font.lineHeight;
+                    : this.font.split(Component.literal(failureDetail), blockWidth)) {
+                gfx.drawCenteredString(this.font, line, cx, y, 0xCCCCCC);
+                y += this.font.lineHeight + 2;
             }
         }
     }
