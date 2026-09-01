@@ -85,25 +85,60 @@ public final class WorldSetup {
                                                final int bucketCount,
                                                final String worldName)
             throws IOException, GeneralSecurityException {
-        final PickerAuthResult auth =
-                OAuthHelper.authorizeWithPicker(urlPresenter, false, true);
-        if (!auth.hasPicks()) {
-            throw new IOException(
-                    "No folder was selected. Re-run setup and choose (or create) a Drive "
-                            + "folder to keep this world in.");
-        }
+        return createNewWorld(urlPresenter, bucketCount, worldName, false);
+    }
 
-        final String folderId = auth.pickedFileIds().get(0);
-        CloudModule.refreshCredential(auth.credential());
+    /**
+     * @param adoptExisting open the Picker and set the world up in a folder the
+     *                      player chooses, rather than making one. The
+     *                      returning-creator case: somebody who lost
+     *                      {@code worldshare-link.json} and whose world is still in
+     *                      a folder, who would otherwise get a second world built
+     *                      beside the real one.
+     */
+    public static RemoteFileSet createNewWorld(final Consumer<String> urlPresenter,
+                                               final int bucketCount,
+                                               final String worldName,
+                                               final boolean adoptExisting)
+            throws IOException, GeneralSecurityException {
+        final String folderId;
+
+        if (adoptExisting) {
+            final PickerAuthResult auth =
+                    OAuthHelper.authorizeWithPicker(urlPresenter, false, true);
+            if (!auth.hasPicks()) {
+                throw new IOException(
+                        "No folder was selected. Re-run /worldshare setup existing and "
+                                + "choose the folder your world is already in.");
+            }
+            CloudModule.refreshCredential(auth.credential());
+            folderId = auth.pickedFileIds().get(0);
+        } else {
+            // Make the folder ourselves rather than asking the player to find one.
+            //
+            // The OAuth picker can only *select*, never create - it has no "new
+            // folder" button and no parameter that adds one. So requiring a folder
+            // meant a first-time player had to leave the game, make one in Drive's
+            // web interface, come back and re-run setup, which is a poor first
+            // thing to ask of somebody who installed this to avoid thinking about
+            // Drive. The drive.file scope lets an app create folders and keeps
+            // access to what it created, which is the same property the bucket
+            // files already rely on.
+            CloudModule.refreshCredential(OAuthHelper.authorize(urlPresenter));
+            final String folderName = "WorldShare - " + worldName;
+            folderId = CloudModule.driveClient().createFolder(folderName, null);
+            WorldShareMod.LOGGER.info("setup: created Drive folder '{}' ({})",
+                    folderName, folderId);
+        }
 
         final DriveClient client = CloudModule.driveClient();
         final File folderMeta = client.getFileMeta(folderId);
         if (folderMeta == null) {
-            throw new IOException("Drive didn't return the folder you picked. Try setup again.");
+            throw new IOException("Drive didn't return the folder. Try setup again.");
         }
         if (!DriveClient.MIME_TYPE_FOLDER.equals(folderMeta.getMimeType())) {
             throw new IOException(
-                    "You picked a file ('" + folderMeta.getName() + "'), not a folder. "
+                    "'" + folderMeta.getName() + "' is a file, not a folder. "
                             + "Re-run setup and choose a folder to keep this world in.");
         }
 

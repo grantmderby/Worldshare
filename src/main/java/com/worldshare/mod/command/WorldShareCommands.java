@@ -86,7 +86,14 @@ public final class WorldShareCommands {
                                 .executes(ctx -> runDriveTest(ctx.getSource())))
                         .then(Commands.literal("signout")
                                 .executes(ctx -> runSignOut(ctx.getSource())))
+                        // "setup existing" is the returning creator: somebody who
+                        // reinstalled and lost worldshare-link.json, whose world is
+                        // still sitting in a Drive folder. Plain setup makes a new
+                        // folder, which for them would build a second world beside
+                        // the real one.
                         .then(Commands.literal("setup")
+                                .then(Commands.literal("existing")
+                                        .executes(ctx -> runSetupExisting(ctx.getSource())))
                                 .executes(ctx -> runSetup(ctx.getSource())))
                         .then(Commands.literal("clearDriveLink")
                                 .executes(ctx -> runClearDriveLink(ctx.getSource())))
@@ -283,6 +290,25 @@ public final class WorldShareCommands {
      * command now takes no argument and opens the consent screen instead.
      */
     private static int runSetup(final CommandSourceStack source) {
+        return runSetup(source, false);
+    }
+
+    /**
+     * Adopt a world already sitting in a Drive folder, rather than making a new one.
+     *
+     * <p>For the creator who reinstalled, or moved machines, and no longer has
+     * {@code worldshare-link.json}. Plain setup would create a fresh folder and a
+     * fresh set of files, leaving their real world orphaned in the old folder with
+     * nothing pointing at it - and nothing about that looks like a failure at the
+     * time.
+     */
+    private static int runSetupExisting(final CommandSourceStack source) {
+        sendFeedback(source, "Pick the Drive folder your world is already in.",
+                ChatFormatting.GRAY);
+        return runSetup(source, true);
+    }
+
+    private static int runSetup(final CommandSourceStack source, final boolean pickExisting) {
         final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
         if (ctx.isEmpty()) {
             sendFeedback(source,
@@ -304,13 +330,17 @@ public final class WorldShareCommands {
 
         final int bucketCount = BucketLayout.DEFAULT_BUCKET_COUNT;
         sendFeedback(source,
-                "Opening Google sign-in. Pick (or create) a Drive folder to keep this world in.",
+                "Opening Google sign-in. WorldShare will make a Drive folder for this world.",
                 ChatFormatting.GRAY);
+        sendFeedback(source,
+                "Already have one from a previous install? Use /worldshare setup existing.",
+                ChatFormatting.DARK_GRAY);
 
         CloudModule.executor().submit(() -> {
             try {
                 final RemoteFileSet remote = WorldSetup.createNewWorld(
-                        WorldShareCommands::postClickableAuthLink, bucketCount, world.name);
+                        WorldShareCommands::postClickableAuthLink, bucketCount,
+                        world.name, pickExisting);
 
                 final String localFolder = world.worldRoot.getFileName().toString();
                 SubscriptionStore.get().linkWorldToRemote(
@@ -1245,6 +1275,7 @@ public final class WorldShareCommands {
             int empty = 0;
             int largestIndex = -1;
             long largest = -1;
+            final java.util.List<String> strays = new java.util.ArrayList<>();
             for (int i = 0; i < remote.bucketCount; i++) {
                 final com.google.api.services.drive.model.File meta =
                         client.getFileMeta(remote.bucketFileId(i));
@@ -1252,6 +1283,20 @@ public final class WorldShareCommands {
                 total += size;
                 if (size == 0L) empty++;
                 if (size > largest) { largest = size; largestIndex = i; }
+
+                // Has this file been moved out of the world's folder?
+                //
+                // Sync itself wouldn't notice - every read and write is by file ID,
+                // and IDs survive moves. Two other things do notice, and neither
+                // says so at the time: the other player's access came from the
+                // folder being shared, so a file outside it may no longer be
+                // readable by them; and setup's adoption path finds an existing
+                // world by listing the folder, so a stray file reads as missing and
+                // gets replaced, orphaning whatever was in it.
+                if (meta != null && remote.driveFolderId != null && meta.getParents() != null
+                        && !meta.getParents().contains(remote.driveFolderId)) {
+                    strays.add(BucketLayout.bucketFilename(i));
+                }
             }
             out.add("§7Buckets: §f" + (remote.bucketCount - empty) + "/" + remote.bucketCount
                     + " with content§7, total §f" + (total / (1024 * 1024)) + " MB");
@@ -1261,6 +1306,14 @@ public final class WorldShareCommands {
             }
             if (empty > 0) {
                 out.add("§7  " + empty + " empty placeholder(s) - normal before a first push");
+            }
+            if (!strays.isEmpty()) {
+                out.add("§c  " + strays.size() + " file(s) moved out of the world's Drive folder:");
+                for (final String name : strays) {
+                    out.add("§c    " + name);
+                }
+                problems.add(strays.size() + " Drive file(s) moved out of the world folder - "
+                        + "move them back, or other players may lose access");
             }
         } catch (final Exception e) {
             out.add("§cCouldn't read bucket metadata: §f" + e.getMessage());

@@ -137,6 +137,12 @@ Worlds set up with WorldShare should be loaded from the singleplayer tab only fo
   grows, which is what lets each player grant access to it once and never again.
   The world is spread across those archives by location, so an evening spent in
   one area re-uploads a couple of them rather than the whole world.
+
+  **Move the folder wherever you like** — Drive keeps a file's identity through
+  moves and renames, and sharing travels with the folder. **Don't move files out
+  of it**, though: the people you've shared with get their access from the folder,
+  and WorldShare finds an existing world by looking inside it. `/worldshare doctor
+  full` will tell you if anything has wandered.
 - **Session lock** is a JSON file on Drive. Acquiring it writes your machine ID and a heartbeat timestamp. Other players see "Locked by <name>" in the Contributor tab.
 - **Sync** uses SHA-256 hashes — only files that actually changed get uploaded. Initial upload is a few MB to several hundred. Subsequent syncs are usually a few hundred KB to a few MB.
 - **Live co-op** uses [e4mc](https://modrinth.com/mod/e4mc) for hole-punched relay connections. Your friend doesn't need to know your IP, set up port forwarding, or use Hamachi.

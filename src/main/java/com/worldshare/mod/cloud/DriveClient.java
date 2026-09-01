@@ -51,7 +51,8 @@ public final class DriveClient {
      * Adding fields here is safe; removing requires checking every caller of
      * {@link #getFileMeta}.
      */
-    private static final String DEFAULT_FIELDS = "id, name, size, md5Checksum, modifiedTime, mimeType";
+    private static final String DEFAULT_FIELDS =
+            "id, name, size, md5Checksum, modifiedTime, mimeType, parents";
 
     private final Drive drive;
 
