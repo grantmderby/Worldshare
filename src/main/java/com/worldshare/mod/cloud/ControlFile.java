@@ -50,6 +50,27 @@ public final class ControlFile {
     public int bucketCount = BucketLayout.DEFAULT_BUCKET_COUNT;
 
     /**
+     * Which revision of the path-to-bucket mapping this world was written with.
+     *
+     * <p>Separate from {@link #schemaVersion}, which describes the JSON document.
+     * They answer different questions and conflating them would make every future
+     * format tweak force a full world re-upload, while a mapping change that left
+     * the format alone would slip through unnoticed.
+     *
+     * <p>That second failure is the dangerous one. A push only rewrites buckets
+     * whose <em>contents</em> changed, so after a mapping change an untouched file
+     * stays in the archive it was already in while the new mapping says it lives
+     * somewhere else. Nothing looks wrong until someone pulls and the file simply
+     * isn't there. A version mismatch therefore has to refuse the sync outright and
+     * send the player to a repair, which republishes every bucket and is exactly
+     * what a migration needs.
+     *
+     * <p>Absent from control files written before this existed, where Gson leaves
+     * it 0 - which is the correct answer for them.
+     */
+    public int layoutVersion = BucketLayout.LAYOUT_VERSION;
+
+    /**
      * Canonical per-file state of the world: relative path to hash/size/mtime.
      * Compared against a local scan to decide what to move.
      */

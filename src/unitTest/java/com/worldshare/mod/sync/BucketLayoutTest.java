@@ -118,6 +118,64 @@ class BucketLayoutTest {
     }
 
     @Test
+    @DisplayName("an oversized chunk rides with the region that points at it")
+    void externalChunksTravelWithTheirRegion() {
+        final BucketLayout layout = BucketLayout.defaultLayout();
+
+        // c.<x>.<z>.mcc carries CHUNK coordinates; r.<x>.<z>.mca carries REGION
+        // coordinates, and there are 32 chunks to a region on each axis. Chunk
+        // (100, 200) therefore lives in region (3, 6). Reading the numbers as if
+        // they were the same unit puts the spill file 32 regions away from its
+        // own region, in some other bucket - which is a chunk that silently stops
+        // existing for whoever pulls next.
+        assertEquals(layout.indexFor("region/r.3.6.mca"),
+                layout.indexFor("region/c.100.200.mcc"),
+                "chunk 100,200 belongs to region 3,6");
+
+        // Negative coordinates use arithmetic shift, so -1 >> 5 is -1, not 0.
+        assertEquals(layout.indexFor("region/r.-1.-1.mca"),
+                layout.indexFor("region/c.-1.-1.mcc"),
+                "chunk -1,-1 belongs to region -1,-1");
+
+        assertEquals(layout.indexFor("dim-1/region/r.0.0.mca"),
+                layout.indexFor("dim-1/region/c.5.5.mcc"),
+                "and the dimension has to match too");
+    }
+
+    @Test
+    @DisplayName("the same coordinates in different dimensions land in different buckets")
+    void dimensionsDoNotCollide() {
+        final BucketLayout layout = BucketLayout.defaultLayout();
+
+        // Every dimension's r.0.0 used to hash identically, because only the
+        // filename was hashed. That put the Overworld, Nether, End and every modded
+        // dimension's spawn region in one bucket - the one bucket everybody is
+        // guaranteed to dirty.
+        final int overworld = layout.indexFor("region/r.0.0.mca");
+        final int nether = layout.indexFor("dim-1/region/r.0.0.mca");
+        final int end = layout.indexFor("dim1/region/r.0.0.mca");
+        final int modded =
+                layout.indexFor("dimensions/twilightforest/twilight_forest/region/r.0.0.mca");
+
+        assertEquals(4, java.util.Set.of(overworld, nether, end, modded).size(),
+                "all four spawn regions should be in different buckets, got "
+                        + java.util.List.of(overworld, nether, end, modded));
+    }
+
+    @Test
+    @DisplayName("grouping within a dimension survives the dimension being hashed")
+    void dimensionsStillTileInternally() {
+        final BucketLayout layout = BucketLayout.defaultLayout();
+        // The property Part B must not break: neighbours inside one dimension still
+        // share a bucket, or the fix for cross-dimension collisions would have
+        // traded away the locality tiling exists for.
+        final int nether = layout.indexFor("dim-1/region/r.0.0.mca");
+        assertEquals(nether, layout.indexFor("dim-1/region/r.1.1.mca"));
+        assertEquals(nether, layout.indexFor("dim-1/entities/r.2.2.mca"));
+        assertEquals(nether, layout.indexFor("dim-1/poi/r.3.3.mca"));
+    }
+
+    @Test
     @DisplayName("a session in one area dirties few buckets, not most of them")
     void nearbyRegionsGroupTogether() {
         // Regression test. Regions were hashed individually and neighbours

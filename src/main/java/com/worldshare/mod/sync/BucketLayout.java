@@ -181,11 +181,61 @@ public final class BucketLayout {
 
     /**
      * Matches Minecraft's region-file naming, {@code r.<x>.<z>.mca}, anywhere in
-     * the path. Also covers {@code .mcr} for ancient worlds and {@code .mcc}
-     * oversized-chunk spill files, which follow the same convention.
+     * the path. Also covers {@code .mcr} for ancient worlds.
+     *
+     * <p>This used to accept {@code .mcc} too, on the assumption that spill files
+     * followed the same convention. They do not: they are named {@code c.<x>.<z>}
+     * and carry <em>chunk</em> coordinates, so nothing matched and they fell
+     * through to the hot bucket, away from the region pointing at them. See
+     * {@link #EXTERNAL_CHUNK_FILE}.
      */
     private static final Pattern REGION_FILE =
-            Pattern.compile("(?:^|/)r\\.(-?\\d+)\\.(-?\\d+)\\.mc[arc]$");
+            Pattern.compile("(?:^|/)r\\.(-?\\d+)\\.(-?\\d+)\\.mc[ar]$");
+
+    /**
+     * An oversized chunk stored beside its region file, {@code c.<x>.<z>.mcc}.
+     *
+     * <p>Minecraft writes a chunk too large to fit in its region file into a
+     * separate file and leaves a pointer behind. It has to travel in the same
+     * bucket as the region pointing at it; split them across two buckets and one
+     * can be replaced on Drive without the other, leaving a region referencing a
+     * chunk that isn't there.
+     *
+     * <p><b>These are chunk coordinates, not region coordinates.</b> A region
+     * covers 32x32 chunks, so they need shifting by {@link #CHUNK_TO_REGION_SHIFT}
+     * before they mean the same thing as the numbers in an {@code r.} filename.
+     */
+    private static final Pattern EXTERNAL_CHUNK_FILE =
+            Pattern.compile("(?:^|/)c\\.(-?\\d+)\\.(-?\\d+)\\.mcc$");
+
+    /** 32 chunks per region axis. */
+    private static final int CHUNK_TO_REGION_SHIFT = 5;
+
+    /**
+     * Revision of the path-to-bucket mapping below.
+     *
+     * <p>Bump this whenever a path's bucket could change, and only then. Worlds
+     * written under an older revision refuse to sync until they are repaired,
+     * because a push rewrites only the buckets whose contents changed - so an
+     * unchanged file would sit in its old archive while the new mapping looked for
+     * it somewhere else, and the loss would show up as a file missing after a pull
+     * rather than as an error.
+     *
+     * <p>Revision 2 fixed two mappings: oversized {@code .mcc} chunks were landing
+     * in the hot bucket instead of with their region, and the hash ignored the
+     * dimension, so every dimension's {@code r.0.0} shared one bucket.
+     */
+    public static final int LAYOUT_VERSION = 2;
+
+    /**
+     * Splits the dimension prefix off a chunk-storage path.
+     *
+     * <p>Everything before {@code /region/}, {@code /entities/} or {@code /poi/}:
+     * {@code dim-1}, {@code dim1}, or {@code dimensions/<namespace>/<path>} for a
+     * datapack or modded dimension, and nothing at all for the Overworld.
+     */
+    private static final Pattern DIMENSION_PREFIX =
+            Pattern.compile("^(.*)/(?:region|entities|poi)/[^/]+$");
 
     private final int bucketCount;
 
@@ -228,17 +278,36 @@ public final class BucketLayout {
 
         final String normalized = relPath.replace('\\', '/').toLowerCase(Locale.ROOT);
 
+        final long regionX;
+        final long regionZ;
+
         final Matcher region = REGION_FILE.matcher(normalized);
-        if (!region.find()) {
-            // Not a region file: it goes in the hot bucket. See HOT_BUCKET.
+        final Matcher external = EXTERNAL_CHUNK_FILE.matcher(normalized);
+        if (region.find()) {
+            regionX = Long.parseLong(region.group(1));
+            regionZ = Long.parseLong(region.group(2));
+        } else if (external.find()) {
+            // An oversized chunk. Shift its chunk coordinates down to the region
+            // that holds it, so it tiles with the region file that points at it
+            // rather than somewhere 32 times further out.
+            regionX = Long.parseLong(external.group(1)) >> CHUNK_TO_REGION_SHIFT;
+            regionZ = Long.parseLong(external.group(2)) >> CHUNK_TO_REGION_SHIFT;
+        } else {
+            // Not chunk storage: it goes in the hot bucket. See HOT_BUCKET.
             return HOT_BUCKET;
         }
 
-        // A region file. Hash the *tile* it sits in rather than the region itself,
-        // so neighbouring regions share a bucket. See REGION_TILE_SHIFT.
-        final long regionX = Long.parseLong(region.group(1));
-        final long regionZ = Long.parseLong(region.group(2));
-        final long hash = regionHash(regionX >> REGION_TILE_SHIFT, regionZ >> REGION_TILE_SHIFT);
+        // Hash the *tile* rather than the region, so neighbouring regions share a
+        // bucket. See REGION_TILE_SHIFT.
+        //
+        // The dimension is part of the hash. Without it the filename alone decides,
+        // so every dimension's r.0.0 - Overworld, Nether, End, and each modded one -
+        // collided in a single bucket. That is also the bucket everyone spawns in,
+        // and Nether coordinates being 1/8 scale concentrated it further.
+        final long hash = regionHash(
+                regionX >> REGION_TILE_SHIFT,
+                regionZ >> REGION_TILE_SHIFT,
+                dimensionOf(normalized));
 
         // One bucket is reserved, so region files spread across the remaining
         // bucketCount-1. With bucketCount == 1 there is nothing to spread across
@@ -316,9 +385,17 @@ public final class BucketLayout {
      * the high bits down, because the low bits are all {@code floorMod} actually
      * looks at.
      */
-    private static long regionHash(final long tileX, final long tileZ) {
+    /** The dimension a chunk-storage path belongs to; empty for the Overworld. */
+    private static String dimensionOf(final String normalized) {
+        final Matcher m = DIMENSION_PREFIX.matcher(normalized);
+        return m.matches() ? m.group(1) : "";
+    }
+
+    private static long regionHash(final long tileX, final long tileZ,
+                                   final String dimension) {
         long h = tileX * 0x9E3779B97F4A7C15L;
         h ^= tileZ * 0xC2B2AE3D27D4EB4FL;
+        h ^= dimension.hashCode() * 0x94D049BB133111EBL;
         h ^= (h >>> 29);
         h *= 0xBF58476D1CE4E5B9L;
         h ^= (h >>> 32);

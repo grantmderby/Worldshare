@@ -78,22 +78,48 @@ public final class TrackedPaths {
      * Used by WorldFileScanner to apply the dirty-region filter only to .mca files —
      * non-.mca tracked files are always included in the scan regardless of dirty state.
      */
+    /**
+     * Whether the dirty-region filter may skip this file.
+     *
+     * <p>Only {@code .mca}, deliberately. An oversized-chunk {@code .mcc} is not
+     * filterable: the tracker records dirty regions, and a chunk spilling out of
+     * one - or shrinking back into it - is not a change the tracker sees. Leaving
+     * {@code .mcc} always-scanned costs a hash on a file that barely ever exists,
+     * and skipping one would drop a chunk from the world.
+     */
     static boolean isMcaFile(final String rel) {
         return rel.endsWith(".mca");
     }
 
+    /**
+     * Chunk storage: the region file itself, and any oversized chunk spilled
+     * beside it.
+     *
+     * <p>{@code .mcc} matters and used to be missed. When a chunk grows past what
+     * fits in a region file - a dense storage room, a lot of block entities, plenty
+     * of modded content - Minecraft writes it to {@code c.<x>.<z>.mcc} and leaves a
+     * pointer in the {@code .mca}. Syncing the pointer without its target hands the
+     * other player a region referencing a chunk that isn't there, and nothing says
+     * so until they walk into it.
+     *
+     * <p>The {@code contains} forms are what make every dimension work: the Nether
+     * and End sit under {@code DIM-1/} and {@code DIM1/}, and datapack or modded
+     * dimensions under {@code dimensions/<namespace>/<path>/}.
+     */
+    private static boolean isChunkStorage(final String rel, final String folder) {
+        if (!rel.endsWith(".mca") && !rel.endsWith(".mcc")) return false;
+        return rel.startsWith(folder + "/") || rel.contains("/" + folder + "/");
+    }
+
     private static boolean matchesRegion(final String rel) {
-        return (rel.endsWith(".mca") && rel.contains("/region/"))
-                || (rel.startsWith("region/") && rel.endsWith(".mca"));
+        return isChunkStorage(rel, "region");
     }
 
     private static boolean matchesEntities(final String rel) {
-        return (rel.endsWith(".mca") && rel.contains("/entities/"))
-                || (rel.startsWith("entities/") && rel.endsWith(".mca"));
+        return isChunkStorage(rel, "entities");
     }
 
     private static boolean matchesPoi(final String rel) {
-        return (rel.endsWith(".mca") && rel.contains("/poi/"))
-                || (rel.startsWith("poi/") && rel.endsWith(".mca"));
+        return isChunkStorage(rel, "poi");
     }
 }

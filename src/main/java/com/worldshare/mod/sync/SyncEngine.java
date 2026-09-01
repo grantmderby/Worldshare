@@ -807,6 +807,18 @@ public final class SyncEngine {
                             + "Re-run WorldShare setup for this world to match.",
                     remote.bucketCount, control.bucketCount));
         }
+        if (control.layoutVersion != BucketLayout.LAYOUT_VERSION) {
+            // Refuse rather than sync half under each mapping. A push only rewrites
+            // the buckets whose contents changed, so proceeding would leave every
+            // untouched file in the archive the old mapping put it in while this one
+            // looks for it elsewhere - a loss that surfaces as a missing file long
+            // after the push that caused it.
+            throw new ManifestMismatchException(String.format(
+                    "This world was uploaded with an older version of WorldShare "
+                            + "(file layout v%d, this version uses v%d). It needs to be "
+                            + "republished once before it can sync again.",
+                    control.layoutVersion, BucketLayout.LAYOUT_VERSION));
+        }
         return control.layout();
     }
 
