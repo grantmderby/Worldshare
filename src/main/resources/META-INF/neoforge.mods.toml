@@ -52,3 +52,14 @@ logoFile="icon.png"
     versionRange="[6.0,)"
     ordering="AFTER"
     side="CLIENT"
+
+# Mixins.
+#
+# One mixin, and it exists because vanilla offers no hook where it is needed.
+# Every way of opening a world from the world list - the Play button,
+# double-clicking an entry, and the play icon that appears on hover - funnels
+# through WorldListEntry.joinWorld(). Gating that one method covers all of them,
+# including any route not yet found; gating the screen's buttons would cover only
+# the first.
+[[mixins]]
+    config="worldshare.mixins.json"
