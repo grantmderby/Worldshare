@@ -1,7 +1,6 @@
 package com.worldshare.mod.ui;
 
 import com.worldshare.mod.WorldShareMod;
-import com.worldshare.mod.cloud.CloudModule;
 import com.worldshare.mod.cloud.LockManager;
 import com.worldshare.mod.cloud.RemoteFileSet;
 import com.worldshare.mod.config.WorldLink;
@@ -48,31 +47,17 @@ public final class OpenWorldGateScreen extends Screen {
     private final Screen parent;
     private final String levelId;
     private final String displayName;
-    private final RemoteFileSet remote;
     private final Verdict verdict;
 
     private static final int BUTTON_WIDTH = 220;
     private static final int BUTTON_HEIGHT = 20;
 
-    /**
-     * Refined lock state from Drive, once it arrives. Null until then.
-     *
-     * <p>Fetched after the screen is already up rather than before it, because this
-     * is built on the render thread in response to a click - blocking there to make
-     * a network call would freeze the game on every world open.
-     */
-    private volatile LockManager.LockStatus driveStatus = null;
-    private volatile boolean checkingDrive = false;
-    private volatile boolean driveChecked = false;
-
     private OpenWorldGateScreen(final Screen parent, final String levelId,
-                                final String displayName, final RemoteFileSet remote,
-                                final Verdict verdict) {
+                                final String displayName, final Verdict verdict) {
         super(Component.literal("Shared World"));
         this.parent = parent;
         this.levelId = levelId;
         this.displayName = displayName;
-        this.remote = remote;
         this.verdict = verdict;
     }
 
@@ -93,7 +78,7 @@ public final class OpenWorldGateScreen extends Screen {
             final String name = link.displayName == null ? levelId : link.displayName;
 
             if (SyncActivity.isSyncing()) {
-                return new OpenWorldGateScreen(parent, levelId, name, remote, Verdict.UPLOADING);
+                return new OpenWorldGateScreen(parent, levelId, name, Verdict.UPLOADING);
             }
             if (remote != null && LockManager.weHoldLock(remote)) {
                 // We hold this world's lock in this session, so it was opened
@@ -101,7 +86,7 @@ public final class OpenWorldGateScreen extends Screen {
                 // Opening it again is the same session continuing.
                 return null;
             }
-            return new OpenWorldGateScreen(parent, levelId, name, remote, Verdict.UNLOCKED);
+            return new OpenWorldGateScreen(parent, levelId, name, Verdict.UNLOCKED);
         } catch (final Throwable t) {
             // Never let this stop somebody opening a world. Failing open is the
             // right direction: the worst case is the old behaviour.
@@ -130,13 +115,6 @@ public final class OpenWorldGateScreen extends Screen {
             return;
         }
 
-        // Ours on Drive but not in this session - the restart case. machine_id is on
-        // disk so Drive still says the lock is ours, but the in-memory record went
-        // with the last process, so nothing here would sync.
-        final boolean resumable = driveStatus != null
-                && (driveStatus.state == LockManager.LockState.HELD_BY_US
-                    || driveStatus.state == LockManager.LockState.HELD_BY_US_EXPIRED);
-
         this.addRenderableWidget(Button.builder(
                         Component.literal("Back"),
                         b -> Minecraft.getInstance().setScreen(parent))
@@ -149,42 +127,18 @@ public final class OpenWorldGateScreen extends Screen {
                 .bounds(cx - w / 2, y, w, BUTTON_HEIGHT).build());
         y -= BUTTON_HEIGHT + 4;
 
+        // Always "open it properly", never anything more specific.
+        //
+        // This used to ask Drive who held the lock so it could say "Dev is playing
+        // right now" rather than a generic warning. Dropped, because the distinction
+        // changed nothing the player would do: opening from here doesn't sync either
+        // way, so the advice is identical whoever holds the lock. What it cost was
+        // real - a network call inside a click, a message that rewrote itself a
+        // second later, and a line that hung there whenever Drive was slow.
         this.addRenderableWidget(Button.builder(
-                        Component.literal(resumable
-                                ? "Resume this session properly"
-                                : "Open via Contributor Worlds"),
+                        Component.literal("Open via Contributor Worlds"),
                         b -> Minecraft.getInstance().setScreen(new ContributorWorldsScreen()))
                 .bounds(cx - w / 2, y, w, BUTTON_HEIGHT).build());
-
-        if (!checkingDrive && !driveChecked && remote != null) {
-            startDriveCheck();
-        }
-    }
-
-    /**
-     * Ask Drive who holds the lock, then rebuild with a more specific message.
-     *
-     * <p>Optional refinement, not a gate. The screen is already usable without it;
-     * this only turns "nobody has a lock here as far as this game knows" into
-     * naming the player who does.
-     */
-    private void startDriveCheck() {
-        checkingDrive = true;
-        CloudModule.executor().submit(() -> {
-            try {
-                driveStatus = LockManager.readStatus(remote);
-            } catch (final Throwable t) {
-                WorldShareMod.LOGGER.debug("OpenWorldGateScreen: lock check failed", t);
-            } finally {
-                driveChecked = true;
-                Minecraft.getInstance().execute(() -> {
-                    if (Minecraft.getInstance().screen == this) {
-                        this.clearWidgets();
-                        this.init();
-                    }
-                });
-            }
-        });
     }
 
     private void openAnyway() {
@@ -228,43 +182,11 @@ public final class OpenWorldGateScreen extends Screen {
             return lines;
         }
 
-        if (!driveChecked) {
-            // Occupies the line the answer will land on. Letting it vanish shifted
-            // everything below it upward, which reads as the screen having changed
-            // its mind when in fact the text is the same.
-            lines.add("Checking who has it open...");
-        } else if (driveStatus != null) {
-            switch (driveStatus.state) {
-                case HELD_BY_US, HELD_BY_US_EXPIRED -> {
-                    lines.add("WorldShare has you down as mid-session here, from before");
-                    lines.add("the game was last closed.");
-                    lines.add("");
-                    lines.add("Resuming keeps your progress and finishes the sync.");
-                    lines.add("Playing offline leaves it unsynced.");
-                    return lines;
-                }
-                case HELD_BY_OTHER -> {
-                    final String who = driveStatus.lock != null
-                            && driveStatus.lock.holderName != null
-                            ? driveStatus.lock.holderName : "Someone else";
-                    lines.add(who + " is playing this world right now.");
-                    lines.add("");
-                    lines.add("Anything you do here will be lost the next time you");
-                    lines.add("open it properly - their save is the one that counts.");
-                    return lines;
-                }
-                default -> { }
-            }
-        }
-
-        if (driveChecked) {
-            // Keeps the block the same height once the check resolves, so nothing
-            // below it jumps.
-            lines.add("Nobody else has it open.");
-        }
-        lines.add("");
         lines.add("Changes made here will NOT be saved to Drive,");
         lines.add("and your copy may already be out of date.");
+        lines.add("");
+        lines.add("Next time you open it properly, whatever is on Drive");
+        lines.add("wins and anything you did here is gone.");
         lines.add("");
         lines.add("Open it through Contributor Worlds to sync properly.");
         return lines;
