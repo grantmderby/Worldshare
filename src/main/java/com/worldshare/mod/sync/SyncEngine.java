@@ -188,13 +188,18 @@ public final class SyncEngine {
             // which file disagreed with the manifest and that the other player needs
             // to push again; discarding it left the screen advising a retry, which
             // for a verification failure can only fail again.
-            final String detail = transfer.firstError != null
-                    ? transfer.firstError
-                    : failed + " bucket(s) failed to download.";
-            progress.onError(new IOException(detail));
+            final boolean mismatch = transfer.firstError != null
+                    && transfer.firstError.contains(MISMATCH_MARKER);
+            final String detail = playerFacingFailure(transfer.firstError, control, failed);
+            // Typed, so callers don't have to recognise it by its wording. The
+            // technical form was already logged per-bucket by transferBuckets.
+            final IOException failure = mismatch
+                    ? new ManifestMismatchException(detail)
+                    : new IOException(detail);
+            progress.onError(failure);
             WorldShareMod.LOGGER.error("pull: {} files restored, {} bucket(s) FAILED, {} bytes",
                     downloaded, failed, bytes);
-            throw new IOException(detail);
+            throw failure;
         }
 
         progress.onComplete();
@@ -895,15 +900,48 @@ public final class SyncEngine {
      * The message both verification passes raise.
      *
      * <p>Shared so they stay identical - the UI decides whether to offer a retry by
-     * matching on this wording, and two near-copies would eventually drift apart.
+     * matching on {@link #MISMATCH_MARKER}, and two near-copies would drift apart.
+     *
+     * <p>Deliberately technical: this is what lands in the log and in a bug report.
+     * {@link #playerFacingFailure} turns it into something a player can act on.
      */
     private static String manifestMismatch(final String relPath, final int bucketIndex) {
         return "'" + relPath + "' came out of "
                 + BucketLayout.bucketFilename(bucketIndex)
-                + " with different content than the world's manifest "
-                + "describes. The archive and manifest on Drive disagree, "
-                + "which usually means a push was interrupted. Ask the other "
-                + "player to push again.";
+                + MISMATCH_MARKER + " The archive and manifest on Drive disagree, "
+                + "which usually means a push was interrupted.";
+    }
+
+    /** Substring the UI matches on to recognise a content failure. */
+    static final String MISMATCH_MARKER =
+            " with different content than the world's manifest describes.";
+
+    /**
+     * Turn a transfer failure into a sentence aimed at whoever is looking at it.
+     *
+     * <p>The raw verification message names a region file and an archive, which is
+     * the right level of detail for a log and the wrong one for a player - it reads
+     * as though they have done something wrong, when the fix is entirely in someone
+     * else's hands. Naming the lock holder is what makes it actionable, and the
+     * control file already knows who that is.
+     *
+     * <p>The technical form is not lost; it is logged by the caller either way.
+     */
+    private static String playerFacingFailure(final String firstError,
+                                              final ControlFile control,
+                                              final int failed) {
+        if (firstError == null) {
+            return failed + " bucket(s) failed to download.";
+        }
+        if (!firstError.contains(MISMATCH_MARKER)) {
+            return firstError;
+        }
+        final String who = (control != null && control.lock != null
+                && control.lock.holderName != null && !control.lock.holderName.isBlank())
+                ? control.lock.holderName
+                : "The last player in this world";
+        return who + "'s last upload didn't finish, so this world's files on Drive "
+                + "don't match each other. Ask them to open the world and save again.";
     }
 
     // ---- SCAN CACHE HELPERS ----

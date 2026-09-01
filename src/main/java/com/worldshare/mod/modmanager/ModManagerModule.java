@@ -119,10 +119,14 @@ public final class ModManagerModule {
             localHashes.add(m.sha1);
         }
 
-        // Missing if mod ID not present locally. (Different version of an
-        // installed mod is shown as informational only - we can't replace
-        // running jars on Windows.)
         // Classify each required mod as missing, wrong version, or fine.
+        //
+        // Both block opening the world, and the wrong-version case is not a
+        // lesser problem than the missing one: a mod at a different version can
+        // read the host's chunks and write them back in a shape the host's copy
+        // no longer understands. The two are reported separately only because the
+        // remedy differs - install it, versus replace it, which needs a restart
+        // since running jars can't be swapped on Windows.
         final List<ModpackManifest.ModEntry> missing = new ArrayList<>();
         final List<ModpackManifest.ModEntry> wrongVersion = new ArrayList<>();
 

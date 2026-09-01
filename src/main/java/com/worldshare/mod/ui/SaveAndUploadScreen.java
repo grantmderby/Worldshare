@@ -46,7 +46,17 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class SaveAndUploadScreen extends Screen {
 
-    private static final long BACKGROUND_BUTTON_DELAY_MS = 30_000L;
+    /**
+     * How long before "Continue in Background" appears.
+     *
+     * <p>Was 30 seconds, chosen when a push meant re-uploading most of the world.
+     * Bucket tiling and dirty tracking cut a typical save to a few seconds, so the
+     * button became effectively unreachable - you had to explore for a while just
+     * to make a push long enough to see it. Ten seconds still keeps it out of the
+     * way of an ordinary save while making it available on the slow connection or
+     * large world it exists for.
+     */
+    private static final long BACKGROUND_BUTTON_DELAY_MS = 10_000L;
 
     private volatile String stage = "Checking connection to Drive...";
     private volatile int filesDone = 0;
@@ -170,8 +180,12 @@ public final class SaveAndUploadScreen extends Screen {
             final long mbDone = bytesDone / (1024 * 1024);
             final long mbTotal = totalBytes / (1024 * 1024);
             gfx.drawCenteredString(this.font,
+                    // "MB" here is world data processed, not bytes over the wire -
+                    // the archives compress, and their size isn't known until each
+                    // one is built. Labelled so nobody compares it to Drive and
+                    // concludes the upload lost something.
                     Component.literal(filesDone + " / " + totalFiles + " files  -  "
-                            + mbDone + " / " + mbTotal + " MB"),
+                            + mbDone + " / " + mbTotal + " MB of world data"),
                     cx, barY + barH + 10, 0xCCCCCC);
         }
 

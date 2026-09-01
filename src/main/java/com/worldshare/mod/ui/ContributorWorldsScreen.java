@@ -799,13 +799,16 @@ public final class ContributorWorldsScreen extends Screen {
      * Whether offering [Refresh] is honest for this failure.
      *
      * <p>A bucket that failed its content check will fail identically on every
-     * retry - the archives on Drive disagree with the manifest, and only the other
-     * player pushing again can change that. Telling the player to retry sends them
-     * round a loop that cannot terminate.
+     * retry - the archives on Drive disagree with the manifest, and only a push can
+     * change that. Telling the player to retry sends them round a loop that cannot
+     * terminate.
+     *
+     * <p>Matched by type rather than by message. It used to test for a substring of
+     * the wording, which silently stopped working the moment that wording was
+     * rewritten to name the lock holder instead of a region file.
      */
     private static boolean isRetryable(final Throwable t) {
-        final String msg = t.getMessage();
-        return msg == null || !msg.contains("than the world's manifest describes");
+        return !(t instanceof com.worldshare.mod.sync.ManifestMismatchException);
     }
 
     private static String formatDriveError(final Throwable t, final String defaultPrefix) {
