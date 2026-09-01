@@ -96,6 +96,29 @@ public final class SyncEngine {
         return SyncDiff.compute(local, driveManifest);
     }
 
+    /**
+     * Check this client can speak to the world at all, before opening it.
+     *
+     * <p>The layout check otherwise lives inside push and pull, which misses the
+     * one path that does neither: resuming a session skips the pull, because the
+     * local copy is authoritative when we already hold the lock. A world written
+     * under an older bucket mapping would then open fine, get played, and only
+     * refuse at save-and-quit - after the session, which is the worst moment to
+     * learn the world needs republishing.
+     *
+     * <p>One control-file read, on a path that already contacts Drive to take the
+     * lock.
+     *
+     * @throws ManifestMismatchException if the world needs a repair first
+     */
+    public static void requireCompatibleLayout(final RemoteFileSet remote) throws IOException {
+        final ControlFile control = ControlFileClient.read(requireComplete(remote).controlFileId);
+        if (control == null) {
+            return;   // nobody has pushed yet; nothing to be incompatible with
+        }
+        requireMatchingLayout(control, remote);
+    }
+
     // ---- PULL ----
 
     public static PullResult pull(final Path worldRoot,

@@ -561,6 +561,12 @@ public final class ContributorWorldsScreen extends Screen {
                     return;
                 }
 
+                // Before taking the lock, not after: an incompatible world should
+                // send the player to a repair rather than leave them holding a lock
+                // on something they can't sync. Covers the resume path too, which
+                // skips the pull and would otherwise not check at all.
+                SyncEngine.requireCompatibleLayout(remote);
+
                 LockManager.acquire(remote);
                 lockAcquired = true;
 
