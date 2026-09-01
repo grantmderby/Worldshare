@@ -30,8 +30,35 @@ import java.util.Map;
 public final class ModrinthClient {
 
     private static final String BULK_HASH_URL = "https://api.modrinth.com/v2/version_files";
-    private static final String USER_AGENT = "WorldShare/0.1 (github.com/anonymous/worldshare)";
     private static final Duration TIMEOUT = Duration.ofSeconds(15);
+
+    /**
+     * Identifies us to Modrinth, in the form their API docs ask for:
+     * {@code project/version (contact)}.
+     *
+     * <p>They ask for a real contact so they can reach whoever is responsible if a
+     * client misbehaves, and reserve the right to block anonymous or generic agents.
+     * This one used to say {@code github.com/anonymous/worldshare}, which is exactly
+     * the kind they mean.
+     *
+     * <p>The version is read from the loaded mod rather than written here, so it
+     * cannot drift away from what actually shipped.
+     */
+    private static final String USER_AGENT =
+            "grantmderby/WorldShare/" + modVersion() + " (github.com/grantmderby/Worldshare)";
+
+    private static String modVersion() {
+        try {
+            return net.neoforged.fml.ModList.get()
+                    .getModContainerById("worldshare")
+                    .map(c -> c.getModInfo().getVersion().toString())
+                    .orElse("dev");
+        } catch (final Throwable t) {
+            // Reachable from tests and tooling where no mod list exists. Not being
+            // able to name our version is no reason to fail a lookup.
+            return "dev";
+        }
+    }
 
     private static final HttpClient CLIENT = HttpClient.newBuilder()
             .connectTimeout(TIMEOUT)
