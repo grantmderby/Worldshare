@@ -98,7 +98,7 @@ public final class AutoSyncListener {
             if (SyncActivity.isSyncing() && !LockManager.weHoldLock(link.remote)) {
                 notifyClientChat("§e[WorldShare] An upload for another world is still "
                         + "running in the background.");
-                notifyClientChat("§7 Let it finish before saving here, or this world's "
+                notifyClientChat("§f Let it finish before saving here, or this world's "
                         + "sync may be refused.");
             }
 
@@ -117,9 +117,9 @@ public final class AutoSyncListener {
                 notifyClientChat("§e Changes made here will NOT be saved to Drive.");
                 notifyClientChat("§c Your local copy may also be out of date with Drive.");
                 notifyClientChat("§c Locking from here is blocked if Drive has newer changes.");
-                notifyClientChat("§7 Save and quit, then open via Contributor Worlds for proper sync.");
+                notifyClientChat("§f Save and quit, then open via Contributor Worlds for proper sync.");
                 if (LockManager.weHoldLock()) {
-                    notifyClientChat("§7 (You still hold a lock on a different world - "
+                    notifyClientChat("§f (You still hold a lock on a different world - "
                             + "finish that upload first.)");
                 }
                 return;
@@ -246,7 +246,7 @@ public final class AutoSyncListener {
             WorldShareMod.LOGGER.info(
                     "AutoSync: no session lock held for '{}'; skipping auto-push "
                             + "(world was likely opened from Singleplayer)", worldName);
-            notifyClientChat("§7[WorldShare] §fNo lock held for '" + worldName
+            notifyClientChat("§f[WorldShare] §fNo lock held for '" + worldName
                     + "' - changes were not uploaded to Drive.");
             return;
         }

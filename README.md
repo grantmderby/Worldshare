@@ -60,9 +60,10 @@ The "host" is whoever creates the world. You only do this once per world.
    access to a folder conveys nothing about what's inside it.
 
 > **Lost your link file?** If you reinstalled and the world no longer looks set
-> up, plain `/worldshare setup` will find your existing folder in the `WorldShare`
-> library and reuse it. Only if you've moved that folder somewhere else do you
-> need `/worldshare setup existing`, which lets you pick it.
+> up, just run `/worldshare setup` again. It finds the folder it made for that
+> world — by a private tag, so it still works if you've renamed the folder or
+> dragged it somewhere else in Drive — and reuses it rather than starting a
+> second world beside the first.
 
 > **Why so many files rather than one?** Google Drive replaces a file's entire
 > contents on every write — there's no way to update part of one. Splitting the

@@ -131,11 +131,13 @@ This is the payoff from the scope decision. Had the mod stayed on the broad
 `drive` scope it would have needed a CASA audit costing $540–1,800 a year,
 recurring.
 
-**Worth checking during end-to-end testing:** whether the consent screen shows an
-"unverified app" interstitial. It shouldn't for non-sensitive scopes, but that is
-easier to confirm by looking than to argue from documentation. If it does appear,
-note the exact wording — it changes whether verification is worth pursuing
-voluntarily.
+**Checked during end-to-end testing, 2026-09-01: no interstitial.** A Google
+account that was never added to the test-user list ran `/worldshare setup`
+through to a created folder with no "unverified app" screen and no block. That
+is also the clearest confirmation available that the app is published to
+**Production** rather than sitting in Testing — an app in Testing refuses
+accounts that aren't on its list, so a stranger getting through means it isn't
+in Testing. No 7-day token expiry, no 100-user cap.
 
 ### 7. Quota — no action needed, recorded for the record
 

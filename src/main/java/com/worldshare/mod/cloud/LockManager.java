@@ -294,7 +294,7 @@ public final class LockManager {
                     who);
             postChatMessage("§c[WorldShare] [!] Your session lock was overridden by " + who + ".");
             postChatMessage("§c Your changes from this point on will NOT be saved to Drive.");
-            postChatMessage("§7 Save and quit to exit cleanly. Local files preserved.");
+            postChatMessage("§f Save and quit to exit cleanly. Local files preserved.");
             // And a toast, because chat scrolls. From here nothing this player does
             // can be saved, so the cost of missing the message is the whole session.
             com.worldshare.mod.util.PlayerNotice.alsoToast(

@@ -67,6 +67,16 @@ public final class WorldSetup {
     private static final String LIBRARY_TAG_VALUE = "library";
 
     /**
+     * Tag carrying a world folder's name, so it can be found after a reinstall.
+     *
+     * <p>The name search that backs this looks across the whole Drive rather than
+     * inside the library, which is the point: the player is free to drag the
+     * folder anywhere, and finding it only where we left it would mean a
+     * reinstall silently built a second world beside the real one.
+     */
+    private static final String WORLD_TAG_KEY = "worldshareWorld";
+
+    /**
      * Content type for the placeholder bucket archives.
      *
      * <p>They start as zero-byte files, which is not a valid zip. Nothing reads
@@ -178,14 +188,24 @@ public final class WorldSetup {
             // retry into a resume, and it does the same job for the creator who
             // reinstalled: their folder is still in the library, so plain setup
             // reuses it rather than needing 'setup existing'.
-            final String reusable = findChildFolder(drive, library, folderName);
+            // Tagged first, by name in the library second. The tag survives the
+            // player renaming or moving the folder, which the library lookup does
+            // not - and a reinstall that fails to find an existing world folder
+            // creates a second one and orphans the first, so it is worth two
+            // lookups to make that unlikely. The name search still covers folders
+            // created before tagging existed.
+            String reusable = drive.findFolderByAppProperty(WORLD_TAG_KEY, worldName);
+            if (reusable == null) {
+                reusable = findChildFolder(drive, library, folderName);
+            }
             if (reusable != null) {
                 folderId = reusable;
                 WorldShareMod.LOGGER.info(
                         "setup: reusing the '{}' folder already in the library ({})",
                         folderName, folderId);
             } else {
-                folderId = drive.createFolder(folderName, library);
+                folderId = drive.createFolder(folderName, library,
+                        Map.of(WORLD_TAG_KEY, worldName));
                 WorldShareMod.LOGGER.info(
                         "setup: created Drive folder '{}' ({}) in the library ({})",
                         folderName, folderId, library);

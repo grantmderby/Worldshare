@@ -192,9 +192,17 @@ public final class LocalRedirectReceiver implements VerificationCodeReceiver {
                             + "<p>You can close this tab and try again in Minecraft.</p>"
                             + "</body></html>";
                 } else if (capturedCode != null) {
+                    // Mentions the wait deliberately. Everything after this point -
+                    // exchanging the code, then creating twenty-six files - happens
+                    // back in the game, and the gap between this page appearing and
+                    // Minecraft reacting is long enough to read as nothing having
+                    // happened.
                     body = "<html><body style='font-family:sans-serif;padding:2em'>"
                             + "<h2>WorldShare: Authorization successful ✅</h2>"
                             + "<p>You can close this tab and return to Minecraft.</p>"
+                            + "<p style='color:#555'>Give it a moment to connect to "
+                            + "Drive - the game may sit still for a few seconds "
+                            + "before it responds.</p>"
                             + "</body></html>";
                 } else {
                     body = "<html><body style='font-family:sans-serif;padding:2em'>"
