@@ -397,29 +397,24 @@ public final class SyncEngine {
             local.put(relPath, driveManifest.get(relPath));
         }
 
-        // Refuse to publish a copy of somebody else's newer work.
+        // There was a guard here meant to refuse publishing a copy of somebody
+        // else's newer work. It could never fire: it collected entries of
+        // diff.different that were absent from changedPaths, and changedPaths is
+        // initialised from diff.different, so the result was always empty.
         //
-        // A dirty bucket is repacked in full from local disk, so a push rewrites
-        // every file in it - including files this player never touched. If our copy
-        // of one of those differs from what Drive has, ours is the older one (we
-        // didn't change it, so the difference is theirs) and packing it would revert
-        // their progress.
+        // Removed rather than repaired, because the state it imagined is not
+        // reachable. Deciding "they changed this, we didn't" needs a record of
+        // what our copy looked like at the last sync, which the diff doesn't
+        // carry - it can only see local against Drive. And the case it was
+        // written for, a pull that failed partway leaving a mixture on disk, is
+        // already prevented upstream: a failed pull throws, and every caller
+        // abandons the attempt. ContributorWorldsScreen releases the lock and
+        // does not open the world; the download path discards the folder
+        // outright. So there is no route to playing on a half-pulled world and
+        // then pushing it.
         //
-        // With the lock verified against Drive before uploading, this should never
-        // fire in normal use: holding a valid lock means nobody else can push. It is
-        // here to catch states where something has already gone wrong - a pull that
-        // failed partway and left a mixture on disk, or some future path that takes
-        // a lock without pulling first. Refusing is deliberate: merging would mean
-        // writing world files underneath a running game.
-        final List<String> staleHere = new ArrayList<>();
-        for (final String relPath : diff.different) {
-            if (!changedPaths.contains(relPath)) {
-                staleHere.add(relPath);
-            }
-        }
-        if (!staleHere.isEmpty()) {
-            throw new IOException(describeStalePush(staleHere));
-        }
+        // What actually keeps two players from overwriting each other is the
+        // session lock, verified against Drive before any upload.
 
         if (changedPaths.isEmpty() && !forceAllBuckets) {
             WorldShareMod.LOGGER.info("push: nothing changed");
@@ -882,17 +877,6 @@ public final class SyncEngine {
                         + "so " + about + " would overwrite their work. Your changes are "
                         + "still saved locally. Coordinate with them, then reopen the world "
                         + "from Contributor Worlds to get their changes before retrying.");
-    }
-
-    /** Wording for a push that would publish somebody else's older data. */
-    private static String describeStalePush(final List<String> stale) {
-        final int shown = Math.min(4, stale.size());
-        final String names = String.join(", ", stale.subList(0, shown));
-        return "Someone else has newer versions of " + stale.size() + " file(s) that this "
-                + "copy hasn't caught up with (" + names
-                + (stale.size() > shown ? ", ..." : "") + "). Pushing now would replace their "
-                + "work with older data. Save and quit, then reopen this world from "
-                + "Contributor Worlds to pull their changes first.";
     }
 
     private static RemoteFileSet requireComplete(final RemoteFileSet remote) throws IOException {
