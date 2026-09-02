@@ -293,21 +293,37 @@ public final class WorldShareCommands {
         });
     }
 
+    /**
+     * Ask the player to sign in to Google, saying why and what happens next.
+     *
+     * <p>On its own the link explains nothing. Somebody who signed in fine last
+     * week and is suddenly shown "[Click here to authorize]" has no way to tell
+     * whether their sign-in expired or something is broken - and no way to know
+     * that the command they ran is still waiting and will carry on by itself.
+     * Both of those went unsaid, so both are said now.
+     */
     private static void postClickableAuthLink(final String url) {
         final Minecraft mc = Minecraft.getInstance();
         if (mc == null) return;
+        final String reason = com.worldshare.mod.cloud.OAuthHelper.consumeReauthReason();
         mc.execute(() -> {
+            if (mc.player == null) return;
+            mc.player.displayClientMessage(Component.literal(
+                    reason != null ? reason : "WorldShare needs you to sign in to Google.")
+                    .withStyle(ChatFormatting.WHITE), false);
             final MutableComponent link = Component.literal("[Click here to authorize]")
                     .setStyle(Style.EMPTY
                             .withColor(ChatFormatting.AQUA)
                             .withUnderlined(true)
                             .withClickEvent(new ClickEvent(ClickEvent.Action.OPEN_URL, url))
                             .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
-                                    Component.literal("Opens Google OAuth in your browser.\n"
-                                            + "Return to Minecraft after authorizing."))));
-            if (mc.player != null) {
-                mc.player.displayClientMessage(link, false);
-            }
+                                    Component.literal("Opens Google sign-in in your browser.\n"
+                                            + "Return to Minecraft afterwards - "
+                                            + "you don't need to re-run anything."))));
+            mc.player.displayClientMessage(link, false);
+            mc.player.displayClientMessage(Component.literal(
+                            "Nothing to re-run afterwards - this carries on by itself.")
+                    .withStyle(ChatFormatting.WHITE), false);
         });
     }
 

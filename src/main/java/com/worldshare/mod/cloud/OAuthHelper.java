@@ -347,6 +347,28 @@ public final class OAuthHelper {
      * says nothing about whether the token is good, and discarding it would turn
      * a temporary outage into a forced re-authorization.
      */
+    /**
+     * Why the next sign-in prompt is appearing, when there is a reason worth
+     * saying, or null.
+     *
+     * <p>Set here and read by whoever presents the authorization link. A player
+     * who signed in perfectly well last week and is suddenly handed "[Click here
+     * to authorize]" deserves to know that their previous sign-in expired rather
+     * than being left to wonder whether something is broken.
+     *
+     * <p>Static for the same reason {@code LocalRedirectReceiver} tracks its
+     * browser wait that way: the presenter has no route back to this class, and
+     * the whole flow runs on the single-threaded Drive executor, so there is only
+     * ever one in flight.
+     */
+    private static final java.util.concurrent.atomic.AtomicReference<String> REAUTH_REASON =
+            new java.util.concurrent.atomic.AtomicReference<>();
+
+    /** Take the pending sign-in reason, clearing it. Null if there isn't one. */
+    public static String consumeReauthReason() {
+        return REAUTH_REASON.getAndSet(null);
+    }
+
     private static Credential loadUsableCredential(final GoogleAuthorizationCodeFlow flow)
             throws IOException {
         final Credential credential = flow.loadCredential(USER_ID);
@@ -379,6 +401,7 @@ public final class OAuthHelper {
         }
 
         forgetStoredCredential();
+        REAUTH_REASON.set("Your Google sign-in has expired, so WorldShare needs it again.");
         return null;
     }
 
