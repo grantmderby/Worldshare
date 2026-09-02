@@ -54,9 +54,18 @@ public final class WorldSetup {
      */
     @FunctionalInterface
     public interface SetupProgress {
-        void onProgress(int done, int total);
+        /**
+         * @param done    remote files accounted for so far
+         * @param total   how many this world needs
+         * @param created how many of those had to be made, as opposed to already
+         *                existing. Zero throughout means setup is adopting a
+         *                folder rather than building one, which is worth saying:
+         *                the bar looked identical either way, so a reused folder
+         *                reported "Creating files in Drive" all the way to 26.
+         */
+        void onProgress(int done, int total, int created);
 
-        SetupProgress NOOP = (done, total) -> {};
+        SetupProgress NOOP = (done, total, created) -> {};
     }
 
     /** Name of the folder that new world folders are created inside. */
@@ -265,13 +274,13 @@ public final class WorldSetup {
                     null, BucketLayout.CONTROL_FILENAME, folderId, "", DriveClient.MIME_TYPE_JSON);
             created++;
         }
-        progress.onProgress(++done, total);
+        progress.onProgress(++done, total, created);
         if (remote.presenceFileId == null) {
             remote.presenceFileId = client.writeText(
                     null, BucketLayout.PRESENCE_FILENAME, folderId, "", DriveClient.MIME_TYPE_JSON);
             created++;
         }
-        progress.onProgress(++done, total);
+        progress.onProgress(++done, total, created);
         for (int i = 0; i < remote.bucketCount; i++) {
             if (remote.bucketFileId(i) == null) {
                 final String id = client.writeText(
@@ -279,7 +288,7 @@ public final class WorldSetup {
                 remote.setBucketFileId(i, id);
                 created++;
             }
-            progress.onProgress(++done, total);
+            progress.onProgress(++done, total, created);
         }
         WorldShareMod.LOGGER.info("setup: {} file(s) already present, {} created",
                 remote.layout().remoteFileCount() - created, created);

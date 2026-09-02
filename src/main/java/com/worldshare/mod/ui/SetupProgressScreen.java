@@ -31,6 +31,7 @@ public final class SetupProgressScreen extends Screen {
 
     private volatile int done;
     private volatile int total;
+    private volatile int created;
     private volatile String error;
 
     public SetupProgressScreen(final String worldName, final int total) {
@@ -39,10 +40,11 @@ public final class SetupProgressScreen extends Screen {
         this.total = total;
     }
 
-    /** Called off-thread as each remote file is created. */
-    public void update(final int filesDone, final int filesTotal) {
+    /** Called off-thread as each remote file is created or found already present. */
+    public void update(final int filesDone, final int filesTotal, final int filesCreated) {
         this.done = filesDone;
         this.total = filesTotal;
+        this.created = filesCreated;
     }
 
     /** Close the screen and hand the player back to their world. */
@@ -122,8 +124,12 @@ public final class SetupProgressScreen extends Screen {
         final int fillPx = (int) (barW * Math.min(1.0, (double) done / safeTotal));
         gfx.fill(barX, barY, barX + fillPx, barY + barH, 0xFF44AA44);
 
+        // "Checking" when nothing has needed creating, which is what a resumed
+        // or adopted setup looks like. Saying "Creating" through a pure adoption
+        // made a reused folder indistinguishable from a fresh one.
         gfx.drawCenteredString(this.font,
-                Component.literal("Creating files in Drive  -  " + done + " / " + total),
+                Component.literal((created > 0 ? "Creating" : "Checking")
+                        + " files in Drive  -  " + done + " / " + total),
                 cx, barY + 4, 0xFFFFFF);
 
         gfx.drawCenteredString(this.font,

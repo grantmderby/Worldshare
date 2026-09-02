@@ -429,8 +429,8 @@ public final class WorldShareCommands {
                 final RemoteFileSet remote = WorldSetup.createNewWorld(
                         WorldShareCommands::postClickableAuthLink, bucketCount,
                         world.name, pickExisting,
-                        (done, total) -> {
-                            screen.update(done, total);
+                        (done, total, created) -> {
+                            screen.update(done, total, created);
                             // Opened on the first file rather than up front: the
                             // sign-in link is posted to chat, and a screen over it
                             // would leave nothing to click.
@@ -473,9 +473,13 @@ public final class WorldShareCommands {
                                 + modResult.total + " mods ("
                                 + modResult.autoInstallable + " auto-installable, "
                                 + modResult.manualInstall + " manual).");
+                    } else if (com.worldshare.mod.modmanager.LocalModScanner
+                            .isDevEnvironment()) {
+                        sendClientMessage("§f[WorldShare] No mods published "
+                                + "(dev environment - mods load from class dirs).");
                     } else {
-                        sendClientMessage(
-                                "§f[WorldShare] No mods published (dev environment?).");
+                        sendClientMessage("§f[WorldShare] No extra mods to publish - "
+                                + "your friend needs only WorldShare.");
                     }
                 } catch (final Throwable modErr) {
                     WorldShareMod.LOGGER.warn(
@@ -1569,10 +1573,15 @@ public final class WorldShareCommands {
                 sendClientMessage("§f  auto-installable (on Modrinth): " + result.autoInstallable);
                 sendClientMessage("§f  manual install required: " + result.manualInstall);
                 if (result.total == 0) {
-                    sendClientMessage(
-                            "§e Note: no mods were published. This is expected in the");
-                    sendClientMessage(
-                            "§e dev environment - generate only works in production installs.");
+                    if (com.worldshare.mod.modmanager.LocalModScanner.isDevEnvironment()) {
+                        sendClientMessage("§e Note: nothing was published. Expected here - "
+                                + "mods load from class");
+                        sendClientMessage("§e directories in a dev environment, and only "
+                                + "jars can be published.");
+                    } else {
+                        sendClientMessage("§f Nothing to publish: WorldShare is the only "
+                                + "mod installed.");
+                    }
                 }
             } catch (final Throwable t) {
                 WorldShareMod.LOGGER.error("modpack generate failed", t);

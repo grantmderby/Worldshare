@@ -55,8 +55,10 @@ public final class ModManagerModule {
         final List<LocalModScanner.ScannedMod> scanned = LocalModScanner.scanAll();
 
         if (scanned.isEmpty()) {
-            WorldShareMod.LOGGER.info(
-                    "ModManager: no eligible mods to publish (dev environment?)");
+            WorldShareMod.LOGGER.info("ModManager: no eligible mods to publish ({})",
+                    LocalModScanner.isDevEnvironment()
+                            ? "running from class directories, not jars"
+                            : "no mods installed besides WorldShare");
             return new GenerateResult(0, 0, 0);
         }
 
