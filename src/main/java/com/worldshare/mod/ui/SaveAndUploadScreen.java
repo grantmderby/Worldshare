@@ -259,7 +259,9 @@ public final class SaveAndUploadScreen extends Screen {
                     return;
                 }
                 if (online == OnlineChecker.Result.NOT_AUTHENTICATED) {
-                    fail("Not signed in to Drive. Run /worldshare test on next launch.");
+                    fail("Not signed in to Drive. Your changes are safe on this "
+                            + "computer - run /worldshare signin next time you open "
+                            + "this world and they'll upload then.");
                     return;
                 }
 

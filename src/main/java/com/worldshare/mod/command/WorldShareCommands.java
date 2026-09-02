@@ -85,6 +85,11 @@ public final class WorldShareCommands {
                         .then(Commands.literal("test")
                                 .requires(WorldShareCommands::devCommandsEnabled)
                                 .executes(ctx -> runDriveTest(ctx.getSource())))
+                        // signout existed without a signin, which was survivable
+                        // only while "not signed in" was unreachable in practice.
+                        // It isn't: a token expires, or somebody signs out.
+                        .then(Commands.literal("signin")
+                                .executes(ctx -> runSignIn(ctx.getSource())))
                         .then(Commands.literal("signout")
                                 .executes(ctx -> runSignOut(ctx.getSource())))
                         // "setup existing" is now an escape hatch rather than a
@@ -327,6 +332,28 @@ public final class WorldShareCommands {
                             "WorldShare will continue after authorization.")
                     .withStyle(ChatFormatting.WHITE), false);
         });
+    }
+
+    /**
+     * Sign in to Google, on purpose, without needing anything else to want it.
+     *
+     * <p>There was a signout and no signin. Everything else that authorizes does
+     * so as a side effect of another job, so a player who had signed out - or
+     * whose token had expired - had no way back except to trigger some unrelated
+     * command and hope it asked. Two "not signed in" messages pointed at
+     * /worldshare test, which is dev-only and doesn't exist for them.
+     */
+    private static int runSignIn(final CommandSourceStack source) {
+        CloudModule.executor().submit(() -> {
+            try {
+                CloudModule.driveClient(WorldShareCommands::postClickableAuthLink);
+                sendClientMessage("§a✅ Signed in to Google Drive.");
+            } catch (final Throwable t) {
+                WorldShareMod.LOGGER.error("sign-in failed", t);
+                sendClientMessage("§c[WorldShare] Sign-in failed: " + t.getMessage());
+            }
+        });
+        return Command.SINGLE_SUCCESS;
     }
 
     private static int runSignOut(final CommandSourceStack source) {
@@ -798,7 +825,8 @@ public final class WorldShareCommands {
             }
             if (online == OnlineChecker.Result.NOT_AUTHENTICATED) {
                 sendClientMessage(
-                        "§c[WorldShare] Not signed in. Run /worldshare test first.");
+                        "§c[WorldShare] Not signed in to Drive. Run /worldshare signin, "
+                                + "then try again.");
                 return;
             }
             CloudModule.executor().submit(() -> {

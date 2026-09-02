@@ -127,10 +127,26 @@ public final class CloudModule {
         if (existing != null) {
             return existing;
         }
-        if (OAuthHelper.storedCredentialIfUsable() == null) {
+        final Credential credential = OAuthHelper.storedCredentialIfUsable();
+        if (credential == null) {
             return null;
         }
-        return driveClient(null);
+        // Built from the credential just validated, rather than by calling
+        // driveClient(null) again. That would re-enter the path that opens a
+        // browser when no credential is found, and the whole point of this method
+        // is that it cannot do that - a sign-out landing between the two calls
+        // would otherwise defeat it.
+        synchronized (DRIVE_LOCK) {
+            if (driveClient == null) {
+                try {
+                    driveClient = DriveClient.fromCredential(credential);
+                } catch (final GeneralSecurityException e) {
+                    throw new IOException(
+                            "Failed to build trusted HTTP transport for Drive", e);
+                }
+            }
+            return driveClient;
+        }
     }
 
     /**
