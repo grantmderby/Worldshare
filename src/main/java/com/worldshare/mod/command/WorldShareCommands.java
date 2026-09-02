@@ -84,17 +84,7 @@ public final class WorldShareCommands {
                         .requires(src -> src.hasPermission(0))
                         .then(Commands.literal("test")
                                 .requires(WorldShareCommands::devCommandsEnabled)
-                                .executes(ctx -> runDriveTest(ctx.getSource()))
-                                // Probe: can we share the world folder from in-game
-                                // under drive.file? If so the host never has to open
-                                // Drive at all, and /worldshare invite <email> can
-                                // do the whole job.
-                                .then(Commands.literal("share")
-                                        .then(Commands.argument("email",
-                                                        com.mojang.brigadier.arguments.StringArgumentType.string())
-                                                .executes(ctx -> runShareTest(ctx.getSource(),
-                                                        com.mojang.brigadier.arguments.StringArgumentType
-                                                                .getString(ctx, "email"))))))
+                                .executes(ctx -> runDriveTest(ctx.getSource())))
                         .then(Commands.literal("signout")
                                 .executes(ctx -> runSignOut(ctx.getSource())))
                         // "setup existing" is the returning creator: somebody who
@@ -133,8 +123,18 @@ public final class WorldShareCommands {
                         // different things, so they get names that say which.
                         // "invite" adds a contributor who will sync through Drive;
                         // "host" opens the world for live co-op right now.
+                        // greedyString, not string(): brigadier's quotable string
+                        // stops at the first character outside its word set, and
+                        // "@" is outside it. Typing an email bare truncated it at
+                        // the @ and reported trailing data; quoting worked but
+                        // nothing tells you to. greedy takes the rest of the line.
                         .then(Commands.literal("invite")
-                                .executes(ctx -> runDriveInvite(ctx.getSource())))
+                                .executes(ctx -> runDriveInvite(ctx.getSource(), null))
+                                .then(Commands.argument("email",
+                                                com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                                        .executes(ctx -> runDriveInvite(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType
+                                                        .getString(ctx, "email")))))
                         .then(Commands.literal("host")
                                 .executes(ctx -> runHost(ctx.getSource())))
                         // Two words, because it republishes the whole world over
@@ -190,49 +190,20 @@ public final class WorldShareCommands {
     }
 
     /**
-     * Try to share this world's Drive folder with an email address.
+     * Enough of a check to catch a typo, and no more.
      *
-     * <p>Dev-only, and a probe rather than a feature: it answers whether the
-     * {@code drive.file} scope permits {@code permissions.create} on a folder the
-     * app created. If it does, the last manual step in setup - the host opening
-     * Drive to add their friend as Editor - can move into the game as
-     * {@code /worldshare invite <email>}.
-     *
-     * <p>Note this would only replace the <em>host's</em> trip to Drive. The
-     * person joining still picks the world's files through the Picker, because a
-     * folder grant conveys nothing about its contents.
+     * <p>Deliberately not a real address grammar: the only consumer is Google,
+     * which has the authoritative answer and returns a clear 400 when it says
+     * no. This exists so the obvious mistakes - a username, a truncated address -
+     * fail immediately with something readable instead of a Drive stack trace.
      */
-    private static int runShareTest(final CommandSourceStack source, final String email) {
-        final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
-        if (ctx.isEmpty()) {
-            sendFeedback(source, "Open the shared world first.", ChatFormatting.RED);
-            return 0;
-        }
-        final RemoteFileSet remote = WorldLink.readRemote(ctx.get().worldRoot);
-        if (remote == null || remote.driveFolderId == null) {
-            sendFeedback(source,
-                    "This world isn't set up for sharing, so there's no folder to share.",
-                    ChatFormatting.RED);
-            return 0;
-        }
-
-        sendFeedback(source, "Trying to share the world folder with " + email + "...",
-                ChatFormatting.GRAY);
-        CloudModule.executor().submit(() -> {
-            try {
-                final DriveClient client = CloudModule.driveClient(
-                        WorldShareCommands::postClickableAuthLink);
-                final String permissionId = client.shareWithEmail(
-                        remote.driveFolderId, email, "writer", true);
-                sendClientMessage("§a✅ Shared as Editor. Permission id: " + permissionId);
-                sendClientMessage("§7Check whether the folder shows up in that account's "
-                        + "\"Shared with me\".");
-            } catch (final Throwable t) {
-                WorldShareMod.LOGGER.error("share test failed", t);
-                sendClientMessage("§c❌ Share failed: " + t);
-            }
-        });
-        return Command.SINGLE_SUCCESS;
+    private static boolean looksLikeEmail(final String value) {
+        final int at = value.indexOf('@');
+        return at > 0
+                && at == value.lastIndexOf('@')
+                && value.indexOf('.', at) > at + 1
+                && !value.endsWith(".")
+                && value.indexOf(' ') < 0;
     }
 
     private static int runDriveTest(final CommandSourceStack source) {
@@ -404,12 +375,24 @@ public final class WorldShareCommands {
         }
         final WorldContext.CurrentWorld world = ctx.get();
 
+        // Running setup on a world that already has one is not a mistake worth
+        // an error. It is what somebody types when they want the link again -
+        // setup is the command they remember, because it is the one they ran the
+        // first time. So give them the link rather than a refusal.
         final RemoteFileSet already = WorldLink.readRemote(world.worldRoot);
         if (already != null) {
-            sendFeedback(source,
-                    "This world is already set up for sharing. "
-                    + "Run /worldshare clearDriveLink first if you want to redo it.",
-                    ChatFormatting.YELLOW);
+            if (already.driveFolderId != null) {
+                sendClientMessage("§a[WorldShare] '" + world.name
+                        + "' is already set up for sharing.");
+                postCopyableInviteLink(already.driveFolderId);
+                sendClientMessage("§7Run /worldshare invite <their email> to give "
+                        + "somebody access.");
+            } else {
+                sendFeedback(source,
+                        "This world is already set up for sharing. Run "
+                                + "/worldshare clearDriveLink first if you want to redo it.",
+                        ChatFormatting.YELLOW);
+            }
             return 0;
         }
 
@@ -1027,7 +1010,24 @@ public final class WorldShareCommands {
      * meant recovering it after that message scrolled away required reading the
      * doctor report.
      */
-    private static int runDriveInvite(final CommandSourceStack source) {
+    /**
+     * Give somebody access to this world, and hand back the link to send them.
+     *
+     * <p>With an email address this shares the Drive folder with them as an
+     * Editor directly. That step used to be a manual trip to Drive - the only
+     * part of setting up a shared world that happened outside the game - and it
+     * turned out {@code drive.file} is enough to do it for a folder the mod
+     * created, so there is no reason to make anyone leave.
+     *
+     * <p>Without one it just prints the link, for the host who would rather
+     * share it themselves.
+     *
+     * <p>Either way the person joining still picks the world's files through the
+     * Picker. A folder grant conveys nothing about its contents, so being given
+     * access to the folder is necessary but not sufficient - which is why the
+     * link matters even when the share has already been made for them.
+     */
+    private static int runDriveInvite(final CommandSourceStack source, final String email) {
         final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
         if (ctx.isEmpty()) {
             sendFeedback(source, "No world is currently loaded.", ChatFormatting.RED);
@@ -1078,11 +1078,48 @@ public final class WorldShareCommands {
             return 0;
         }
 
-        sendClientMessage("§a[WorldShare] Invite someone to contribute to '"
-                + ctx.get().name + "':");
-        postCopyableInviteLink(remote.driveFolderId);
-        sendClientMessage("§7Share that Drive folder with them as Editor, then send the link.");
-        sendClientMessage("§8To play together right now instead, use /worldshare host.");
+        final String worldName = ctx.get().name;
+        final String folderId = remote.driveFolderId;
+
+        if (email == null) {
+            sendClientMessage("§a[WorldShare] Invite someone to contribute to '"
+                    + worldName + "':");
+            postCopyableInviteLink(folderId);
+            sendClientMessage("§7Share that Drive folder with them as Editor, "
+                    + "then send the link.");
+            sendClientMessage("§7Or run /worldshare invite <their email> and "
+                    + "WorldShare will share it for you.");
+            return Command.SINGLE_SUCCESS;
+        }
+
+        final String address = email.trim();
+        if (!looksLikeEmail(address)) {
+            sendFeedback(source,
+                    "'" + address + "' doesn't look like an email address. "
+                            + "Use the Google account they sign in to Drive with.",
+                    ChatFormatting.RED);
+            return 0;
+        }
+
+        sendFeedback(source, "Sharing '" + worldName + "' with " + address + "...",
+                ChatFormatting.GRAY);
+        CloudModule.executor().submit(() -> {
+            try {
+                CloudModule.driveClient(WorldShareCommands::postClickableAuthLink)
+                        .shareWithEmail(folderId, address, "writer", true);
+                sendClientMessage("§a✅ " + address + " can now edit this world's "
+                        + "Drive folder. Google has emailed them about it.");
+                sendClientMessage("§7They still need the link, to pick the world's "
+                        + "files - Drive access alone isn't enough:");
+                postCopyableInviteLink(folderId);
+            } catch (final Throwable t) {
+                WorldShareMod.LOGGER.error("invite: sharing with {} failed", address, t);
+                sendClientMessage("§c[WorldShare] Couldn't share with " + address + ": "
+                        + t.getMessage());
+                sendClientMessage("§7You can still share the folder yourself:");
+                postCopyableInviteLink(folderId);
+            }
+        });
         return Command.SINGLE_SUCCESS;
     }
 

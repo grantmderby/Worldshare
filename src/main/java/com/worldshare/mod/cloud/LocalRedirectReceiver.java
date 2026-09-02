@@ -52,6 +52,21 @@ public final class LocalRedirectReceiver implements VerificationCodeReceiver {
      */
     private static final long WAIT_TIMEOUT_MINUTES = 5L;
 
+    /**
+     * True while a browser round trip is outstanding.
+     *
+     * <p>Static because the thing that needs to know is a screen with no route
+     * to the receiver, and there is only ever one of these in flight - the whole
+     * flow runs on the single-threaded Drive executor.
+     */
+    private static final java.util.concurrent.atomic.AtomicBoolean WAITING_FOR_BROWSER =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    /** Whether WorldShare is currently waiting for the player to finish in their browser. */
+    public static boolean isWaitingForBrowser() {
+        return WAITING_FOR_BROWSER.get();
+    }
+
     private HttpServer server;
     private int port;
     private String capturedCode;
@@ -86,11 +101,19 @@ public final class LocalRedirectReceiver implements VerificationCodeReceiver {
     @Override
     public String waitForCode() throws IOException {
         final boolean arrived;
+        // Flagged for the UI. This blocks on the single-threaded Drive executor,
+        // so every screen behind it sits still until the browser comes back -
+        // and a player who left the tab open sees a screen reading "Checking
+        // Drive..." for up to five minutes, which looks like a hang rather than
+        // like something waiting on them.
+        WAITING_FOR_BROWSER.set(true);
         try {
             arrived = gotRedirect.tryAcquire(WAIT_TIMEOUT_MINUTES, TimeUnit.MINUTES);
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("Interrupted while waiting for OAuth redirect", e);
+        } finally {
+            WAITING_FOR_BROWSER.set(false);
         }
 
         if (!arrived) {

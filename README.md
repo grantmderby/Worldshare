@@ -36,18 +36,33 @@ The "host" is whoever creates the world. You only do this once per world.
 1. **Install the mod.** Drop `worldshare-0.1.0.jar` into your NeoForge 1.21.1
    mods folder. Add `e4mc` too if you want live co-op.
 2. **Launch Minecraft** and open the world you want to share.
-3. **Run `/worldshare setup`.** Your browser opens; sign in with Google. That is
-   the whole of it — WorldShare makes the folder itself, as
+3. **Run `/worldshare setup`.** Sign in with Google when the browser opens. That
+   is the whole of it — WorldShare makes the folder itself, as
    `WorldShare/WorldShare - <world name>` in your My Drive, so however many worlds
-   you share they stay in one place. (Already have a folder holding a world from a
-   previous install? Use `/worldshare setup existing` and pick it.)
-4. WorldShare creates twenty-six files in that folder — a settings file, a
-   presence file, and twenty-four world archives — and publishes your mod list so
-   your friend's game knows what it needs.
-5. **Share that Drive folder** with your friend by email. **Set their permission
-   to Editor**, not Viewer; they cannot sync without write access.
-6. **Send them the folder's link.** WorldShare prints it in chat after setup. It
-   isn't a password — it only tells Google which folder to show them.
+   you share they stay in one place. It creates twenty-six files in there — a
+   settings file, a presence file, and twenty-four world archives — and publishes
+   your mod list so your friend's game knows what it needs. Takes about half a
+   minute, with a progress bar.
+
+   Interrupted, or on a bad connection? Run it again. Setup finds the folder it
+   already made and fills in the gaps rather than starting a second world beside
+   the first. Run it on a world that's already set up and it just hands you the
+   link again.
+4. **Run `/worldshare invite <their email>`.** WorldShare shares the folder with
+   that Google account as an Editor — Google emails them about it — and prints the
+   link to send them. You never have to open Drive.
+
+   Prefer to do the sharing yourself? `/worldshare invite` with no email just
+   prints the link. Set their permission to **Editor**, not Viewer; they cannot
+   sync without write access.
+5. **Send them the link.** It isn't a password — it only tells Google which folder
+   to show them. They still have to pick the world's files themselves, because
+   access to a folder conveys nothing about what's inside it.
+
+> **Lost your link file?** If you reinstalled and the world no longer looks set
+> up, plain `/worldshare setup` will find your existing folder in the `WorldShare`
+> library and reuse it. Only if you've moved that folder somewhere else do you
+> need `/worldshare setup existing`, which lets you pick it.
 
 > **Why so many files rather than one?** Google Drive replaces a file's entire
 > contents on every write — there's no way to update part of one. Splitting the

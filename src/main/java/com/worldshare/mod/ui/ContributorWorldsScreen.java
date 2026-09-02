@@ -210,16 +210,31 @@ public final class ContributorWorldsScreen extends Screen {
             // the outside it looks like the screen has hung.
             final boolean queuedBehindUpload =
                     com.worldshare.mod.sync.SyncActivity.isSyncing();
+            // Waiting on the browser looks identical to waiting on Drive from in
+            // here, and it is the one the player can do something about. Leaving
+            // the Google tab open stalls this for up to five minutes, which read
+            // as a frozen game rather than as a question.
+            final boolean waitingOnBrowser =
+                    com.worldshare.mod.cloud.LocalRedirectReceiver.isWaitingForBrowser();
+            final String headline;
+            final String detail;
+            if (waitingOnBrowser) {
+                headline = "Waiting for you to finish in your browser...";
+                detail = "Pick your world's files there, then come back.";
+            } else if (queuedBehindUpload) {
+                headline = "Finishing an upload first...";
+                detail = "This will continue on its own.";
+            } else {
+                headline = "Checking Drive...";
+                detail = null;
+            }
             gfx.drawCenteredString(this.font,
-                    Component.literal(queuedBehindUpload
-                                    ? "Finishing an upload first..."
-                                    : "Checking Drive...")
-                            .withStyle(ChatFormatting.GRAY),
+                    Component.literal(headline).withStyle(
+                            waitingOnBrowser ? ChatFormatting.YELLOW : ChatFormatting.GRAY),
                     cx, this.height / 2, 0xFFFFFF);
-            if (queuedBehindUpload) {
+            if (detail != null) {
                 gfx.drawCenteredString(this.font,
-                        Component.literal("This will continue on its own.")
-                                .withStyle(ChatFormatting.DARK_GRAY),
+                        Component.literal(detail).withStyle(ChatFormatting.GRAY),
                         cx, this.height / 2 + 14, 0xFFFFFF);
             }
             return;
