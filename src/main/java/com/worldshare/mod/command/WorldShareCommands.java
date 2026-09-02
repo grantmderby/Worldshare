@@ -309,7 +309,9 @@ public final class WorldShareCommands {
         mc.execute(() -> {
             if (mc.player == null) return;
             mc.player.displayClientMessage(Component.literal(
-                    reason != null ? reason : "WorldShare needs you to sign in to Google.")
+                            reason != null ? reason
+                                    : "Your Google sign-in is required to authorize "
+                                            + "WorldShare to access Drive.")
                     .withStyle(ChatFormatting.WHITE), false);
             final MutableComponent link = Component.literal("[Click here to authorize]")
                     .setStyle(Style.EMPTY
@@ -322,7 +324,7 @@ public final class WorldShareCommands {
                                             + "you don't need to re-run anything."))));
             mc.player.displayClientMessage(link, false);
             mc.player.displayClientMessage(Component.literal(
-                            "Nothing to re-run afterwards - this carries on by itself.")
+                            "WorldShare will continue after authorization.")
                     .withStyle(ChatFormatting.WHITE), false);
         });
     }
@@ -447,16 +449,23 @@ public final class WorldShareCommands {
                         world.name, pickExisting,
                         (done, total, created) -> {
                             screen.update(done, total, created);
-                            // Opened on the first file rather than up front: the
-                            // sign-in link is posted to chat, and a screen over it
-                            // would leave nothing to click.
-                            if (done == 1) {
-                                Minecraft.getInstance().execute(() -> {
-                                    if (Minecraft.getInstance().screen == null) {
-                                        Minecraft.getInstance().setScreen(screen);
-                                    }
-                                });
-                            }
+                            // Tried on every file, not just the first.
+                            //
+                            // It only fires when no other screen is open, so that
+                            // it never steals the sign-in link out from under a
+                            // player who is about to click it. But attempting that
+                            // once, at the moment the first file appears, meant it
+                            // almost never showed on a fresh sign-in: the player is
+                            // still in their browser, or looking at Minecraft's
+                            // "open this link?" confirmation, so a screen is open
+                            // and the one chance is spent. Retrying means the bar
+                            // appears as soon as they are back in the world.
+                            Minecraft.getInstance().execute(() -> {
+                                final Minecraft mc = Minecraft.getInstance();
+                                if (mc.screen == null) {
+                                    mc.setScreen(screen);
+                                }
+                            });
                         });
                 screen.finish();
 
