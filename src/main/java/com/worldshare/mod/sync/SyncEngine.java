@@ -165,6 +165,15 @@ public final class SyncEngine {
 
         final ControlFile control = ControlFileClient.read(remote.controlFileId);
         if (control == null) {
+            // Nobody has pushed, so there is genuinely nothing to fetch, and that
+            // is not an error here. The creator pulls before their own first push -
+            // throwing would make the first push impossible.
+            //
+            // It IS an error when the caller is building a world out of nothing,
+            // because the result is a folder with no level.dat that still looks
+            // like a successful download. Only the caller knows which case it is
+            // in, so the refusal lives in ContributorWorldsScreen.onDownload
+            // rather than here.
             WorldShareMod.LOGGER.info("pull: control file is empty (first sync); nothing to pull");
             progress.onStart(0, 0L);
             progress.onComplete();

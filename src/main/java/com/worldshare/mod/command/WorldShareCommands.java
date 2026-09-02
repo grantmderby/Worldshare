@@ -23,6 +23,7 @@ import com.worldshare.mod.sync.SyncEngine;
 import com.worldshare.mod.sync.SyncProgress;
 import com.worldshare.mod.sync.WorldContext;
 import com.worldshare.mod.util.MachineId;
+import com.worldshare.mod.util.PlayerNotice;
 import com.worldshare.mod.util.SHA256Util;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
@@ -83,7 +84,17 @@ public final class WorldShareCommands {
                         .requires(src -> src.hasPermission(0))
                         .then(Commands.literal("test")
                                 .requires(WorldShareCommands::devCommandsEnabled)
-                                .executes(ctx -> runDriveTest(ctx.getSource())))
+                                .executes(ctx -> runDriveTest(ctx.getSource()))
+                                // Probe: can we share the world folder from in-game
+                                // under drive.file? If so the host never has to open
+                                // Drive at all, and /worldshare invite <email> can
+                                // do the whole job.
+                                .then(Commands.literal("share")
+                                        .then(Commands.argument("email",
+                                                        com.mojang.brigadier.arguments.StringArgumentType.string())
+                                                .executes(ctx -> runShareTest(ctx.getSource(),
+                                                        com.mojang.brigadier.arguments.StringArgumentType
+                                                                .getString(ctx, "email"))))))
                         .then(Commands.literal("signout")
                                 .executes(ctx -> runSignOut(ctx.getSource())))
                         // "setup existing" is the returning creator: somebody who
@@ -178,6 +189,52 @@ public final class WorldShareCommands {
         }
     }
 
+    /**
+     * Try to share this world's Drive folder with an email address.
+     *
+     * <p>Dev-only, and a probe rather than a feature: it answers whether the
+     * {@code drive.file} scope permits {@code permissions.create} on a folder the
+     * app created. If it does, the last manual step in setup - the host opening
+     * Drive to add their friend as Editor - can move into the game as
+     * {@code /worldshare invite <email>}.
+     *
+     * <p>Note this would only replace the <em>host's</em> trip to Drive. The
+     * person joining still picks the world's files through the Picker, because a
+     * folder grant conveys nothing about its contents.
+     */
+    private static int runShareTest(final CommandSourceStack source, final String email) {
+        final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
+        if (ctx.isEmpty()) {
+            sendFeedback(source, "Open the shared world first.", ChatFormatting.RED);
+            return 0;
+        }
+        final RemoteFileSet remote = WorldLink.readRemote(ctx.get().worldRoot);
+        if (remote == null || remote.driveFolderId == null) {
+            sendFeedback(source,
+                    "This world isn't set up for sharing, so there's no folder to share.",
+                    ChatFormatting.RED);
+            return 0;
+        }
+
+        sendFeedback(source, "Trying to share the world folder with " + email + "...",
+                ChatFormatting.GRAY);
+        CloudModule.executor().submit(() -> {
+            try {
+                final DriveClient client = CloudModule.driveClient(
+                        WorldShareCommands::postClickableAuthLink);
+                final String permissionId = client.shareWithEmail(
+                        remote.driveFolderId, email, "writer", true);
+                sendClientMessage("§a✅ Shared as Editor. Permission id: " + permissionId);
+                sendClientMessage("§7Check whether the folder shows up in that account's "
+                        + "\"Shared with me\".");
+            } catch (final Throwable t) {
+                WorldShareMod.LOGGER.error("share test failed", t);
+                sendClientMessage("§c❌ Share failed: " + t);
+            }
+        });
+        return Command.SINGLE_SUCCESS;
+    }
+
     private static int runDriveTest(final CommandSourceStack source) {
         sendFeedback(source, "Starting Google Drive round-trip test.", ChatFormatting.GRAY);
         CloudModule.executor().submit(() -> {
@@ -224,12 +281,29 @@ public final class WorldShareCommands {
      * reliably be copied out of the game at all - and copying it is the entire
      * point, since it has to reach the other player.
      */
+    /**
+     * Offer the world's Drive folder two ways: open it, or copy its link.
+     *
+     * <p>Copying alone was not enough. Setup tells the host to go and share the
+     * folder as Editor, which means finding it in Drive - and handing them a URL
+     * on the clipboard leaves them to work out where to paste it. Opening is the
+     * step they actually have to take next; the copy is for the message they send
+     * afterwards.
+     */
     private static void postCopyableInviteLink(final String folderId) {
         final String url = "https://drive.google.com/drive/folders/" + folderId;
         final Minecraft mc = Minecraft.getInstance();
         if (mc == null) return;
         mc.execute(() -> {
-            final MutableComponent link = Component.literal("  [Copy invite link]")
+            final MutableComponent open = Component.literal("  [Open in Drive]")
+                    .setStyle(Style.EMPTY
+                            .withColor(ChatFormatting.AQUA)
+                            .withUnderlined(true)
+                            .withClickEvent(new ClickEvent(ClickEvent.Action.OPEN_URL, url))
+                            .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
+                                    Component.literal("Opens the world's folder in your browser."
+                                            + "\n\nShare it there with your friend, as Editor."))));
+            final MutableComponent copy = Component.literal("  [Copy link]")
                     .setStyle(Style.EMPTY
                             .withColor(ChatFormatting.AQUA)
                             .withUnderlined(true)
@@ -239,7 +313,7 @@ public final class WorldShareCommands {
                                     Component.literal("Click to copy:\n" + url
                                             + "\n\nSend this to the person you're sharing with."))));
             if (mc.player != null) {
-                mc.player.displayClientMessage(link, false);
+                mc.player.displayClientMessage(open.append(copy), false);
             }
         });
     }
@@ -329,18 +403,26 @@ public final class WorldShareCommands {
         }
 
         final int bucketCount = BucketLayout.DEFAULT_BUCKET_COUNT;
+        // Says what setup is doing, not what the browser is doing. Announcing a
+        // sign-in was wrong whenever the token was already stored: authorize()
+        // returns the cached credential without ever calling the presenter, so
+        // nothing opened and the message read as a failure. The auth link posts
+        // itself through postClickableAuthLink on the trips that need one.
         sendFeedback(source,
-                "Opening Google sign-in. WorldShare will make a Drive folder for this world.",
+                "Setting up '" + world.name + "' for sharing. This takes about half a minute.",
                 ChatFormatting.GRAY);
         sendFeedback(source,
-                "Already have one from a previous install? Use /worldshare setup existing.",
-                ChatFormatting.DARK_GRAY);
+                "Already have a Drive folder from a previous install? "
+                        + "Use /worldshare setup existing.",
+                ChatFormatting.GRAY);
 
         CloudModule.executor().submit(() -> {
             try {
                 final RemoteFileSet remote = WorldSetup.createNewWorld(
                         WorldShareCommands::postClickableAuthLink, bucketCount,
-                        world.name, pickExisting);
+                        world.name, pickExisting,
+                        (done, total) -> PlayerNotice.progress(
+                                "§7Creating world files in Drive... " + done + " / " + total));
 
                 final String localFolder = world.worldRoot.getFileName().toString();
                 SubscriptionStore.get().linkWorldToRemote(
@@ -356,6 +438,7 @@ public final class WorldShareCommands {
                 postCopyableInviteLink(remote.driveFolderId);
                 sendClientMessage("§7Share that Drive folder with them as Editor, "
                         + "then send them the link.");
+                PlayerNotice.progress("");   // clear the counter off the action bar
 
                 WorldShareMod.LOGGER.info("setup: '{}' (local: '{}') -> control file {}",
                         world.name, localFolder, remote.controlFileId);
@@ -381,8 +464,13 @@ public final class WorldShareCommands {
                     sendClientMessage("§e[WorldShare] Mod list publish failed - "
                             + "run /worldshare modpack generate manually.");
                 }
-                sendClientMessage("§8Not locked for syncing yet \u2014 open this world from "
-                        + "Contributor Worlds to play with Drive sync.");
+                // Yellow, and phrased as the consequence rather than the state.
+                // As dark grey saying "not locked for syncing yet" this was the
+                // least readable line on screen and the most important one: a
+                // host who skips it leaves a world nobody can download.
+                sendClientMessage("§eYour friend can't download this world until "
+                        + "you've uploaded it once \u2014 open it from Contributor "
+                        + "Worlds to do that.");
             } catch (final Throwable t) {
                 WorldShareMod.LOGGER.error("setup failed", t);
                 sendClientMessage("§c[WorldShare] Setup failed: " + t.getMessage());

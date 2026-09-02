@@ -7,6 +7,7 @@ import com.google.api.client.json.gson.GsonFactory;
 import com.google.api.services.drive.Drive;
 import com.google.api.services.drive.model.File;
 import com.google.api.services.drive.model.FileList;
+import com.google.api.services.drive.model.Permission;
 import com.worldshare.mod.WorldShareMod;
 
 import java.io.ByteArrayOutputStream;
@@ -359,6 +360,41 @@ public final class DriveClient {
                     files.size(), key, value, files.get(0).getName());
         }
         return files.get(0).getId();
+    }
+
+    /**
+     * Grant somebody access to a file or folder by email address.
+     *
+     * <p>The point of this is to save the host a trip to Drive. Setup currently
+     * ends by telling them to go and share the folder as Editor themselves, which
+     * is the only step of the whole flow that happens outside the game.
+     *
+     * <p>Whether {@code drive.file} is enough to do this is the open question -
+     * the scope covers files the app created, and Drive's reference lists it
+     * among the scopes accepted for {@code permissions.create}, but that is worth
+     * confirming against a real account before anything is designed around it.
+     *
+     * @param fileId the file or folder to share; must be one this app created
+     * @param email  who to share it with
+     * @param role   a Drive role, {@code "writer"} for an Editor
+     * @param notify whether Google should email them about it
+     * @return the new permission's ID
+     */
+    public String shareWithEmail(final String fileId,
+                                 final String email,
+                                 final String role,
+                                 final boolean notify) throws IOException {
+        final Permission permission = new Permission()
+                .setType("user")
+                .setRole(role)
+                .setEmailAddress(email);
+        final Permission created = drive.permissions().create(fileId, permission)
+                .setSendNotificationEmail(notify)
+                .setFields("id, type, role, emailAddress")
+                .execute();
+        WorldShareMod.LOGGER.info("Shared drive file {} with {} as {} (permission {})",
+                fileId, email, role, created.getId());
+        return created.getId();
     }
 
     /**

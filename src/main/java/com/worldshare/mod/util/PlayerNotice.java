@@ -68,6 +68,39 @@ public final class PlayerNotice {
     }
 
     /**
+     * Show ongoing progress above the hotbar, replacing whatever was there.
+     *
+     * <p>For work that takes long enough to look like a hang. Setup creates
+     * twenty-six files in Drive one at a time, which is around half a minute of
+     * nothing on screen - long enough that players concluded the command had
+     * failed and ran it again.
+     *
+     * <p>The action bar rather than chat because each update overwrites the last.
+     * Twenty-six chat lines would push the result off the top of the screen,
+     * which is the problem setup already had once.
+     *
+     * <p>Silently does nothing when there is no player, which is correct: this
+     * only ever carries progress, and the outcome is reported separately.
+     */
+    public static void progress(final String message) {
+        try {
+            final Minecraft mc = Minecraft.getInstance();
+            if (mc == null) return;
+            mc.execute(() -> {
+                try {
+                    if (mc.player != null) {
+                        mc.player.displayClientMessage(Component.literal(message), true);
+                    }
+                } catch (final Throwable t) {
+                    WorldShareMod.LOGGER.debug("[notice] couldn't show progress", t);
+                }
+            });
+        } catch (final Throwable t) {
+            WorldShareMod.LOGGER.debug("PlayerNotice.progress failed", t);
+        }
+    }
+
+    /**
      * @param message   may carry Minecraft colour codes; they are used in chat and
      *                  stripped for the toast, whose pale background makes the
      *                  darker ones effectively invisible

@@ -3,6 +3,7 @@ package com.worldshare.mod.ui;
 import com.worldshare.mod.WorldShareMod;
 import com.worldshare.mod.cloud.RemoteFileSet;
 import com.worldshare.mod.cloud.CloudModule;
+import com.worldshare.mod.cloud.ControlFileClient;
 import com.worldshare.mod.cloud.LockManager;
 import com.worldshare.mod.config.SubscriptionStore;
 import com.worldshare.mod.config.WorldLink;
@@ -21,6 +22,7 @@ import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
 import net.minecraft.network.chat.Component;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -502,8 +504,49 @@ public final class ContributorWorldsScreen extends Screen {
 
         CloudModule.executor().submit(() -> {
             try {
+                // Nothing has been pushed yet? Then there is nothing to download,
+                // and saying so is the whole job. Without this the pull returns
+                // "0 files, success" - it is correct, the buckets really are empty -
+                // and the download builds a world folder with no level.dat in it,
+                // links the subscription to it and reports a green tick. Opening
+                // that gives Minecraft's "Failed to load world", after taking the
+                // session lock, which locks the host out of their own world.
+                //
+                // Checked before createDirectories so a refusal leaves nothing
+                // behind at all.
+                if (ControlFileClient.read(remote.controlFileId) == null) {
+                    WorldShareMod.LOGGER.info(
+                            "ContributorWorlds: '{}' has never been pushed; refusing to download",
+                            displayName);
+                    downloadInProgress = false;
+                    setLoadError("Nothing to download yet.",
+                            "Nobody has uploaded this world yet. Ask the host to open it "
+                                    + "once from Contributor Worlds - that first upload is "
+                                    + "what you'd be downloading.",
+                            false);
+                    loadState = LoadState.ERROR;
+                    Minecraft.getInstance().execute(() -> {
+                        this.clearWidgets();
+                        this.init();
+                    });
+                    return;
+                }
+
                 Files.createDirectories(localWorld);
                 SyncEngine.pull(localWorld, remote, playerUuid, makeProgress());
+
+                // A world without level.dat is not a world, whatever the pull
+                // thought. This is the general form of the check above: it does not
+                // care why the download came up short - empty buckets, a partial
+                // push someone interrupted, an exclusion that swallowed too much -
+                // only that what landed cannot be opened. Throwing hands it to the
+                // catch below, which already discards the folder and reports.
+                if (!Files.exists(localWorld.resolve("level.dat"))) {
+                    throw new IOException(
+                            "The download finished but the world has no level.dat, so it "
+                                    + "cannot be opened. Ask the host to run /worldshare push.");
+                }
+
                 // Link only now. Doing it before the pull meant a failed download
                 // still flipped hasLocalFolder() true, so the world resolved as a
                 // real local copy and the row reported a lock state - which is how a

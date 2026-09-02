@@ -46,6 +46,19 @@ import java.util.function.Consumer;
  */
 public final class WorldSetup {
 
+    /**
+     * Reports how far through creating the remote files setup has got.
+     *
+     * <p>Twenty-six files created one at a time is around half a minute, and the
+     * command said nothing for all of it.
+     */
+    @FunctionalInterface
+    public interface SetupProgress {
+        void onProgress(int done, int total);
+
+        SetupProgress NOOP = (done, total) -> {};
+    }
+
     /** Name of the folder that new world folders are created inside. */
     private static final String LIBRARY_FOLDER_NAME = "WorldShare";
 
@@ -92,7 +105,7 @@ public final class WorldSetup {
                                                final int bucketCount,
                                                final String worldName)
             throws IOException, GeneralSecurityException {
-        return createNewWorld(urlPresenter, bucketCount, worldName, false);
+        return createNewWorld(urlPresenter, bucketCount, worldName, false, SetupProgress.NOOP);
     }
 
     /**
@@ -107,6 +120,22 @@ public final class WorldSetup {
                                                final int bucketCount,
                                                final String worldName,
                                                final boolean adoptExisting)
+            throws IOException, GeneralSecurityException {
+        return createNewWorld(urlPresenter, bucketCount, worldName, adoptExisting,
+                SetupProgress.NOOP);
+    }
+
+    /**
+     * As above, reporting each remote file as it is created.
+     *
+     * @param progress called after every file, with how many exist so far out of
+     *                 the total this world needs
+     */
+    public static RemoteFileSet createNewWorld(final Consumer<String> urlPresenter,
+                                               final int bucketCount,
+                                               final String worldName,
+                                               final boolean adoptExisting,
+                                               final SetupProgress progress)
             throws IOException, GeneralSecurityException {
         final String folderId;
 
@@ -185,16 +214,20 @@ public final class WorldSetup {
         // Create only what's genuinely absent. On the adoption path this is usually
         // nothing; on a folder where setup died halfway it fills just the gaps.
         int created = 0;
+        int done = 0;
+        final int total = remote.layout().remoteFileCount();
         if (remote.controlFileId == null) {
             remote.controlFileId = client.writeText(
                     null, BucketLayout.CONTROL_FILENAME, folderId, "", DriveClient.MIME_TYPE_JSON);
             created++;
         }
+        progress.onProgress(++done, total);
         if (remote.presenceFileId == null) {
             remote.presenceFileId = client.writeText(
                     null, BucketLayout.PRESENCE_FILENAME, folderId, "", DriveClient.MIME_TYPE_JSON);
             created++;
         }
+        progress.onProgress(++done, total);
         for (int i = 0; i < remote.bucketCount; i++) {
             if (remote.bucketFileId(i) == null) {
                 final String id = client.writeText(
@@ -202,6 +235,7 @@ public final class WorldSetup {
                 remote.setBucketFileId(i, id);
                 created++;
             }
+            progress.onProgress(++done, total);
         }
         WorldShareMod.LOGGER.info("setup: {} file(s) already present, {} created",
                 remote.layout().remoteFileCount() - created, created);
