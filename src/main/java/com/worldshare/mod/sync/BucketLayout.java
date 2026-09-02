@@ -1,5 +1,7 @@
 package com.worldshare.mod.sync;
 
+import com.worldshare.mod.WorldShareMod;
+
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -294,6 +296,53 @@ public final class BucketLayout {
                             + MAX_BUCKET_COUNT + ", got " + bucketCount);
         }
         this.bucketCount = bucketCount;
+    }
+
+    /**
+     * System property overriding the bucket count for newly created worlds.
+     *
+     * <p>A testing hook, and deliberately not a config option. A world's bucket
+     * count is frozen when it is created and can never change, so exposing it to
+     * players would only offer them a decision they cannot revisit and have no
+     * basis to make. But two dev clients run from the same classes, so a constant
+     * cannot differ between them, and checking that a 24-bucket client opens a
+     * 16-bucket world needs exactly that.
+     *
+     * <p>Set on the clientThree run configuration in build.gradle. Nothing sets
+     * it in a released build.
+     */
+    private static final String BUCKET_COUNT_PROPERTY = "worldshare.setupBucketCount";
+
+    /**
+     * How many buckets a world created right now should get.
+     *
+     * <p>{@link #DEFAULT_BUCKET_COUNT} unless the testing hook above says
+     * otherwise. Existing worlds never consult this - their count comes from
+     * their control file.
+     */
+    public static int newWorldBucketCount() {
+        final String override = System.getProperty(BUCKET_COUNT_PROPERTY);
+        if (override == null || override.isBlank()) {
+            return DEFAULT_BUCKET_COUNT;
+        }
+        try {
+            final int parsed = Integer.parseInt(override.trim());
+            if (parsed < MIN_BUCKET_COUNT || parsed > MAX_BUCKET_COUNT) {
+                WorldShareMod.LOGGER.warn(
+                        "{}={} is outside {}..{}; using the default of {}",
+                        BUCKET_COUNT_PROPERTY, parsed, MIN_BUCKET_COUNT, MAX_BUCKET_COUNT,
+                        DEFAULT_BUCKET_COUNT);
+                return DEFAULT_BUCKET_COUNT;
+            }
+            WorldShareMod.LOGGER.warn(
+                    "New worlds will use {} buckets, not the default {} ({} is set)",
+                    parsed, DEFAULT_BUCKET_COUNT, BUCKET_COUNT_PROPERTY);
+            return parsed;
+        } catch (final NumberFormatException e) {
+            WorldShareMod.LOGGER.warn("{}='{}' isn't a number; using the default of {}",
+                    BUCKET_COUNT_PROPERTY, override, DEFAULT_BUCKET_COUNT);
+            return DEFAULT_BUCKET_COUNT;
+        }
     }
 
     /** A layout using {@link #DEFAULT_BUCKET_COUNT} buckets. */

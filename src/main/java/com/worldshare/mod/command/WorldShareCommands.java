@@ -400,7 +400,7 @@ public final class WorldShareCommands {
             return 0;
         }
 
-        final int bucketCount = BucketLayout.DEFAULT_BUCKET_COUNT;
+        final int bucketCount = BucketLayout.newWorldBucketCount();
         if (!SETUP_RUNNING.compareAndSet(false, true)) {
             sendFeedback(source, "Setup is already running for this world. Give it a moment.",
                     ChatFormatting.YELLOW);

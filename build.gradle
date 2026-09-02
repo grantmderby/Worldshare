@@ -89,6 +89,14 @@ runs {
         workingDirectory project.file('run3')
         programArguments.addAll '--username', 'Player3'
         systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+
+        // Creates 16-bucket worlds rather than the default 24.
+        //
+        // A world's bucket count is frozen when it is created, so the only way to
+        // check that a current client opens a world made before the default moved
+        // is to have a client that still makes them. Both dev clients load the
+        // same classes, so this cannot be a constant.
+        systemProperty 'worldshare.setupBucketCount', '16'
     }
 
     server {
