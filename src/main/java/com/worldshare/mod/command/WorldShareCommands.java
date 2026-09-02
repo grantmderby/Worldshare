@@ -501,8 +501,13 @@ public final class WorldShareCommands {
                 // Worth saying, because the world still has no link file and so
                 // still looks unconfigured. Re-running is now a resume: setup
                 // finds the folder it already made and fills in the gaps.
-                sendClientMessage("§eRun /worldshare setup again when you're back "
-                        + "online - it picks up where this left off.");
+                //
+                // Doesn't guess at the cause any more. It used to say "when you're
+                // back online", which was wrong for the failure it most often
+                // followed - a rejected stored credential, where the network was
+                // fine and waiting would have changed nothing.
+                sendClientMessage("§eRun /worldshare setup again - it picks up where "
+                        + "this left off.");
             } finally {
                 SETUP_RUNNING.set(false);
             }

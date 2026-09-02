@@ -3,6 +3,7 @@ package com.worldshare.mod.cloud;
 import com.google.api.client.auth.oauth2.AuthorizationCodeRequestUrl;
 import com.google.api.client.auth.oauth2.Credential;
 import com.google.api.client.auth.oauth2.TokenResponse;
+import com.google.api.client.auth.oauth2.TokenResponseException;
 import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow;
 import com.google.api.client.googleapis.auth.oauth2.GoogleClientSecrets;
 import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
@@ -325,16 +326,60 @@ public final class OAuthHelper {
      *
      * @return a usable Credential, or null if the caller must re-consent
      */
+    /**
+     * The stored credential, if there is one and it still works.
+     *
+     * <p>"Has a refresh token" used to be taken as proof it was usable, and it
+     * is not. A refresh token can be revoked by the user, invalidated by a
+     * password change, or - the case this was actually hit by - simply expire,
+     * because tokens issued while the Cloud app sat in Testing publishing status
+     * last seven days. The refresh then failed at the first Drive call with a raw
+     * {@code 400 invalid_grant} and a suggestion to try again when back online,
+     * which was wrong twice over: the network was fine, and trying again would
+     * fail identically forever.
+     *
+     * <p>So the refresh is proved here instead of assumed. A refusal from Google
+     * means the stored credential is worthless, and the honest response is to
+     * throw it away and let the caller run the consent flow, which succeeds - the
+     * player just signs in again.
+     *
+     * <p>A network failure is deliberately not treated that way. Being offline
+     * says nothing about whether the token is good, and discarding it would turn
+     * a temporary outage into a forced re-authorization.
+     */
     private static Credential loadUsableCredential(final GoogleAuthorizationCodeFlow flow)
             throws IOException {
         final Credential credential = flow.loadCredential(USER_ID);
         if (credential == null) {
             return null;
         }
-        final boolean canRefresh = credential.getRefreshToken() != null;
+
         final Long expiresIn = credential.getExpiresInSeconds();
-        final boolean stillFresh = expiresIn == null || expiresIn > 60L;
-        return (canRefresh || stillFresh) ? credential : null;
+        if (expiresIn != null && expiresIn > 60L) {
+            return credential;
+        }
+        if (credential.getRefreshToken() == null) {
+            return null;
+        }
+
+        try {
+            if (credential.refreshToken()) {
+                return credential;
+            }
+            WorldShareMod.LOGGER.info("Stored credential could not be refreshed; signing in again");
+        } catch (final TokenResponseException e) {
+            WorldShareMod.LOGGER.info(
+                    "Google rejected the stored credential ({}); signing in again",
+                    e.getDetails() != null ? e.getDetails().getError() : e.getStatusCode());
+        } catch (final IOException e) {
+            // Couldn't reach Google at all. The token may be perfectly good, so
+            // keep it and let the caller's own request report the outage.
+            WorldShareMod.LOGGER.warn("Couldn't verify the stored credential: {}", e.getMessage());
+            return credential;
+        }
+
+        forgetStoredCredential();
+        return null;
     }
 
     private static GoogleAuthorizationCodeFlow buildFlow()
