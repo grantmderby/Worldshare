@@ -161,11 +161,35 @@ public final class WorldSetup {
             // access to what it created, which is the same property the bucket
             // files already rely on.
             CloudModule.refreshCredential(OAuthHelper.authorize(urlPresenter));
-            final String library = ensureLibraryFolder(CloudModule.driveClient());
+            final DriveClient drive = CloudModule.driveClient();
+            final String library = ensureLibraryFolder(drive);
             final String folderName = "WorldShare - " + worldName;
-            folderId = CloudModule.driveClient().createFolder(folderName, library);
-            WorldShareMod.LOGGER.info("setup: created Drive folder '{}' ({}) in the library ({})",
-                    folderName, folderId, library);
+
+            // Look before creating. Setup can fail part-way - Drive goes
+            // unreachable somewhere among twenty-six file creations - and it
+            // writes worldshare-link.json only on success, so the world still
+            // looks unconfigured afterwards and the natural response is to run
+            // the command again. Creating unconditionally made that second run
+            // build a second folder beside the abandoned one, with the world
+            // bound to the new empty set and the first orphaned.
+            //
+            // Finding it instead hands the existing folder to the adoption logic
+            // below, which creates only what is genuinely absent. That turns a
+            // retry into a resume, and it does the same job for the creator who
+            // reinstalled: their folder is still in the library, so plain setup
+            // reuses it rather than needing 'setup existing'.
+            final String reusable = findChildFolder(drive, library, folderName);
+            if (reusable != null) {
+                folderId = reusable;
+                WorldShareMod.LOGGER.info(
+                        "setup: reusing the '{}' folder already in the library ({})",
+                        folderName, folderId);
+            } else {
+                folderId = drive.createFolder(folderName, library);
+                WorldShareMod.LOGGER.info(
+                        "setup: created Drive folder '{}' ({}) in the library ({})",
+                        folderName, folderId, library);
+            }
         }
 
         final DriveClient client = CloudModule.driveClient();
@@ -462,6 +486,19 @@ public final class WorldSetup {
         WorldShareMod.LOGGER.info("setup: created the '{}' library folder ({})",
                 LIBRARY_FOLDER_NAME, created);
         return created;
+    }
+
+    /** A folder of this exact name directly inside {@code parentId}, or null. */
+    private static String findChildFolder(final DriveClient client,
+                                          final String parentId,
+                                          final String name) throws IOException {
+        for (final File child : client.listFolderChildren(parentId)) {
+            if (name.equals(child.getName())
+                    && DriveClient.MIME_TYPE_FOLDER.equals(child.getMimeType())) {
+                return child.getId();
+            }
+        }
+        return null;
     }
 
     private static Map<String, String> listChildren(final DriveClient client,

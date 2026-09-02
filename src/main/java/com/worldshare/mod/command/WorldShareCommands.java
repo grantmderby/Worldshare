@@ -22,8 +22,8 @@ import com.worldshare.mod.sync.SyncDiff;
 import com.worldshare.mod.sync.SyncEngine;
 import com.worldshare.mod.sync.SyncProgress;
 import com.worldshare.mod.sync.WorldContext;
+import com.worldshare.mod.ui.SetupProgressScreen;
 import com.worldshare.mod.util.MachineId;
-import com.worldshare.mod.util.PlayerNotice;
 import com.worldshare.mod.util.SHA256Util;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
@@ -382,6 +382,17 @@ public final class WorldShareCommands {
         return runSetup(source, true);
     }
 
+    /**
+     * Whether a setup is already running.
+     *
+     * <p>The "already set up" check below reads worldshare-link.json, which is
+     * written only after setup succeeds - so during the half-minute it spends
+     * creating files, nothing stopped the command being run a second time. Two
+     * runs meant two Drive folders and two sets of twenty-six files.
+     */
+    private static final java.util.concurrent.atomic.AtomicBoolean SETUP_RUNNING =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
     private static int runSetup(final CommandSourceStack source, final boolean pickExisting) {
         final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
         if (ctx.isEmpty()) {
@@ -403,26 +414,48 @@ public final class WorldShareCommands {
         }
 
         final int bucketCount = BucketLayout.DEFAULT_BUCKET_COUNT;
+        if (!SETUP_RUNNING.compareAndSet(false, true)) {
+            sendFeedback(source, "Setup is already running for this world. Give it a moment.",
+                    ChatFormatting.YELLOW);
+            return 0;
+        }
+
         // Says what setup is doing, not what the browser is doing. Announcing a
         // sign-in was wrong whenever the token was already stored: authorize()
         // returns the cached credential without ever calling the presenter, so
         // nothing opened and the message read as a failure. The auth link posts
         // itself through postClickableAuthLink on the trips that need one.
+        //
+        // No "use setup existing" hint here any more. It arrived after the folder
+        // had already been made, which is too late to act on, and setup now finds
+        // and reuses a folder of its own in the library - so the case the hint
+        // warned about mostly handles itself.
         sendFeedback(source,
                 "Setting up '" + world.name + "' for sharing. This takes about half a minute.",
                 ChatFormatting.GRAY);
-        sendFeedback(source,
-                "Already have a Drive folder from a previous install? "
-                        + "Use /worldshare setup existing.",
-                ChatFormatting.GRAY);
+
+        final SetupProgressScreen screen =
+                new SetupProgressScreen(world.name, bucketCount + 2);
 
         CloudModule.executor().submit(() -> {
             try {
                 final RemoteFileSet remote = WorldSetup.createNewWorld(
                         WorldShareCommands::postClickableAuthLink, bucketCount,
                         world.name, pickExisting,
-                        (done, total) -> PlayerNotice.progress(
-                                "§7Creating world files in Drive... " + done + " / " + total));
+                        (done, total) -> {
+                            screen.update(done, total);
+                            // Opened on the first file rather than up front: the
+                            // sign-in link is posted to chat, and a screen over it
+                            // would leave nothing to click.
+                            if (done == 1) {
+                                Minecraft.getInstance().execute(() -> {
+                                    if (Minecraft.getInstance().screen == null) {
+                                        Minecraft.getInstance().setScreen(screen);
+                                    }
+                                });
+                            }
+                        });
+                screen.finish();
 
                 final String localFolder = world.worldRoot.getFileName().toString();
                 SubscriptionStore.get().linkWorldToRemote(
@@ -438,7 +471,6 @@ public final class WorldShareCommands {
                 postCopyableInviteLink(remote.driveFolderId);
                 sendClientMessage("§7Share that Drive folder with them as Editor, "
                         + "then send them the link.");
-                PlayerNotice.progress("");   // clear the counter off the action bar
 
                 WorldShareMod.LOGGER.info("setup: '{}' (local: '{}') -> control file {}",
                         world.name, localFolder, remote.controlFileId);
@@ -473,7 +505,15 @@ public final class WorldShareCommands {
                         + "Worlds to do that.");
             } catch (final Throwable t) {
                 WorldShareMod.LOGGER.error("setup failed", t);
+                screen.fail(String.valueOf(t.getMessage()));
                 sendClientMessage("§c[WorldShare] Setup failed: " + t.getMessage());
+                // Worth saying, because the world still has no link file and so
+                // still looks unconfigured. Re-running is now a resume: setup
+                // finds the folder it already made and fills in the gaps.
+                sendClientMessage("§eRun /worldshare setup again when you're back "
+                        + "online - it picks up where this left off.");
+            } finally {
+                SETUP_RUNNING.set(false);
             }
         });
         return Command.SINGLE_SUCCESS;
