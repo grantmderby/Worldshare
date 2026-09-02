@@ -50,7 +50,20 @@ public final class OnlineChecker {
         final CompletableFuture<Result> future = new CompletableFuture<>();
         CloudModule.executor().submit(() -> {
             try {
-                final DriveClient client = CloudModule.driveClient();
+                // Must not prompt. This is a probe - it runs from the save-and-quit
+                // screen among other places - and the prompting overload opens the
+                // system browser when there is no stored credential. A question of
+                // the form "can we reach Drive?" answering itself by hijacking the
+                // player's browser is not an answer.
+                //
+                // NOT_AUTHENTICATED is exactly the right reply here, and both
+                // callers already handle it; it was simply unreachable for the most
+                // ordinary reason of all, having never signed in.
+                final DriveClient client = CloudModule.driveClientIfSignedIn();
+                if (client == null) {
+                    future.complete(Result.NOT_AUTHENTICATED);
+                    return;
+                }
                 final var meta = client.getFileMeta(remote.controlFileId);
                 if (meta == null) {
                     future.complete(Result.OFFLINE);

@@ -113,6 +113,27 @@ public final class CloudModule {
     }
 
     /**
+     * A DriveClient only if we are already signed in, never prompting for it.
+     *
+     * <p>{@link #driveClient()} starts a consent flow when there is no stored
+     * credential, and with a null presenter that means opening the system
+     * browser. That is right for something the player just asked for and wrong
+     * for anything on a timer, which would otherwise hijack the game at startup.
+     *
+     * @return the client, or null if using Drive would mean asking them to sign in
+     */
+    public static DriveClient driveClientIfSignedIn() throws IOException {
+        final DriveClient existing = driveClient;
+        if (existing != null) {
+            return existing;
+        }
+        if (OAuthHelper.storedCredentialIfUsable() == null) {
+            return null;
+        }
+        return driveClient(null);
+    }
+
+    /**
      * Get a ready-to-use DriveClient using a custom URL presenter for the
      * OAuth consent URL.
      *

@@ -364,6 +364,26 @@ public final class OAuthHelper {
     private static final java.util.concurrent.atomic.AtomicReference<String> REAUTH_REASON =
             new java.util.concurrent.atomic.AtomicReference<>();
 
+    /**
+     * The stored credential if there is a working one, without ever prompting.
+     *
+     * <p>For work the player didn't ask for. Background code that calls the
+     * ordinary {@code authorize} path will, on a machine with no stored token,
+     * launch the system browser at Google - which is how opening the game could
+     * throw somebody into Chrome before they had touched the main menu. Nothing
+     * running on a timer should be able to do that.
+     *
+     * @return a usable credential, or null if signing in would be needed
+     */
+    public static Credential storedCredentialIfUsable() {
+        try {
+            return loadUsableCredential(buildFlow());
+        } catch (final IOException | GeneralSecurityException e) {
+            WorldShareMod.LOGGER.debug("No usable stored credential: {}", e.getMessage());
+            return null;
+        }
+    }
+
     /** Take the pending sign-in reason, clearing it. Null if there isn't one. */
     public static String consumeReauthReason() {
         return REAUTH_REASON.getAndSet(null);

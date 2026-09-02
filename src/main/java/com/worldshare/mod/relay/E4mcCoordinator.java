@@ -192,6 +192,21 @@ public final class E4mcCoordinator {
 
         final Thread poller = new Thread(() -> {
             try {
+                // Nothing here is worth a sign-in. This runs the moment the title
+                // screen appears, and reaching Drive without a stored credential
+                // starts a consent flow - which, on this path, means launching the
+                // browser. A player who had never asked WorldShare for anything got
+                // thrown into Chrome before they could click Singleplayer.
+                //
+                // Checking for a live session is a convenience. If we aren't signed
+                // in we simply don't offer it; the next thing the player actually
+                // asks for will prompt properly, in chat, with a reason.
+                if (CloudModule.driveClientIfSignedIn() == null) {
+                    WorldShareMod.LOGGER.debug(
+                            "E4mcCoordinator: not signed in to Drive; skipping presence poll");
+                    return;
+                }
+
                 final List<WorldSubscription> subs = SubscriptionStore.get().all();
 
                 for (final WorldSubscription sub : subs) {
