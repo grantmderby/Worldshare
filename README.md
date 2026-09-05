@@ -26,10 +26,9 @@ Built for **NeoForge 1.21.1**.
 - NeoForge 21.1.x (any 21.1 version works)
 - Java 21
 - A Google account with Drive access
-- Optionally, the [e4mc mod](https://modrinth.com/mod/e4mc) (or
-  [e4all](https://modrinth.com/mod/e4all), a fork of it that also allows offline
-  accounts) — installed by **everyone who wants to play live**, and only needed for
-  live co-op. Everything else works without it.
+- Optionally, the [e4mc mod](https://modrinth.com/mod/e4mc) — installed by
+  **everyone who wants to play live**, and only needed for live co-op. Everything
+  else works without it.
 
 ## Setup — Host
 
