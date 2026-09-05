@@ -39,9 +39,18 @@ import java.util.Set;
  */
 public final class LocalModScanner {
 
-    /** Mod IDs we never include in modpack.json. */
+    /**
+     * Mod IDs we never include in modpack.json.
+     *
+     * <p>The relay mods are here for a different reason than the loaders. e4mc and
+     * e4all are a per-player choice about how you connect, not part of the world -
+     * and they are alternatives to each other, so publishing one as required is
+     * actively wrong. Excluding e4mc but not e4all meant a host running the fork
+     * pushed it onto everybody who joined, including guests already running e4mc,
+     * who were told to install a second mod that does the same job.
+     */
     public static final Set<String> EXCLUDED_IDS = Set.of(
-            "minecraft", "neoforge", "forge", "fml", "worldshare", "e4mc"
+            "minecraft", "neoforge", "forge", "fml", "worldshare", "e4mc", "e4all"
     );
 
     private LocalModScanner() {}
