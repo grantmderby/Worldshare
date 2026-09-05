@@ -20,7 +20,7 @@ revised like anything else rather than typed into a web form once and forgotten.
 | Loader | NeoForge |
 | Version number | 1.0.0 |
 | Release channel | Release |
-| Dependency | `e4mc` — **optional** |
+| Dependency | `e4mc` — **optional** (or `e4all`, a fork that also allows offline accounts) |
 | Flags | **Contains AI-generated content** |
 
 Client required / server unsupported is not a guess: WorldShare works on
@@ -54,8 +54,9 @@ world and lose half of it. If someone else has it, the mod tells you who, and
 when they last touched it.
 
 Want to actually play together? Install [e4mc](https://modrinth.com/mod/e4mc)
-and run `/worldshare host` to open your world for live co-op. That part is
-optional — everything above works without it.
+and run `/worldshare host` to open your world for live co-op. Whoever is joining
+needs it too. That part is optional — everything above works without it, and
+[e4all](https://modrinth.com/mod/e4all) works in its place if you prefer it.
 
 ### Getting started
 
@@ -90,9 +91,10 @@ megabytes per session.
 
 Worth stating plainly rather than letting people discover them:
 
-- **Live co-op through e4mc is not fully tested.** Hosting works and assigns a
-  domain; joining has not been verified end to end with two separate Minecraft
-  accounts. Drive sync — the main feature — is thoroughly tested.
+- **Live co-op needs the relay mod on both sides.** e4mc (or e4all) has to be
+  installed by everyone who wants to play together, not just the host — it is
+  what makes the host's address reachable. WorldShare tells you if it is missing
+  rather than failing at the network layer. Drive sync works without it.
 - **Mods that change how the world is stored on disk are untested.** WorldShare
   syncs the save folder as it finds it, so anything writing its own custom
   storage format may or may not survive the round trip.

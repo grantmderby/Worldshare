@@ -279,9 +279,35 @@ public final class E4mcCoordinator {
                 @Override
                 public void append(final LogEvent event) {
                     try {
-                        if (!isHosting || currentDomain != null) return;
+                        if (!isHosting) return;
                         final String msg = event.getMessage().getFormattedMessage();
                         if (msg == null) return;
+
+                        // A relay that has gone away, before anything else: the
+                        // presence file is refreshed on a timer, so without this we
+                        // keep advertising an address nobody can reach. /e4all stop
+                        // kills the tunnel but leaves the LAN server published, so
+                        // no local check of ours notices - isPublished() stays true
+                        // and isHosting stays set.
+                        //
+                        // Best-effort by nature. The wording below is e4all's, and a
+                        // future version of either mod could change it; if that
+                        // happens this quietly stops helping rather than breaking,
+                        // and the two-minute staleness window in PresenceFile takes
+                        // over as it always did.
+                        if (looksLikeRelayLoss(msg)) {
+                            WorldShareMod.LOGGER.info(
+                                    "E4mcCoordinator: relay reported lost - {}", msg);
+                            // Off this thread, not inline. stopHostingIfActive()
+                            // detaches and stops this very appender, and doing that
+                            // from inside its own append() is asking Log4j to
+                            // dismantle the thing it is currently calling.
+                            CloudModule.executor().submit(
+                                    E4mcCoordinator::stopHostingIfActive);
+                            return;
+                        }
+
+                        if (currentDomain != null) return;
                         final int idx = msg.indexOf("Domain assigned:");
                         if (idx < 0) return;
                         final String domain =
@@ -323,6 +349,21 @@ public final class E4mcCoordinator {
                     "E4mcCoordinator: failed to attach log appender", t);
             logAppender = null;
         }
+    }
+
+    /**
+     * Whether a relay log line means the tunnel is gone.
+     *
+     * <p>Matched loosely and on purpose - the exact phrasing belongs to e4mc and
+     * e4all, not to us, and a near-miss costs only the old behaviour. Deliberately
+     * does not match the reconnect notices, which say the opposite: the session is
+     * coming back and the address stays valid.
+     */
+    private static boolean looksLikeRelayLoss(final String msg) {
+        final String lower = msg.toLowerCase(java.util.Locale.ROOT);
+        if (lower.contains("reconnect")) return false;
+        return lower.contains("relay connection lost")
+                || lower.contains("channel became inactive");
     }
 
     private static synchronized void detachLogAppender() {

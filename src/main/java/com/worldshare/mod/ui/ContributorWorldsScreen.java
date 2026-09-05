@@ -342,11 +342,16 @@ public final class ContributorWorldsScreen extends Screen {
                 Component.literal(world.displayName()).withStyle(ChatFormatting.WHITE),
                 x + leftPadding, y + 16, 0xFFFFFF);
 
+        // Measured, not guessed. The 90px this used to add was wide enough for
+        // "- LIVE" and not for "- Not Downloaded", so the long badges ran
+        // straight into the subtitle and the two read as one sentence.
         final String subtitle = subtitle(world);
         if (subtitle != null) {
+            final int subtitleX =
+                    x + leftPadding + this.font.width(badge(world.state)) + 12;
             gfx.drawString(this.font,
                     Component.literal(subtitle).withStyle(ChatFormatting.GRAY),
-                    x + leftPadding + 90, y + 4, 0x888888);
+                    subtitleX, y + 4, 0x888888);
         }
 
         renderActionButton(gfx, world, y);
@@ -676,7 +681,14 @@ public final class ContributorWorldsScreen extends Screen {
                 // skips the pull and would otherwise not check at all.
                 SyncEngine.requireCompatibleLayout(remote);
 
-                LockManager.acquire(remote);
+                // skipPull is the crash-recovery and stale-override path: the
+                // player has already been shown who holds it and chosen to take
+                // it, so overriding is the point rather than an accident.
+                LockManager.acquire(remote, skipPull);
+                // Acquiring is not proof of holding. Two clients opening within a
+                // few seconds can interleave, and the loser used to discover it at
+                // push time, an entire session later.
+                LockManager.confirmStillOurs(remote);
                 lockAcquired = true;
 
                 if (skipPull) {

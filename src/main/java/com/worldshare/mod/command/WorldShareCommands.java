@@ -562,7 +562,9 @@ public final class WorldShareCommands {
                     if (status.state == LockManager.LockState.FREE
                             || status.state == LockManager.LockState.HELD_BY_US
                             || status.state == LockManager.LockState.HELD_BY_US_EXPIRED) {
-                        LockManager.acquire(remote);
+                        // Dev command, deliberately blunt: it exists to force a
+                        // lock state while testing, so it overrides.
+                        LockManager.acquire(remote, true);
                         locked = true;
                     } else {
                         WorldShareMod.LOGGER.info(

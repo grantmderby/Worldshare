@@ -179,7 +179,8 @@ public final class RepairWorldScreen extends Screen {
                 WorldBackup.create(localWorld);
 
                 status = "Taking the session lock...";
-                LockManager.acquire(remote);
+                // Override: repairing is an explicit decision to republish over whatever is there.
+                LockManager.acquire(remote, true);
 
                 status = "Uploading your copy of the world...";
                 final SyncEngine.PushResult result =

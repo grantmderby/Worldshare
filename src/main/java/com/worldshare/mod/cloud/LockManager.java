@@ -58,6 +58,9 @@ public final class LockManager {
     /** How often we refresh the lock's expiry while we hold it. */
     private static final Duration HEARTBEAT_INTERVAL = Duration.ofMinutes(15);
 
+    /** Delay before the first heartbeat, which is really the first ownership check. */
+    private static final long FIRST_HEARTBEAT_SECONDS = 45L;
+
     /**
      * Number of consecutive heartbeat failures before we post a chat warning
      * to the user. With 15-minute intervals, 2 failures means we've been
@@ -147,6 +150,34 @@ public final class LockManager {
      * @return the SessionLock we just wrote
      */
     public static SessionLock acquire(final RemoteFileSet remote) throws IOException {
+        return acquire(remote, false);
+    }
+
+    /**
+     * Take the session lock, optionally overriding somebody else's.
+     *
+     * <p>This used to write unconditionally, and the consequence was worse than it
+     * sounds: two players opening within a few seconds of each other both
+     * succeeded, last writer winning, so the one who opened <em>first</em> was the
+     * one who could not upload. {@link #weHoldLock} is a local cached flag that
+     * never re-reads Drive, so the loser played an entire session believing the
+     * world was theirs and only found out at push time.
+     *
+     * <p>It now reads the current lock inside the same read-modify-write the
+     * heartbeat uses and declines to overwrite a live one - the check
+     * {@code heartbeat()} always had and this never did. The window is narrowed
+     * rather than closed, since two clients can still interleave inside a
+     * read-modify-write against Drive, so callers follow up with
+     * {@link #confirmStillOurs}.
+     *
+     * @param override take the lock even if somebody else holds a live one. Only
+     *                 for the deliberate stale-lock override, where the player has
+     *                 been shown who holds it and chosen to proceed.
+     * @throws LockHeldException if somebody else holds a live lock and
+     *                           {@code override} is false
+     */
+    public static SessionLock acquire(final RemoteFileSet remote, final boolean override)
+            throws IOException {
         Objects.requireNonNull(remote, "remote");
 
         final String holderName = resolveHolderName();
@@ -157,10 +188,33 @@ public final class LockManager {
         final SessionLock lock = SessionLock.newAcquired(
                 holderName, machineId, now, expiresAfter);
 
+        // Signalled out of the mutator, which cannot abort a write on its own -
+        // the same shape heartbeat() uses when it finds the lock has moved.
+        final AtomicBoolean refused = new AtomicBoolean(false);
+        final String[] heldBy = new String[1];
+
         // Writes through the same monitor the heartbeat and the sync commit use, so
         // taking the lock can't race with a manifest write already in flight.
-        ControlFileClient.update(remote.controlFileId, remote.bucketCount,
-                control -> control.lock = lock);
+        ControlFileClient.update(remote.controlFileId, remote.bucketCount, control -> {
+            if (!override) {
+                final SessionLock current = control.lockOrUnlocked();
+                if (!current.isUnlocked()
+                        && !current.isOwnedBy(machineId)
+                        && !current.isExpired(Instant.now())) {
+                    refused.set(true);
+                    heldBy[0] = current.holderName;
+                    return;   // leave their lock exactly as read
+                }
+            }
+            control.lock = lock;
+        });
+
+        if (refused.get()) {
+            final String who = heldBy[0] != null ? heldBy[0] : "another player";
+            WorldShareMod.LOGGER.info(
+                    "acquire: refused - {} already holds this world's lock", who);
+            throw new LockHeldException(who);
+        }
 
         heldWorld = remote;
         // Reset offline tracking for the new session.
@@ -300,6 +354,9 @@ public final class LockManager {
             com.worldshare.mod.util.PlayerNotice.alsoToast(
                     who + " took over this world's session lock. Your changes can no "
                             + "longer be saved to Drive - save and quit.");
+            // Chat and a toast were both missable, and this is the one message
+            // where missing it costs everything done afterwards. Interrupt.
+            com.worldshare.mod.ui.LockLostScreen.show(who);
             stopHeartbeat();
             heldWorld = null;
             return;
@@ -317,13 +374,18 @@ public final class LockManager {
             if (heartbeatExecutor == null) {
                 heartbeatExecutor = createHeartbeatExecutor();
             }
-            // First heartbeat runs after one interval (not immediately - we just wrote
-            // the lock in acquire(), no need to update it right away).
+            // The first run comes quickly, the rest on the usual interval.
+            //
+            // Refreshing the lock is not the reason - we just wrote it. Catching
+            // the case where somebody else took it is. That detection already
+            // existed and was correct; it simply ran fifteen minutes late, which is
+            // long enough to build for a quarter of an hour before being told none
+            // of it can be saved.
             activeHeartbeat = heartbeatExecutor.scheduleAtFixedRate(
                     LockManager::runHeartbeatSafely,
-                    HEARTBEAT_INTERVAL.toMinutes(),
-                    HEARTBEAT_INTERVAL.toMinutes(),
-                    TimeUnit.MINUTES);
+                    FIRST_HEARTBEAT_SECONDS,
+                    HEARTBEAT_INTERVAL.toSeconds(),
+                    TimeUnit.SECONDS);
             WorldShareMod.LOGGER.info("Started lock heartbeat every {} minutes",
                     HEARTBEAT_INTERVAL.toMinutes());
         }
@@ -457,6 +519,46 @@ public final class LockManager {
         HELD_BY_OTHER,
         /** Lock held by another machine but expired. Offer override to user. */
         STALE
+    }
+
+    /**
+     * Somebody else holds this world's lock, so we did not take it.
+     *
+     * <p>Distinct from a general IOException because it is not a failure - it is
+     * the system working. Callers name the holder rather than reporting an error.
+     */
+    public static final class LockHeldException extends IOException {
+        public final String holderName;
+
+        public LockHeldException(final String holderName) {
+            super(holderName + " has this world open right now. "
+                    + "Their session has to finish before you can open it.");
+            this.holderName = holderName;
+        }
+    }
+
+    /**
+     * Re-read the lock and confirm it is still ours.
+     *
+     * <p>One Drive read, immediately after acquiring. Two clients can interleave
+     * inside a read-modify-write, so acquiring successfully is not proof of
+     * holding it - and finding out here costs a second, where finding out at push
+     * time costs a whole session.
+     *
+     * @throws LockHeldException if somebody else holds it now
+     */
+    public static void confirmStillOurs(final RemoteFileSet remote) throws IOException {
+        final LockStatus status = readStatus(remote);
+        if (status.state == LockState.HELD_BY_US || status.state == LockState.HELD_BY_US_EXPIRED) {
+            return;
+        }
+        final String who = (status.lock != null && status.lock.holderName != null)
+                ? status.lock.holderName : "another player";
+        WorldShareMod.LOGGER.warn(
+                "acquire: lost the race - {} holds the lock (state {})", who, status.state);
+        stopHeartbeat();
+        heldWorld = null;
+        throw new LockHeldException(who);
     }
 
     /** Combined state + data, returned by {@link #readStatus}. */

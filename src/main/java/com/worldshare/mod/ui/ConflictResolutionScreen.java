@@ -286,7 +286,8 @@ public final class ConflictResolutionScreen extends Screen {
                 workingMessage = "Overriding stale lock...";
                 CloudModule.executor().submit(() -> {
                     try {
-                        LockManager.acquire(remote);
+                        // Override: resolving a conflict is an explicit decision to take the world.
+                        LockManager.acquire(remote, true);
                     } catch (final IOException e) {
                         throw new RuntimeException(e);
                     }
