@@ -239,6 +239,18 @@ shadowJar {
     archiveClassifier = ''
     configurations = [project.configurations.shade]
 
+    // Ship the attribution with the thing it attributes.
+    //
+    // The excludes below drop META-INF/LICENSE, NOTICE and DEPENDENCIES from the
+    // bundled jars, because eight libraries all writing to the same three paths
+    // produces one arbitrary survivor rather than a usable record. Apache-2.0
+    // still requires that recipients get the licence, that retained NOTICE text
+    // travels with the code, and that relocation is declared as a modification -
+    // so THIRD-PARTY-NOTICES.txt does all three in one curated file.
+    from(rootProject.file('THIRD-PARTY-NOTICES.txt')) {
+        into 'META-INF'
+    }
+
     relocate 'com.google.api', 'com.worldshare.shaded.com.google.api'
     relocate 'com.google.auth', 'com.worldshare.shaded.com.google.auth'
 

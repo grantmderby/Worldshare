@@ -169,9 +169,27 @@ Worlds set up with WorldShare should be loaded from the singleplayer tab only fo
 
 ## Privacy / data
 
-- WorldShare only accesses Drive folders you explicitly subscribe to. The OAuth scope is restricted to file-level access.
-- All files are stored in your own Drive (or the host's). Anthropic, the mod author, and Google's third parties have no access.
-- The mod connects to: Google Drive API (sync), Modrinth API (mod lookup), e4mc relay (live co-op).
+**Your world goes to your own Google Drive**, in a folder WorldShare creates.
+Nobody can read it unless you share that folder with them. WorldShare asks
+Google only for access to files it created or you picked — it cannot see the
+rest of your Drive.
+
+Three other things worth knowing:
+
+- **When you set up a world**, WorldShare sends a fingerprint of each mod jar you
+  have installed to Modrinth, to work out which mods they are. Fingerprints only
+  — never the files themselves, and never your world.
+- **When you run `/worldshare host`**, your game connects to the e4mc relay so
+  your friend can join. That's the same relay the e4mc mod uses on its own, run
+  by different people under their terms. Don't install e4mc and nothing is ever
+  sent there.
+- **Anyone you share a world with** can see your Minecraft username, when you
+  last played, and a random ID for your installation. That's how the mod knows
+  who currently has the world open. The ID identifies the install, not you and
+  not your hardware, and a fresh install gets a new one.
+
+WorldShare has no server of its own. No account, no telemetry, and nothing sent
+anywhere else.
 
 ## Troubleshooting
 
@@ -185,4 +203,9 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## License
 
-MIT License
+MIT License — see [LICENSE](LICENSE).
+
+The published jar bundles the Google Drive API client, Gson, Guava and a few
+other libraries so that it works without extra downloads. They are Apache-2.0
+and MPL-2.0 licensed; see [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt),
+which is also shipped inside the jar.
