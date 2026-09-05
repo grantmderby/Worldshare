@@ -133,6 +133,22 @@ public final class ModManagerModule {
         final List<ModpackManifest.ModEntry> wrongVersion = new ArrayList<>();
 
         for (final ModpackManifest.ModEntry mod : manifest.mods) {
+            // Never gate on a mod we would not publish today.
+            //
+            // Two reasons, and the second is the one that bites. A relay mod is a
+            // per-player choice rather than world content, so requiring it was
+            // always wrong - and older lists, written before e4all was excluded,
+            // still name it. Worse, LocalModScanner also skips excluded ids, so
+            // the local side of this comparison cannot see an installed e4all
+            // either: a player with the mod was told to install the mod. Reading
+            // the exclusion here as well makes a stale list harmless without
+            // anyone having to republish.
+            if (LocalModScanner.EXCLUDED_IDS.contains(mod.mod_id)) {
+                WorldShareMod.LOGGER.debug(
+                        "ModManager: ignoring '{}' in the published list - not a mod we gate on",
+                        mod.mod_id);
+                continue;
+            }
             if (localHashes.contains(mod.sha1)) {
                 // Exact hash match — correct version installed.
                 continue;
