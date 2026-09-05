@@ -491,6 +491,20 @@ public final class ContributorWorldsScreen extends Screen {
      * First-time download flow with folder collision detection.
      */
     private void onDownload(final WorldStateResolver.ResolvedWorld world) {
+        // Somebody is playing it. Say so before the transfer rather than after,
+        // which is when they used to find out: the download succeeded and the
+        // next refresh swapped the button for a greyed-out "Locked".
+        if (world.lock != null && world.state == WorldStateResolver.State.NOT_DOWNLOADED) {
+            final WorldStateResolver.ResolvedWorld target = world;
+            Minecraft.getInstance().setScreen(new ConfirmBusyDownloadScreen(
+                    this, world.displayName(), world.lock.holderName,
+                    () -> startDownload(target)));
+            return;
+        }
+        startDownload(world);
+    }
+
+    private void startDownload(final WorldStateResolver.ResolvedWorld world) {
         final RemoteFileSet remote = world.subscription.remote;
         final String displayName = world.displayName();
         final String preferred = sanitizeFolderName(displayName);
@@ -819,6 +833,11 @@ public final class ContributorWorldsScreen extends Screen {
             case LOCKED_BY_OTHER -> world.lock != null
                     ? "Locked by " + world.lock.holderName : null;
             case LOCKED_BY_US -> "Your last session";
+            // The resolver only carries a lock onto a not-downloaded row when
+            // somebody is genuinely playing right now - never a free, expired or
+            // own lock - so this reads true whenever it appears.
+            case NOT_DOWNLOADED -> world.lock != null
+                    ? world.lock.holderName + " is playing right now" : null;
             case STALE_LOCK_CLEAN, STALE_LOCK_CONFLICT -> world.lock != null
                     ? world.lock.holderName + " (offline)" : null;
             default -> null;

@@ -539,13 +539,54 @@ public final class WorldShareCommands {
                     sendClientMessage("§e[WorldShare] Mod list publish failed - "
                             + "run /worldshare modpack generate manually.");
                 }
-                // Yellow, and phrased as the consequence rather than the state.
-                // As dark grey saying "not locked for syncing yet" this was the
-                // least readable line on screen and the most important one: a
-                // host who skips it leaves a world nobody can download.
-                sendClientMessage("§eYour friend can't download this world until "
-                        + "you've uploaded it once \u2014 open it from Contributor "
-                        + "Worlds to do that.");
+                // Take the lock, so this session can actually upload.
+                //
+                // Setup runs while the player is sitting in their world, which they
+                // opened from Singleplayer - so they hold no lock, and everything
+                // that uploads is gated on holding one. The pause menu left the
+                // vanilla "Save and Quit" in place, the auto-push on close skipped,
+                // and chat told them to go back to the title screen and reopen the
+                // world from Contributor Worlds. Somebody setting this up to play
+                // with a friend could reasonably think they were finished, quit, and
+                // discover later that nothing was ever uploaded.
+                //
+                // Nothing downstream needs teaching about "just set up": the pause
+                // menu, the auto-push and the heartbeat all key off weHoldLock. Make
+                // that true and they start working.
+                boolean locked = false;
+                try {
+                    // acquire() overwrites whatever lock is there, so ask first. A
+                    // new world's lock is free by definition, but setup existing can
+                    // land on a world a friend is playing right now.
+                    final LockManager.LockStatus status = LockManager.readStatus(remote);
+                    if (status.state == LockManager.LockState.FREE
+                            || status.state == LockManager.LockState.HELD_BY_US
+                            || status.state == LockManager.LockState.HELD_BY_US_EXPIRED) {
+                        LockManager.acquire(remote);
+                        locked = true;
+                    } else {
+                        WorldShareMod.LOGGER.info(
+                                "setup: not taking the lock, it is held by {}",
+                                status.lock != null ? status.lock.holderName : "someone else");
+                    }
+                } catch (final Throwable lockErr) {
+                    // Setup already succeeded; failing here would be worse than
+                    // falling back to the old instructions.
+                    WorldShareMod.LOGGER.warn("setup: couldn't take the session lock: {}",
+                            lockErr.getMessage());
+                }
+
+                if (locked) {
+                    sendClientMessage("§aThis world is yours for this session \u2014 "
+                            + "keep playing.");
+                    sendClientMessage("§fQuit to the title screen when you're done and it "
+                            + "uploads on its own, or use §eSave and Upload to Drive§f in "
+                            + "the pause menu.");
+                } else {
+                    sendClientMessage("§eYour friend can't download this world until "
+                            + "you've uploaded it once \u2014 open it from Contributor "
+                            + "Worlds to do that.");
+                }
             } catch (final Throwable t) {
                 WorldShareMod.LOGGER.error("setup failed", t);
                 screen.fail(String.valueOf(t.getMessage()));

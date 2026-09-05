@@ -14,6 +14,7 @@ import com.worldshare.mod.util.WorldSharePaths;
 import com.worldshare.mod.WorldShareMod;
 import com.worldshare.mod.cloud.RemoteFileSet;
 import com.worldshare.mod.cloud.ControlFileClient;
+import com.worldshare.mod.util.MachineId;
 import com.worldshare.mod.cloud.ControlFile;
 
 import java.io.IOException;
@@ -184,17 +185,28 @@ public final class WorldStateResolver {
             }
             // Stale or absent presence = fall through to the lock check.
 
-            // 2. Read manifest (needed for conflict detection).
-            final WorldManifest driveManifest = readManifest(remote, sub);
+            // 2. Read the control file (needed for conflict detection, and for
+            //    the lock the not-downloaded rows report below).
+            final ControlFile control = readControl(remote, sub);
+            final WorldManifest driveManifest =
+                    control == null ? null : control.manifestOrEmpty();
 
             // 3. No local folder yet.
+            //
+            // The state stays NOT_DOWNLOADED, so the row still offers Download -
+            // fetching a world while somebody is playing it is worth doing, since
+            // the pull after they finish only takes the buckets that changed. But
+            // the lock rides along, so the row can say who has it rather than
+            // letting the player find out after the transfer.
             if (!sub.hasLocalFolder()) {
-                return ResolvedWorld.of(sub, State.NOT_DOWNLOADED, null, driveManifest, null);
+                return ResolvedWorld.of(sub, State.NOT_DOWNLOADED,
+                        liveLockOf(control), driveManifest, null);
             }
             final Path localWorld = savesDir().resolve(sub.localFolderName);
             if (!Files.isDirectory(localWorld)) {
                 // Folder name recorded but directory doesn't exist (renamed/deleted locally).
-                return ResolvedWorld.of(sub, State.NOT_DOWNLOADED, null, driveManifest, null);
+                return ResolvedWorld.of(sub, State.NOT_DOWNLOADED,
+                        liveLockOf(control), driveManifest, null);
             }
 
             // 4. Read lock.
@@ -306,8 +318,17 @@ public final class WorldStateResolver {
      * Callers treat either as "we can't compare, assume local is newer", which errs
      * toward an unnecessary upload rather than silently overwriting somebody's work.
      */
-    private static WorldManifest readManifest(final RemoteFileSet remote,
-                                              final WorldSubscription sub) {
+    /**
+     * Read the world's control file, adopting its name if ours is generic.
+     *
+     * <p>Returns the whole control file rather than just the manifest, because
+     * the lock is on it too and the not-downloaded path wants both. It used to
+     * return {@code manifestOrEmpty()} and drop the rest, which is why a row for
+     * a world you haven't downloaded could not say who was playing it: the
+     * answer had already been fetched and thrown away.
+     */
+    private static ControlFile readControl(final RemoteFileSet remote,
+                                           final WorldSubscription sub) {
         try {
             final ControlFile control = ControlFileClient.read(remote.controlFileId);
             if (control == null) return null;
@@ -327,12 +348,31 @@ public final class WorldStateResolver {
                     SubscriptionStore.get().flushQuietly();
                 }
             }
-            return control.manifestOrEmpty();
+            return control;
         } catch (final Exception e) {
             WorldShareMod.LOGGER.debug("WorldStateResolver: couldn't read manifest: {}",
                     e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * The lock from a control file, but only when it means somebody is playing
+     * right now.
+     *
+     * <p>Null for a free lock, our own, or an expired one. Expired matters: the
+     * holder has gone offline, and a row saying "Bob is playing right now" would
+     * simply be wrong.
+     */
+    private static SessionLock liveLockOf(final ControlFile control) {
+        if (control == null || control.lock == null || control.lock.isUnlocked()) {
+            return null;
+        }
+        final SessionLock lock = control.lock;
+        if (lock.isExpired(Instant.now()) || lock.isOwnedBy(MachineId.get())) {
+            return null;
+        }
+        return lock;
     }
 
     private static Path savesDir() {
