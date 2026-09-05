@@ -26,7 +26,9 @@ Built for **NeoForge 1.21.1**.
 - NeoForge 21.1.x (any 21.1 version works)
 - Java 21
 - A Google account with Drive access
-- Optionally, the [e4mc mod](https://modrinth.com/mod/e4mc) — only needed for
+- Optionally, the [e4mc mod](https://modrinth.com/mod/e4mc) (or
+  [e4all](https://modrinth.com/mod/e4all), a fork of it that also allows offline
+  accounts) — installed by **everyone who wants to play live**, and only needed for
   live co-op. Everything else works without it.
 
 ## Setup — Host
@@ -34,7 +36,9 @@ Built for **NeoForge 1.21.1**.
 The "host" is whoever creates the world. You only do this once per world.
 
 1. **Install the mod.** Drop `worldshare-1.0.0.jar` into your NeoForge 1.21.1
-   mods folder. Add `e4mc` too if you want live co-op.
+   mods folder. Add [e4mc](https://modrinth.com/mod/e4mc) too if you want live
+   co-op — and note your friend needs it as well, since it's what makes your
+   world's address reachable on their end.
 2. **Launch Minecraft** and open the world you want to share.
 3. **Run `/worldshare setup`.** Sign in with Google when the browser opens. That
    is the whole of it — WorldShare makes the folder itself, as
@@ -77,7 +81,9 @@ The "host" is whoever creates the world. You only do this once per world.
 The "guest" is anyone joining a host's world.
 
 1. **Install the mod.** Just `worldshare-1.0.0.jar` to start — WorldShare will
-   tell you which other mods the world needs and fetch them for you.
+   tell you which other mods the world needs and fetch them for you. Add
+   [e4mc](https://modrinth.com/mod/e4mc) as well if you want to join live
+   sessions: **both** players need it, not just the host.
 2. **Accept the host's Drive share** (check your email) so the folder appears in
    your own Drive.
 3. **Launch Minecraft** to the title screen.

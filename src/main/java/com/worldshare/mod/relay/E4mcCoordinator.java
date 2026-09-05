@@ -77,7 +77,13 @@ public final class E4mcCoordinator {
     // ---- Host API ----
 
     /**
-     * Whether the e4mc mod is actually installed.
+     * Whether a relay mod - e4mc or e4all - is actually installed.
+     *
+     * <p>Also the guest-side check. The relay mod is what makes a
+     * {@code *.e4mc.link} address resolve at all, by mixing into Minecraft's name
+     * resolver, so a player without one cannot join a live session either. That
+     * went unchecked for a while: the join button connected regardless and the
+     * player got a bare network failure with nothing naming the cause.
      *
      * <p>e4mc is an optional dependency: WorldShare's Drive sync, session locking
      * and push/pull all work without it, and only live co-op needs a relay. There
@@ -89,9 +95,28 @@ public final class E4mcCoordinator {
      * waits for a domain that will never be logged, and simply never reports
      * anything.
      */
+    /**
+     * Mod ids that provide the relay, and the loggers they report the assigned
+     * domain on.
+     *
+     * <p>e4all is a fork of e4mc that permits offline accounts, running on
+     * e4mc's own relays - its config points at {@code broker.e4mc.link} and
+     * {@code test.e4mc.link}, so the domains it hands out are e4mc domains and
+     * everything downstream of the capture is unchanged. It logs
+     * {@code "Domain assigned: {}"} exactly as e4mc does. Only the mod id and
+     * the logger name differ, which is the whole of what this constant exists
+     * to paper over.
+     */
+    private static final String[] RELAY_MODS = {"e4mc", "e4all"};
+
     public static boolean isAvailable() {
         try {
-            return net.neoforged.fml.ModList.get().isLoaded("e4mc");
+            for (final String modId : RELAY_MODS) {
+                if (net.neoforged.fml.ModList.get().isLoaded(modId)) {
+                    return true;
+                }
+            }
+            return false;
         } catch (final Throwable t) {
             // ModList isn't available in every context (early startup, tests).
             // Assume absent - a false negative costs a clear message, a false
@@ -104,8 +129,9 @@ public final class E4mcCoordinator {
     public static void startHosting() {
         if (!isAvailable()) {
             WorldShareMod.LOGGER.warn(
-                    "E4mcCoordinator: startHosting() - e4mc is not installed; "
-                            + "live co-op is unavailable. Drive sync is unaffected.");
+                    "E4mcCoordinator: startHosting() - neither e4mc nor e4all is "
+                            + "installed; live co-op is unavailable. Drive sync is "
+                            + "unaffected.");
             return;
         }
         if (isHosting) {
@@ -278,11 +304,20 @@ public final class E4mcCoordinator {
                 }
             };
             appender.start();
-            final Logger e4mcLogger = (Logger) LogManager.getLogger("e4mc");
-            e4mcLogger.addAppender(appender);
+            // Attached to both loggers rather than whichever mod is installed:
+            // asking costs a ModList lookup per name, and an appender on a logger
+            // nothing writes to is inert.
+            //
+            // Reading the log rather than the chat message is what makes this work
+            // for e4all at all - it has a hideDomainInChat option that strips the
+            // domain out of the chat line while still logging it in full.
+            for (final String modId : RELAY_MODS) {
+                ((Logger) LogManager.getLogger(modId)).addAppender(appender);
+            }
             logAppender = appender;
             WorldShareMod.LOGGER.info(
-                    "E4mcCoordinator: log appender attached to 'e4mc' logger");
+                    "E4mcCoordinator: log appender attached to {} logger(s)",
+                    RELAY_MODS.length);
         } catch (final Throwable t) {
             WorldShareMod.LOGGER.error(
                     "E4mcCoordinator: failed to attach log appender", t);
@@ -293,8 +328,9 @@ public final class E4mcCoordinator {
     private static synchronized void detachLogAppender() {
         if (logAppender == null) return;
         try {
-            final Logger e4mcLogger = (Logger) LogManager.getLogger("e4mc");
-            e4mcLogger.removeAppender(logAppender);
+            for (final String modId : RELAY_MODS) {
+                ((Logger) LogManager.getLogger(modId)).removeAppender(logAppender);
+            }
             logAppender.stop();
         } catch (final Throwable t) {
             WorldShareMod.LOGGER.warn(

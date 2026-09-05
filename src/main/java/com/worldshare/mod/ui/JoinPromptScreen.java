@@ -1,6 +1,7 @@
 package com.worldshare.mod.ui;
 
 import com.worldshare.mod.relay.PresenceFile;
+import com.worldshare.mod.relay.E4mcCoordinator;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -42,11 +43,20 @@ public final class JoinPromptScreen extends Screen {
         final int cx = this.width / 2;
         final int buttonY = this.height / 2 + 20;
 
-        this.addRenderableWidget(Button.builder(
+        // Joining needs a relay mod on THIS side too, which is easy to miss: the
+        // host is the one who installed it to open the world, so the guest can
+        // reasonably think it is the host's business. It isn't - the relay mod
+        // mixes into Minecraft's name resolver, and without it a *.e4mc.link
+        // address simply does not resolve. Offering the button anyway produced a
+        // bare connection failure that named nothing.
+        final boolean relayInstalled = E4mcCoordinator.isAvailable();
+
+        final Button join = this.addRenderableWidget(Button.builder(
                 Component.literal("Join " + presence.host + "'s world"),
                 btn -> onJoin())
                 .bounds(cx - 155, buttonY, 150, 20)
                 .build());
+        join.active = relayInstalled;
 
         this.addRenderableWidget(Button.builder(
                 Component.literal("Cancel - back to title"),
@@ -69,13 +79,26 @@ public final class JoinPromptScreen extends Screen {
                         .withStyle(ChatFormatting.YELLOW),
                 cx, midY - 40, 0xFFFFFF);
 
-        gfx.drawCenteredString(this.font,
-                Component.literal("Join the live session or head back to the title screen."),
-                cx, midY - 20, 0xCCCCCC);
+        if (E4mcCoordinator.isAvailable()) {
+            gfx.drawCenteredString(this.font,
+                    Component.literal("Join the live session or head back to the title screen."),
+                    cx, midY - 20, 0xCCCCCC);
+        } else {
+            // Says which mod and why, rather than leaving a greyed-out button to
+            // be puzzled over.
+            gfx.drawCenteredString(this.font,
+                    Component.literal("You need e4mc or e4all installed to join.")
+                            .withStyle(ChatFormatting.RED),
+                    cx, midY - 20, 0xFFFFFF);
+            gfx.drawCenteredString(this.font,
+                    Component.literal("It's what makes the host's address reachable. "
+                            + "Drive sync works without it."),
+                    cx, midY - 8, 0xCCCCCC);
+        }
 
         gfx.drawCenteredString(this.font,
                 Component.literal(presence.e4mc_link).withStyle(ChatFormatting.GRAY),
-                cx, midY, 0x888888);
+                cx, midY + 8, 0x888888);
     }
 
     @Override

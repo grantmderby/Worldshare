@@ -185,7 +185,11 @@ dependencies {
     unitTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
     // Shade for jar packing (relocates packages into the output jar)
-    compileOnly files('run/mods/e4mc-neoforge-6.1.0.jar')
+    // No e4mc dependency, deliberately. Nothing here imports one of its classes -
+    // the relay is driven entirely by watching its log output - so a compileOnly
+    // entry bought nothing and cost something: it read a jar out of run/mods by
+    // exact filename, so swapping that jar for e4all's failed the build before
+    // Minecraft could start.
     shade 'com.google.api-client:google-api-client:2.2.0'
     shade 'com.google.oauth-client:google-oauth-client:1.34.1'
     shade 'com.google.oauth-client:google-oauth-client-java6:1.34.1'

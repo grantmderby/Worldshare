@@ -449,6 +449,26 @@ public final class ContributorWorldsScreen extends Screen {
 
     private void onJoin(final WorldStateResolver.ResolvedWorld world) {
         if (world.presence == null || world.presence.e4mc_link == null) return;
+
+        // The guest needs a relay mod too. Without one the host's *.e4mc.link
+        // address does not resolve, because resolving it is something the relay
+        // mod mixes into Minecraft - so this used to hand the player a bare
+        // connection failure naming nothing. Explaining on click beats grey.
+        if (!com.worldshare.mod.relay.E4mcCoordinator.isAvailable()) {
+            setLoadError("Can't join without e4mc.",
+                    "Live co-op needs e4mc or e4all installed on your side too - it's "
+                            + "what makes the host's address reachable. Install either "
+                            + "one and click Refresh. Everything else about this world "
+                            + "works without it.",
+                    false);
+            loadState = LoadState.ERROR;
+            Minecraft.getInstance().execute(() -> {
+                this.clearWidgets();
+                this.init();
+            });
+            return;
+        }
+
         final Minecraft mc = Minecraft.getInstance();
         mc.prepareForMultiplayer();
         final ServerAddress address = ServerAddress.parseString(world.presence.e4mc_link);
