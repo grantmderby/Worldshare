@@ -1,0 +1,524 @@
+# WorldShare end-to-end test plan
+
+The first test of the `drive.file` redesign inside the actual game. Everything
+verified so far is either unit-level (`BucketLayout`, `BucketArchive`) or done
+with standalone Python against the Drive API — which proves Drive behaves as
+assumed, **not** that the mod's use of it is correct. This document is the bridge.
+
+**Record results as you go.** When something fails, the useful report is the step
+number, what you expected, what happened, and the output of **`/worldshare
+doctor`** — which dumps link state, control file contents, lock holder, bucket
+sizes and a local-vs-remote diff in one go, to chat and to `latest.log`. Most
+"check the log for X" steps below collapse into reading that.
+
+Use `/worldshare doctor full` when a step involves bucket sizes or a
+local-vs-remote comparison; it adds a world scan and one API call per bucket, so
+it's slower.
+
+---
+
+## What you need
+
+**Two Google accounts.** Call them **A** (creator) and **B** (joiner). This is the
+one thing that can't be faked — the whole design turns on files being shared
+between two Drive accounts.
+
+**One machine is enough.** Run two dev clients side by side:
+
+```
+./gradlew runClient        # player A, game dir run/
+./gradlew runClientTwo     # player B, game dir run2/
+```
+
+They are genuinely independent, not just two windows. Everything WorldShare uses
+to tell players apart lives under the game directory:
+
+| `run/config/worldshare/` | what it separates |
+|---|---|
+| `tokens/StoredCredential` | which Google account is signed in |
+| `subscriptions.json` | which worlds are subscribed |
+| `machine_id` | **lock ownership** — what `SessionLock.isOwnedBy()` compares |
+
+That last one is why stale-lock override can be tested here at all. `runClientTwo`
+also passes `--username Player2`, so the two clients get different offline UUIDs
+and therefore separate `playerdata/<uuid>.dat` files — without which the
+per-player inventory behaviour couldn't be observed.
+
+**e4mc** only matters for Phase 5. It's an optional dependency now, so the game
+launches fine without it.
+
+> Testing the *shipped artifact* instead is also valid, and stricter: build with
+> `./gradlew build` and install `build/libs/worldshare-<version>.jar` (the plain
+> one, not `-slim`) into two Prism/MultiMC instances. Slower to iterate, but it
+> catches packaging problems the dev runtime hides.
+
+Set logging to catch what matters:
+
+```
+run/config/worldshare-client.toml
+```
+
+Confirm `logLevel` (or the Forge logging config) is at least `INFO` — several
+assertions below rely on a log line the mod emits.
+
+Before starting, sanity-check the harness itself: run `/worldshare doctor` in a
+world that has **never** been set up. It should report "Not set up for sharing"
+cleanly rather than throwing. If that misbehaves, fix it before trusting anything
+it says later.
+
+---
+
+> **Bucket counts in this document assume a world created at the current default of
+> 24.** A world set up by an older version keeps whatever count it was created with -
+> the number lives in its control file and never changes - so an older world will
+> still say `dirty N of 16`. That is correct, not a regression: see
+> `BucketLayout.DEFAULT_BUCKET_COUNT` for why the default moved and why existing
+> worlds are deliberately left alone.
+
+## Phase 1 — Setup, account A (creator)
+
+| # | Action | Expected |
+|---|---|---|
+| 1.1 | Launch, open or create a singleplayer world | World loads normally |
+| 1.2 | Run `/worldshare setup` | Chat shows *"Opening Google sign-in. Pick (or create) a Drive folder..."*, browser opens |
+| 1.3 | Consent, then pick or create a Drive folder | Browser shows the success page |
+| 1.4 | Return to game | Chat: *"Set up '<world>' for sharing"* and *"Created 26 files in your Drive folder"* |
+| 1.5 | Check the Drive folder in a browser | Exactly **26** files: `worldshare-control.json`, `worldshare-presence.json`, `worldshare-bucket_00.zip` … `_23.zip`. All 0 bytes |
+
+**Log check:** `Setting up world '<name>' in Drive folder` followed by
+`setup: 0 file(s) already present, 26 created`.
+
+> **Watch for:** more than 26 files, or duplicate names. That would mean the
+> adoption logic in `WorldSetup.createNewWorld` didn't fire and it created a
+> second set — the exact bug that logic exists to prevent.
+
+### 1.6 — The duplicate-prevention check (do this, it's cheap)
+
+Run `/worldshare setup` **again** in the same world.
+
+- **Expect:** *"This world is already set up for sharing."* No browser, no new files.
+- Then delete `<world>/worldshare-link.json`, restart, and run `/worldshare setup`
+  once more, picking **the same folder**.
+- **Expect:** chat reports setup succeeded, and the folder **still has exactly 26
+  files**. Log says `setup: adopting the existing world already in this folder`
+  and `26 file(s) already present, 0 created`.
+- **If the folder now has 52 files, stop.** That's silent world-orphaning and
+  everything after it is invalid.
+
+---
+
+## Phase 2 — First push, account A
+
+| # | Action | Expected |
+|---|---|---|
+| 2.1 | Play briefly — walk around, place blocks, generate some chunks | — |
+| 2.2 | `/worldshare lock` | *"Lock acquired"* |
+| 2.3 | `/worldshare status` | Reports files differing from Drive (everything, on a first push) |
+| 2.4 | `/worldshare push` | Progress messages naming **bucket archives**, not individual files |
+| 2.5 | Check Drive | Bucket zips now have real sizes; `worldshare-control.json` is no longer 0 bytes |
+| 2.6 | Open `worldshare-control.json` in Drive's viewer | Valid JSON with `bucketCount: 24`, a populated `manifest.files`, and `lock.status: "hosting"` |
+
+**Log check:** `push: N changed file(s) dirty M of 24 bucket(s)` then
+`commitControl: published manifest with N entries`.
+
+> **Watch for:** most of the 24 buckets dirty on a *second* push after a small
+> change. **Two or three** is the expected figure — bucket 0 (the hot bucket,
+> holding `level.dat`, playerdata, stats and `data/`, which Minecraft rewrites
+> every session) plus the one or two region tiles covering wherever you played.
+> If every push rewrites everything, the bucket assignment or the dirty-tracking
+> is not working.
+
+### 2.7 — Incremental push
+
+Play a little more in **one area**, then `/worldshare push` again.
+
+- **Expect:** 2–3 dirty buckets (hot + the region tile you played in), not 24.
+  Regions are grouped into 4×4 tiles, so wandering within a 2048-block square
+  should stay in one region bucket.
+- Note the reported MB. That's the number that says whether 24 is the right
+  count — report it back either way.
+
+---
+
+## Phase 3 — Join, account B
+
+| # | Action | Expected |
+|---|---|---|
+| 3.1 | As A, share the Drive folder with B's account as **Editor** | — |
+| 3.2 | As A, copy the folder link `/worldshare setup` printed in chat | A `drive.google.com/drive/folders/...` URL |
+| 3.3 | As B, **Contributor Worlds** → **Add World**, paste the link | — |
+| 3.4 | Click *Sign in and pick world files* | Picker opens showing **only that folder** — not B's whole Drive |
+| 3.5 | Try to select the folder itself | **Not selectable.** It can only be opened |
+| 3.6 | Open it, select **all 26** `worldshare-*` files | Returns to Contributor Worlds, world appears in the list |
+| 3.7 | Select the world → download/open | Pull runs, world opens with A's terrain and buildings |
+
+**Log check on 3.6:** `join: matched 26 of 26 required file(s)`.
+
+> **Step 3.4 and 3.5 are the point of this phase.** Scoping the picker to the
+> invite folder and making that folder unselectable are what stop the commonest
+> setup failure. If B sees their whole Drive, the `file_ids` scoping didn't take.
+> If the folder *can* be selected, `allow_folder_selection` is leaking into the
+> join flow and users will pick it and get a grant that reaches nothing.
+
+### 3.8 — The no-invite path
+
+Repeat with the link box left **blank**.
+
+- **Expect:** the picker opens on B's whole Drive, B navigates to the shared
+  folder, and selection works the same way. Slower, but it must work — invites
+  get lost.
+
+### 3.9 — Partial selection
+
+Worth one run: pick only **half** the files.
+
+- **Expect:** *"Missing 5 file(s): worldshare-bucket_04.zip, ..."* naming them
+  specifically, and the world is **not** added in a broken state.
+
+---
+
+## Phase 4 — The round trip (the real test)
+
+| # | Action | Expected |
+|---|---|---|
+| 4.1 | As B, build something distinctive at a known location | — |
+| 4.2 | As B, save and quit | Sync-on-exit screen appears and completes |
+| 4.3 | As A, open the world via Contributor Worlds | Pull runs; **B's build is present** |
+| 4.4 | As A, verify your own earlier work is still there | Nothing of A's was lost |
+
+**This is the step that matters.** Everything before it tests plumbing; this tests
+whether the world actually survives a round trip through eight zip archives.
+
+### 4.5 — Locking
+
+With A holding the lock and still in the world, have B try to open it.
+
+- **Expect:** B is blocked, shown A as the holder, and offered wait/retry rather
+  than being allowed in.
+
+### 4.6 — Release
+
+A saves and quits. B opens it.
+
+- **Expect:** B gets in. `worldshare-control.json` shows `lock.status: "unlocked"`
+  — and **the file still exists**, with the same Drive file ID as in step 1.5.
+- **If the control file's ID changed, stop.** Something deleted and recreated it,
+  which silently severs the other player's grant — the single most important
+  invariant in this design.
+
+---
+
+## Phase 5 — Live co-op (only with e4mc installed)
+
+| # | Action | Expected |
+|---|---|---|
+| 5.1 | Without e4mc installed, run `/worldshare invite` | *"Live co-op needs the e4mc mod, which isn't installed."* — and the game did launch, since it's optional now |
+| 5.2 | Install e4mc on both, restart | — |
+| 5.3 | As A, hold the lock and run `/worldshare invite` | Relay domain assigned; `worldshare-presence.json` gains content |
+| 5.4 | As B, at the title screen | Join prompt appears for A's live session |
+| 5.5 | A stops hosting | Presence file is **cleared, not deleted** — same file ID, empty-ish JSON |
+
+---
+
+## Phase 5.5 — The guards added after the player-data audit
+
+These are error paths, so they never run in a happy-path test. Both were added in
+`2aa58fb` and neither has been exercised in-game.
+
+### 5.5a — a normal push still works (the regression risk)
+
+Before anything else: after Phase 4, confirm an ordinary pull → play → save & quit
+cycle still pushes cleanly. The stale-push refusal is new, and the thing to rule
+out is it firing when it shouldn't. **If a normal push starts refusing, stop and
+report it** — that's worse than the bug it guards against.
+
+### 5.5b — push refuses once the lock is no longer yours
+
+1. Set `lockExpiryMinutes = 1` in `run/config/worldshare-client.toml` on both
+   installs, so a lock goes stale in a minute instead of a day.
+2. As A, open the world via Contributor Worlds and stay in it.
+3. Wait for the lock to go stale, then as B open the same world and accept the
+   override prompt. Play briefly and save & quit, so B's data is current on Drive.
+4. Back as A, still in-world, save & quit.
+
+- **Expect:** A's push aborts with *"This world's session lock is no longer yours
+  (B holds it now)…"* — and crucially, **before uploading anything**. Watch the log
+  for the absence of any `push: worldshare-bucket_NN.zip` upload lines.
+- **Then confirm B's data survived:** reopen as B and check their inventory and
+  anything they built. This is the whole point of the fix.
+- **Reset `lockExpiryMinutes` to 1440 afterwards on both installs.**
+
+> Before the fix, A's push would have uploaded bucket 0 — containing A's hours-old
+> copy of B's inventory — and only then noticed the lock was gone, leaving B's
+> work overwritten and the manifest describing contents the archives no longer
+> had.
+
+## Phase 6 — Failure modes worth provoking
+
+Each of these is a path that will happen in real use and has never been exercised.
+
+- **Offline push.** Disconnect the network, then `/worldshare push`. Expect a
+  clear "Drive unreachable, local changes preserved", not a crash or a hang.
+- **Interrupted push.** Kill the game mid-push. Relaunch, push again. Expect
+  recovery, with no corruption and no half-written archive adopted as truth.
+- **Lock takeover.** With A holding the lock, force B to override a stale lock
+  (or wait out the expiry). Expect A to get the chat warning that their session
+  was overridden and that changes won't sync.
+- **Corrupted archive.** Download a bucket zip from Drive, alter a byte, re-upload
+  it, and pull. Expect a refusal naming the file — *"came out of
+  worldshare-bucket_NN.zip with different content than the world's manifest
+  describes"* — and **nothing written into the world**.
+
+  > This fired for real in Round 2, from an interrupted push rather than a
+  > hand-edited zip, and it revealed that the guard verified *after* extracting: the
+  > mismatched content landed and was then reported. It detected, it did not
+  > prevent. Since then the archive is hashed in place before anything is written,
+  > so the second half of that expectation is now the part worth checking — compare
+  > the world folder before and after, not just the message.
+
+- **Renaming a bucket file in Drive proves nothing.** Drive addresses files by ID,
+  so a rename changes nothing the mod can observe. Alter the *contents* instead.
+- **Bucket-count mismatch.** Hand-edit `bucketCount` in `worldshare-control.json`
+  to `4` and try to sync. Expect a refusal naming the mismatch — **not** a
+  best-effort sync. This guard exists because proceeding corrupts the world
+  gradually and silently.
+
+---
+
+## Reporting back
+
+For each phase, the useful shape is:
+
+```
+Phase 2.4 — FAIL
+Expected: progress naming bucket archives
+Got:      "0 files to upload", push completed instantly
+Log:      push: nothing changed (0 file(s) left to the other player)
+```
+
+Phases 1, 2 and 4 are the ones that decide whether this design works at all.
+5 and 6 can wait if time is short.
+
+---
+
+# Round 2 — what the first live run left behind
+
+The first run passed Phases 1–4: setup created 18 Drive files, incremental pushes
+dirtied 4 of 16 buckets, the two-account round trip worked and inventories
+survived. It also turned up five defects, fixed across `9264423`, `6fd6aae` and
+`e0a4685`. **Three of those fixes have never been seen working**, because they
+were written after the clients were shut down.
+
+This section is only what's left. Phases 1–4 above do not need repeating.
+
+## Round 2A — the three unverified fixes (two clients, ~20 min)
+
+### 2A.1 — The download progress bar appears (`6fd6aae`)
+
+The bug: `triggerRefresh()` both set `refreshRequested` and called `startLoading()`
+directly, so the flag stayed set for the next `init()` to find — and that `init()`
+was the one `onDownload` triggers to swap in the progress bar. It started a second
+world-list load that finished first and painted over the download.
+
+Getting back to a `Download` state does **not** need the picker again.
+`hasLocalFolder()` only checks the stored name, so with client B **closed**:
+
+```bash
+python -c "import json,io;p='run2/config/worldshare/subscriptions.json';d=json.load(io.open(p,encoding='utf-8'));[s.update(localFolderName='') for s in d];json.dump(d,io.open(p,'w',encoding='utf-8'),indent=1)"
+```
+
+Then launch client B → **Contributor Worlds**:
+
+1. Click **Refresh** first. This is what leaves the stale flag; without it the bug
+   never fired and the test proves nothing.
+2. Click **Download**.
+
+- **Expect:** "Downloading from Drive..." with a progress bar that stays put and
+  runs to 100%.
+- **Fail:** the screen blinks and returns to the world list with **Download** still
+  showing, and clicking it again appears to do nothing.
+
+### 2A.2 — Progress never exceeds its own total (`6fd6aae`)
+
+`onStart` passed the *changed*-file count while `transferBuckets` counts off *full
+bucket membership*, so the bar read "25 / 15 files".
+
+On client A: open the world via Contributor Worlds, place a few blocks, save and
+quit. Watch the line under the bar.
+
+- **Expect:** the left number never exceeds the right, and they end equal.
+- **Cross-check the log**, which now prints both numbers:
+  `push: 15 changed file(s) dirty 4 of 16 bucket(s); repacking 25 file(s), 16 MB`
+  The bar's denominator must be the **repacking** figure (25), not the changed one.
+
+### 2A.3 — Toast, and the lock surviving a failed push (`9264423` + `e0a4685`)
+
+One test covers both, because the same failure exercises them.
+
+> **Do not try renaming a bucket file in Drive to force this.** Drive addresses
+> files by ID, so a rename changes nothing the mod can notice — that attempt in
+> round 1 was a no-op, not a pass.
+
+On client A, in the world:
+
+1. Save and quit.
+2. Wait 30 seconds for **Continue in Background** to appear, and click it.
+3. At the title screen, **disable wifi** while the upload is still running.
+
+Expect, in order:
+
+- **A toast, top right:** *"WorldShare — '\<world\>' did not sync: …"*. This is the
+  first time the toast path has ever been exercised; before `9264423` this message
+  went only to the log.
+- **Log:** `SaveAndUpload: N bucket(s) failed; keeping the session lock so nobody
+  pulls a world the manifest doesn't match`
+- Re-enable wifi. `worldshare-control.json` still reads `lock.status: "hosting"`.
+- **Client B's row: Locked.** This is the point of the whole fix — B must be kept
+  out of a world whose archives the manifest no longer describes.
+- **Client A reopens: the row reads Resume.** Open it, save and quit; that push
+  commits the manifest, releases the lock, and B's row goes back to Available.
+
+## Round 2B — three clients
+
+Needs the **third Google account**, and the Drive folder shared with it as Editor.
+`playerCap` already defaults to 5.
+
+```bash
+./gradlew runClient
+./gradlew runClientTwo
+./gradlew runClientThree
+```
+
+### 2B.1 — Three-way lock contest
+
+1. A opens the world and stays in it.
+2. B and C both click Open.
+
+- **Expect:** both blocked, both showing **Locked by \<A\>**, neither let in.
+- A saves and quits. B opens it. **C must now show Locked by \<B\>** — not
+  Available, and not a second successful entry.
+
+### 2B.2 — Playerdata under repack (the one that matters)
+
+This is why the third client exists. A bucket is repacked **whole** from the
+pushing player's copy of the files, and `playerdata/` for *every* player lives in
+bucket 0. So when A pushes, A rewrites B's and C's characters from A's disk.
+
+1. A opens, puts **64 dirt** in their inventory, saves and quits.
+2. B opens, puts **64 cobblestone** in theirs, saves and quits.
+3. C opens, puts **64 sand** in theirs, saves and quits.
+4. A opens again, changes **only A's own** inventory, saves and quits.
+5. B opens. Then C opens.
+
+- **Expect:** B still has the cobblestone and C still has the sand.
+- **Watch for** `pull: stripped Player tag from level.dat` on every pull. That strip
+  is what stops the singleplayer host's character in `level.dat` overwriting the
+  per-player file — without it, whoever pulls inherits the pusher's inventory.
+- **If B or C loses their inventory, stop.** That is the failure this whole design
+  exists to prevent and nothing after it matters.
+
+## Running order
+
+2A first, on a healthy Drive. 2D deliberately breaks Drive and then repairs it, so
+it goes second. 2B and 2C both need a healthy Drive again, so they follow.
+
+| Round | Clients | Needs |
+|---|---|---|
+| 2A — the three unverified fixes | 2 | nothing extra |
+| 2D — failed transfers and repair | 2 | nothing extra |
+| 2B — three-way lock, playerdata | 3 | third Google account |
+| 2C — e4mc live co-op | 2–3 | e4mc (already in all run dirs) |
+
+## Round 2C — e4mc live co-op
+
+The jar is now in `run/mods`, `run2/mods` and `run3/mods`; in round 1 only `run/`
+had it, which is why client B reported it missing.
+
+1. A holds the lock and runs `/worldshare invite`.
+
+- **Expect:** e4mc assigns a `*.e4mc.link` domain and `worldshare-presence.json`
+  gains content. B's and C's rows flip to **LIVE** with a **Join** button.
+- **Unknown going in:** whether e4mc's relay completes its handshake for *offline
+  dev accounts*. If it hangs with no domain assigned, that is the answer — say so
+  rather than treating it as a WorldShare bug.
+- 5.5: A stops hosting → the presence file is **cleared, not deleted**, keeping the
+  same Drive file ID.
+
+### 2C.2 — The asymmetric case
+
+e4mc is a **host-side** requirement. The only `isAvailable()` checks are in
+`/worldshare invite` and the doctor report; `onJoin` hands `presence.e4mc_link`
+straight to `ConnectScreen.startConnecting`, which is an ordinary server
+connection. So a guest without e4mc should still be able to join.
+
+Test it by removing the jar from `run3/mods/` and having C join A's live session.
+
+- **Expect:** C joins normally.
+- **Watch for a mod-list rejection instead.** `neoforge.mods.toml` declares no
+  `displayTest`, so how NeoForge negotiates an asymmetric mod list here is not
+  settled by reading the code. If C is refused at the handshake, that is the finding
+  - and it would mean e4mc has to be documented as required on both sides.
+
+Then the reverse: give C the jar back, remove it from `run/mods/`, and have **A**
+run `/worldshare invite`.
+
+- **Expect:** *"Live co-op needs the e4mc mod, which isn't installed."* and no
+  presence file. C's own copy of e4mc must not change this - hosting is what needs
+  it.
+
+**Fallback if the relay refuses dev accounts.** WorldShare's side is still fully
+testable: `onJoin` hands `presence.e4mc_link` straight to
+`ConnectScreen.startConnecting`, so writing a presence file pointing at a localhost
+LAN port exercises presence → LIVE badge → Join without the relay being involved.
+
+## Round 2D — a failed download leaves no trace, and the repair path
+
+Both added after Round 2 found that a failed download left a half-written world
+resolving as a legitimate local copy, and that an inconsistent Drive had no way
+back if the interrupted player never returned.
+
+### 2D.1 — A failed download changes nothing
+
+Recreate the inconsistency deliberately, which Round 2 produced by accident:
+
+1. On **A**, open the world, play briefly, save and quit, and **kill the game**
+   once the log shows one `push: worldshare-bucket_NN.zip` line but before
+   `commitControl`.
+2. On **B**, with the client closed, clear `localFolderName` as in 2A.1.
+3. Record the folder listing: `ls run2/saves/`
+4. Launch B, Contributor Worlds → **Download**.
+
+- **Expect:** the download fails naming a file, the row still reads **Download**,
+  and `ls run2/saves/` is **identical to step 3** — no new folder, nothing modified.
+- Previously this produced a `Conflict!` row and a partially written world.
+
+### 2D.2 — Repair from my copy
+
+From that same inconsistent state, with **B already having a local copy** (so use a
+world B has downloaded before, not the one from 2D.1):
+
+1. Shorten `lockExpiryMinutes` on both installs, or wait out A's lock.
+2. On **B**, click **Open**.
+
+- **Expect:** instead of a dead error, the **Repair Shared World?** screen, naming
+  A as the holder and saying plainly that A's unfinished upload will be lost.
+- Confirm with **Repair from my copy**.
+- **Expect:** a backup at `run2/saves/<world>_offline_backup_<timestamp>`, then
+  `repair: republishing every bucket` in the log, then every bucket uploaded and
+  `commitControl` published.
+- **Then on A:** open the world. A pulls B's copy cleanly. A's unpublished work is
+  gone, which is the stated bargain — and the backup on B is not A's work, so make
+  sure that expectation is clear before running this with anything you care about.
+
+> **The point of 2D.2 is that a plain push cannot do this.** Push decides which
+> buckets are dirty by diffing local files against the manifest, and here the
+> manifest is the stale half — B's copy matches it exactly, so an ordinary push
+> would log `push: nothing changed` and leave Drive broken. Watch for
+> `repair: full scan` and a bucket count equal to every non-empty bucket.
+
+## Still unrun from Round 1
+
+Cheap, and worth doing before release: **3.8** (blank invite link — the picker opens
+on the whole Drive and selection still works), **3.9** (partial selection names the
+missing files and refuses to half-add the world), and **Phase 6**'s failure modes,
+of which the offline push is now partly covered by 2A.3.

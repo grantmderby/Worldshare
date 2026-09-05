@@ -31,6 +31,18 @@ public final class SessionLock {
     public static final String STATUS_OFFLINE = "offline";
     public static final String STATUS_SYNCING = "syncing";
 
+    /**
+     * Nobody holds the lock.
+     *
+     * <p>Under the old full-Drive design, releasing meant deleting
+     * {@code session.lock} outright and letting the next acquirer create a fresh
+     * one. That is no longer possible: the lock now lives inside the control file,
+     * and deleting a file under {@code drive.file} means the replacement gets a new
+     * Drive ID that nobody else has been granted. So release is a state change, not
+     * a deletion, and "unlocked" had to become a value the schema can express.
+     */
+    public static final String STATUS_UNLOCKED = "unlocked";
+
     public int schemaVersion;
     public String holderName;
     public String machineId;
@@ -45,8 +57,6 @@ public final class SessionLock {
     public String lastHeartbeatAt;
     /** Display names of players currently in the session. Host is always first. */
     public List<String> playersOnline;
-    /** Soft cap on players; respected by the relay module in M4. */
-    public int playerCap;
 
     /** No-arg constructor required by Gson. */
     public SessionLock() {
@@ -61,13 +71,11 @@ public final class SessionLock {
      * @param machineId      stable per-machine identifier (see {@code MachineId})
      * @param now            current UTC instant
      * @param expiresAfter   how long from {@code now} until the lock is stale
-     * @param playerCap      soft cap on simultaneous players
      */
     public static SessionLock newAcquired(final String holderName,
                                           final String machineId,
                                           final Instant now,
-                                          final java.time.Duration expiresAfter,
-                                          final int playerCap) {
+                                          final java.time.Duration expiresAfter) {
         final SessionLock lock = new SessionLock();
         lock.holderName = holderName;
         lock.machineId = machineId;
@@ -78,8 +86,42 @@ public final class SessionLock {
         lock.lastHeartbeatAt = now.toString();
         lock.playersOnline = new ArrayList<>();
         lock.playersOnline.add(holderName);
-        lock.playerCap = playerCap;
         return lock;
+    }
+
+    /**
+     * Factory: the "nobody is holding this world" state.
+     *
+     * <p>Holder fields are left null deliberately rather than blanked to empty
+     * strings, so that {@link #isOwnedBy} can never accidentally match a real
+     * machine ID against a released lock.
+     */
+    public static SessionLock unlocked(final Instant now) {
+        final SessionLock lock = new SessionLock();
+        lock.holderName = null;
+        lock.machineId = null;
+        lock.status = STATUS_UNLOCKED;
+        lock.relayAddress = null;
+        lock.lockedAt = null;
+        // An unlocked session is expired by definition: EPOCH is safely in the past,
+        // so every "is this stale?" check treats it as free without special-casing.
+        lock.expiresAt = Instant.EPOCH.toString();
+        lock.lastHeartbeatAt = now.toString();
+        lock.playersOnline = new ArrayList<>();
+        return lock;
+    }
+
+    /** @return true if this lock is explicitly released (nobody holds it). */
+    public boolean isUnlocked() {
+        return STATUS_UNLOCKED.equals(status) || status == null;
+    }
+
+    /**
+     * @return true if the lock is free to take: either explicitly released, or
+     *         held but stale past its expiry
+     */
+    public boolean isAvailable(final Instant now) {
+        return isUnlocked() || isExpired(now);
     }
 
     /**

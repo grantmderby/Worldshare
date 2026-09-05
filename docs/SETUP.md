@@ -1,160 +1,151 @@
 # Development Environment Setup
 
-This guide walks you from a fresh machine to a running WorldShare dev client.
-Target audience: you (the author) and any future collaborators.
+From a fresh machine to a running WorldShare dev client.
 
-## 1. Install Prerequisites
+> This guide was rewritten after the project moved from Forge 1.20.1 to
+> **NeoForge 1.21.1**. If you find instructions elsewhere mentioning Java 17,
+> ForgeGradle, or fetching the Gradle wrapper from a Forge MDK, they predate that
+> move and will not work.
 
-### Java 17 (Required)
+## 1. Install prerequisites
 
-Forge 1.20.1 requires **exactly Java 17**. Java 21 will silently break ForgeGradle,
-and Java 8/11 won't work at all.
+### Java 21 (required)
 
-- **Windows / macOS / Linux:** Install [Eclipse Temurin JDK 17](https://adoptium.net/temurin/releases/?version=17)
-- Verify with: `java -version` — must print `17.x.x`
-- Verify with: `javac -version` — must also print `17.x.x`
+NeoForge 1.21.1 requires **Java 21** — Minecraft moved up from 17 in 1.20.5, and
+`build.gradle` pins the toolchain to 21. Java 17 will not build this project.
 
-If you already have a different Java version installed and your `java -version` shows
-something else, you don't need to uninstall it. Just make sure `JAVA_HOME` points to
-the Java 17 install:
+- Install [Eclipse Temurin JDK 21](https://adoptium.net/temurin/releases/?version=21)
+- Verify: `java -version` and `javac -version` should both print `21.x.x`
 
-- **Windows (PowerShell):** `$env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-17.x.x-hotspot"`
-- **macOS / Linux (bash/zsh):** `export JAVA_HOME=$(/usr/libexec/java_home -v 17)` on macOS,
-  or `export JAVA_HOME=/usr/lib/jvm/temurin-17-jdk-amd64` on Linux.
+If you keep several JDKs around, point `JAVA_HOME` at 21 rather than uninstalling
+the others:
 
-### IntelliJ IDEA Community (Recommended)
+- **Windows (PowerShell):** `$env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-21.x.x-hotspot"`
+- **macOS:** `export JAVA_HOME=$(/usr/libexec/java_home -v 21)`
+- **Linux:** `export JAVA_HOME=/usr/lib/jvm/temurin-21-jdk-amd64`
 
-- Download: https://www.jetbrains.com/idea/download/ (scroll to "Community Edition", it's free)
-- Minecraft modding works great with IntelliJ. Eclipse and VS Code work too but IntelliJ's
-  Gradle integration is the smoothest.
+Gradle's toolchain support means it may find a suitable JDK on its own, but
+setting `JAVA_HOME` explicitly avoids a class of confusing failures.
+
+### IntelliJ IDEA Community (recommended)
+
+[Download here](https://www.jetbrains.com/idea/download/) — scroll to Community
+Edition, which is free. Eclipse and VS Code work, but IntelliJ's Gradle
+integration is the smoothest for Minecraft modding.
 
 ### Git
 
-- If you don't have it: https://git-scm.com/downloads
+[git-scm.com/downloads](https://git-scm.com/downloads) if you don't have it.
 
-## 2. Get the Gradle Wrapper
+## 2. Build
 
-Our project was scaffolded without `gradlew` / `gradlew.bat` / `gradle-wrapper.jar`
-because these are binary/executable files that Claude couldn't generate directly.
-You need to fetch them from the official Forge MDK:
-
-1. Go to https://files.minecraftforge.net/net/minecraftforge/forge/index_1.20.1.html
-2. Find the **recommended** build (as of writing, 1.20.1 - 47.2.0 or similar - match
-   what's pinned in our `gradle.properties` if possible)
-3. Under the "Download Recommended" box click **Mdk** (not Installer, not Universal)
-4. Unzip the MDK somewhere temporary
-5. Copy exactly these files from the MDK into our project root, preserving paths:
-
-   ```
-   gradlew                            → worldshare/gradlew
-   gradlew.bat                        → worldshare/gradlew.bat
-   gradle/wrapper/gradle-wrapper.jar  → worldshare/gradle/wrapper/gradle-wrapper.jar
-   ```
-
-6. **Do not copy anything else.** In particular do NOT copy the MDK's `build.gradle`,
-   `gradle.properties`, `settings.gradle`, `src/`, or `.gitignore` — we've
-   written our own versions of those and the MDK's will clobber them.
-
-7. On macOS/Linux, make the wrapper executable:
-   ```bash
-   chmod +x gradlew
-   ```
-
-## 3. First Build (Expect It To Be Slow)
-
-From the project root:
+The Gradle wrapper is committed to the repository, so there is nothing to fetch
+first. From the project root:
 
 **Windows:**
-```cmd
+```
 gradlew.bat build
 ```
 
 **macOS / Linux:**
-```bash
+```
 ./gradlew build
 ```
 
-**What to expect:**
-- First run downloads Gradle 8.4 (~100MB)
-- Then downloads ForgeGradle and the MDK bootstrap
-- Then downloads and decompiles Minecraft 1.20.1 — this step alone can take 10+ minutes
-- Then compiles our mod
+**What to expect on a first build:** Gradle 8.8 downloads (~100 MB), then
+NeoGradle pulls and processes Minecraft 1.21.1. Budget **5–20 minutes**.
+Incremental builds afterwards take seconds.
 
-Total time on the first build: **5-20 minutes** depending on your internet. After that,
-incremental builds are a few seconds.
+Two jars land in `build/libs/`:
 
-If you see `BUILD SUCCESSFUL`, you're done. The compiled mod jar lives in `build/libs/`.
+- `worldshare-<version>.jar` — the real one, with the Google API libraries shaded in
+- `worldshare-<version>-slim.jar` — intermediate, no dependencies bundled, not distributable
 
-## 4. Run the Dev Client
+NeoForge uses official mappings end to end, so there is no reobfuscation step —
+what Shadow produces is what ships.
 
-```bash
+## 3. Google credentials
+
+The mod can build without these, but it can't talk to Drive. See
+[GOOGLE_CLOUD_SETUP.md](GOOGLE_CLOUD_SETUP.md) for how to create them, then place
+`client_secret.json` at either:
+
+- `src/main/resources/worldshare/oauth/client_secret.json` — bundled at build time
+- `<gamedir>/config/worldshare/client_secret.json` — loaded at runtime, takes
+  precedence, so you can swap credentials without rebuilding
+
+Both are gitignored. Don't commit either.
+
+## 4. Run the dev client
+
+```
 ./gradlew runClient
 ```
 
-This launches a full Minecraft 1.20.1 Forge client with WorldShare already loaded.
-No need to copy jars into a `mods/` folder during development — this is faster and lets
-you edit code and restart.
+This launches Minecraft 1.21.1 with WorldShare loaded from source — no copying
+jars into a `mods/` folder. Its game directory is `run/`, so worlds live in
+`run/saves/` and logs in `run/logs/latest.log`.
 
-**Verification checklist:**
-1. Minecraft title screen appears
-2. Click **Mods** — you should see "WorldShare" in the list with description
-3. Quit Minecraft
-4. Open `run/logs/latest.log`
-5. Search for these four lines:
-   ```
-   CloudModule initialized (stub - no Drive calls yet).
-   RelayModule initialized (stub - no relay integration yet).
-   ModManagerModule initialized (stub - no modpack sync yet).
-   UiModule initialized (stub - no screens registered yet).
-   ```
-6. If all four appear, **Milestone 0 is complete.** 🎉
+**Quick verification:**
 
-## 5. Import Into IntelliJ IDEA
+1. Title screen appears, with a **Contributor Worlds** button below Multiplayer
+2. **Mods** lists WorldShare
+3. In a singleplayer world, `/worldshare` tab-completes its subcommands
 
-1. Launch IntelliJ
-2. **File → Open...** → select the `worldshare` project folder (the folder containing
-   `build.gradle`, not a parent)
-3. IntelliJ will detect it as a Gradle project. Accept any prompts about trusting it and
-   loading the Gradle project.
-4. Wait for indexing (first time is slow — could be 2-5 minutes as it scans the decompiled MC source)
-5. In the top-right run config dropdown you should see **runClient**, **runServer**,
-   **runData**, **runGameTestServer** as run configurations. If you don't:
-   - Open the Gradle panel (right side)
-   - Run the task `ForgeGradle → genIntellijRuns`
-   - Reload the Gradle project
+For anything involving Drive, work through
+[E2E_TEST_PLAN.md](E2E_TEST_PLAN.md) rather than poking at it ad hoc — several
+failure modes in this design look like success from the outside.
 
-Now you can set breakpoints anywhere in our code, hit the green Debug button next to
-`runClient`, and step through. This is *significantly* easier than dropping print
-statements everywhere.
+## 5. Import into IntelliJ
 
-## 6. Common First-Time Issues
+1. **File → Open…** → select the folder containing `build.gradle`
+2. Accept the prompts to trust and load the Gradle project
+3. Wait for indexing — first time can be several minutes
+4. `runClient`, `runServer`, `runData` and `runGameTestServer` appear in the run
+   configuration dropdown
 
-**`Unsupported class file major version 61` or similar:**
-You're running Gradle with the wrong Java version. Check `JAVA_HOME` is Java 17.
+Breakpoints and the Debug button beside `runClient` are considerably more
+pleasant than scattering log statements, particularly for the OAuth flow, which
+is hard to reason about from logs alone.
 
-**`Could not resolve net.minecraftforge:forge`:**
-Usually a transient network issue. Try again. If persistent, check your firewall
-allows `maven.minecraftforge.net`.
+## 6. Testing Drive behaviour without launching the game
 
-**`FileNotFoundException` for `gradle-wrapper.jar`:**
-You skipped Step 2. Go grab the wrapper files from the Forge MDK.
+`tools/oauth-picker-prototype/` holds standalone Python scripts that exercise the
+Drive API paths the mod depends on — the consent-plus-picker flow, per-file grant
+persistence, and what a folder grant does and doesn't reach. Its README explains
+each one.
 
-**Dev client crashes on startup with a mixin error:**
-We don't use mixins in Milestone 0, so this would be surprising. Check `run/logs/latest.log`
-for the full stack trace.
+Every claim in [CLOUD_BACKEND_DECISION.md](CLOUD_BACKEND_DECISION.md) was
+established with these, and a round trip through them takes seconds against
+minutes for a game restart. Reach for them first whenever you're about to assume
+something about Drive.
 
-**IntelliJ shows red squiggles on `net.minecraftforge.*` imports:**
-Gradle hasn't finished importing. Wait for the status bar indexing to finish, or run
-`./gradlew --refresh-dependencies` and re-import the project.
+## 7. Common first-time issues
 
-## 7. What to Do Next
+**`Unsupported class file major version 65` (or similar):**
+Gradle is running on the wrong JDK. Check `JAVA_HOME` points at Java 21.
 
-Once M0 is verified working, you're ready for **Milestone 1: Google Drive Auth & I/O**.
-The plan:
-- Set up a Google Cloud project and enable the Drive API
-- Create OAuth credentials for a "Desktop" application
-- Implement the `DriveClient` class
-- Implement the one-time OAuth flow
+**`Could not resolve net.neoforged:neoforge`:**
+Usually transient. Retry; if it persists, check your firewall allows
+`maven.neoforged.net`.
 
-That's a separate conversation. Come back when you have a green Mods list with
-"WorldShare" in it.
+**`OAuth client_secret.json not found`:**
+Expected until you complete step 3. The mod builds and launches fine without it —
+only Drive operations fail, and the exception says where to put the file.
+
+**IntelliJ shows red squiggles on `net.minecraft.*` imports:**
+Gradle hasn't finished importing. Wait for indexing, or run
+`./gradlew --refresh-dependencies` and reload the Gradle project.
+
+**Dev client launches but Contributor Worlds is missing:**
+Check `run/logs/latest.log` for a mod loading error. WorldShare registers its UI
+during client setup, so a failure there is usually visible as a stack trace early
+in the log.
+
+## 8. Where to look next
+
+- [CLOUD_BACKEND_DECISION.md](CLOUD_BACKEND_DECISION.md) — why the storage design
+  is the shape it is, and what was tested to rule out the alternatives. Read this
+  before changing anything in `sync/` or `cloud/`.
+- [E2E_TEST_PLAN.md](E2E_TEST_PLAN.md) — how to verify a change end to end.
+- [DEVELOPMENT.md](DEVELOPMENT.md) — module layout and milestone history.

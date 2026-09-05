@@ -1,6 +1,11 @@
 package com.worldshare.mod.modmanager;
 
 import com.worldshare.mod.WorldShareMod;
+import com.worldshare.mod.cloud.RemoteFileSet;
+import com.worldshare.mod.cloud.ControlFileClient;
+import com.worldshare.mod.cloud.ControlFile;
+import com.google.gson.JsonParser;
+import com.google.gson.JsonElement;
 import com.worldshare.mod.cloud.CloudModule;
 import com.worldshare.mod.cloud.DriveClient;
 
@@ -39,16 +44,21 @@ public final class ModManagerModule {
     /**
      * Host flow: scan local mods, resolve Modrinth download URLs, write to Drive.
      *
-     * @param driveFolderId target Drive folder
+     * @param remote the world's Drive file set; the manifest is written into its
+     *               control file rather than a {@code modpack.json} of its own,
+     *               because under the {@code drive.file} scope every extra remote
+     *               file is one more thing each player has to pick during setup
      * @return summary stats
      */
-    public static GenerateResult generateAndUpload(final String driveFolderId)
+    public static GenerateResult generateAndUpload(final RemoteFileSet remote)
             throws IOException, InterruptedException {
         final List<LocalModScanner.ScannedMod> scanned = LocalModScanner.scanAll();
 
         if (scanned.isEmpty()) {
-            WorldShareMod.LOGGER.info(
-                    "ModManager: no eligible mods to publish (dev environment?)");
+            WorldShareMod.LOGGER.info("ModManager: no eligible mods to publish ({})",
+                    LocalModScanner.isDevEnvironment()
+                            ? "running from class directories, not jars"
+                            : "no mods installed besides WorldShare");
             return new GenerateResult(0, 0, 0);
         }
 
@@ -76,34 +86,30 @@ public final class ModManagerModule {
                     m.modId, m.displayName, m.version, m.sha1, m.filename, url));
         }
 
-        // Write to Drive (overwrite if exists).
-        final DriveClient client = CloudModule.driveClient();
-        final String existingId = client.findFileByName(MODPACK_FILENAME, driveFolderId);
-        client.writeText(
-                existingId,
-                MODPACK_FILENAME,
-                driveFolderId,
-                manifest.toJson(),
-                DriveClient.MIME_TYPE_JSON);
+        // Publish into the control file, under the same monitor everything else
+        // that writes it uses, so this can't race a push or a heartbeat.
+        final JsonElement asJson = JsonParser.parseString(manifest.toJson());
+        ControlFileClient.update(remote.controlFileId, remote.bucketCount,
+                control -> control.modpack = asJson);
 
         WorldShareMod.LOGGER.info(
-                "ModManager: published modpack.json - {} total mods, {} auto-installable, {} manual",
+                "ModManager: published modpack - {} total mods, {} auto-installable, {} manual",
                 scanned.size(), auto, manual);
         return new GenerateResult(scanned.size(), auto, manual);
     }
 
     /**
-     * Guest flow: read Drive's modpack.json, return mods we don't have locally.
-     * Returns empty list if no modpack.json exists.
+     * Guest flow: read the host's published modpack out of the control file and
+     * return the mods we don't have locally. Empty if the host never published one.
      */
-    public static ModCheckResult checkGuestMissingMods(final String driveFolderId)
+    public static ModCheckResult checkGuestMissingMods(final RemoteFileSet remote)
             throws IOException {
-        final DriveClient client = CloudModule.driveClient();
-        final String fileId = client.findFileByName(MODPACK_FILENAME, driveFolderId);
-        if (fileId == null) return new ModCheckResult(List.of(), List.of());
+        final ControlFile control = ControlFileClient.read(remote.controlFileId);
+        if (control == null || control.modpack == null) {
+            return new ModCheckResult(List.of(), List.of());
+        }
 
-        final String json = client.readText(fileId);
-        final ModpackManifest manifest = ModpackManifest.fromJson(json);
+        final ModpackManifest manifest = ModpackManifest.fromJson(control.modpack.toString());
         if (manifest == null || manifest.mods == null) return new ModCheckResult(List.of(), List.of());
 
         // Hash local mods for comparison.
@@ -115,10 +121,14 @@ public final class ModManagerModule {
             localHashes.add(m.sha1);
         }
 
-        // Missing if mod ID not present locally. (Different version of an
-        // installed mod is shown as informational only - we can't replace
-        // running jars on Windows.)
         // Classify each required mod as missing, wrong version, or fine.
+        //
+        // Both block opening the world, and the wrong-version case is not a
+        // lesser problem than the missing one: a mod at a different version can
+        // read the host's chunks and write them back in a shape the host's copy
+        // no longer understands. The two are reported separately only because the
+        // remedy differs - install it, versus replace it, which needs a restart
+        // since running jars can't be swapped on Windows.
         final List<ModpackManifest.ModEntry> missing = new ArrayList<>();
         final List<ModpackManifest.ModEntry> wrongVersion = new ArrayList<>();
 

@@ -11,6 +11,9 @@ displayName="${mod_name}"
 authors="${mod_authors}"
 description='''${mod_description}'''
 credits="Built with NeoForge MDK"
+# Shown in the in-game mod list. Must sit at the jar root, hence
+# src/main/resources/icon.png rather than under assets/.
+logoFile="icon.png"
 
 # ----- Dependencies -----
 
@@ -30,13 +33,33 @@ credits="Built with NeoForge MDK"
     ordering="NONE"
     side="BOTH"
 
-# e4mc - required for live co-op (M4)
-# The mod ID for e4mc on the NeoForge build is "e4mc" (was "e4mc_minecraft" on Forge).
-# We mark this as "required" so brother gets a clear "you need to install e4mc"
-# message if it's missing. Side=CLIENT because e4mc is a client-side mod.
+# e4mc - optional, needed only for live co-op.
+#
+# The mod ID on the NeoForge build is "e4mc" (it was "e4mc_minecraft" on Forge).
+#
+# This is deliberately NOT required. Everything WorldShare is fundamentally for -
+# Drive sync, session locking, push and pull - works without e4mc; it is only the
+# "both online at once" case that needs a relay. Marking it required would refuse
+# to launch the game for someone who just wants to pass a world back and forth,
+# which is a poor first impression and excludes a legitimate way to use the mod.
+#
+# E4mcCoordinator.isAvailable() gates every path that depends on it, so a missing
+# e4mc produces a clear message rather than a silent wait for a relay domain that
+# will never arrive.
 [[dependencies.${mod_id}]]
     modId="e4mc"
-    type="required"
+    type="optional"
     versionRange="[6.0,)"
     ordering="AFTER"
     side="CLIENT"
+
+# Mixins.
+#
+# One mixin, and it exists because vanilla offers no hook where it is needed.
+# Every way of opening a world from the world list - the Play button,
+# double-clicking an entry, and the play icon that appears on hover - funnels
+# through WorldListEntry.joinWorld(). Gating that one method covers all of them,
+# including any route not yet found; gating the screen's buttons would cover only
+# the first.
+[[mixins]]
+    config="worldshare.mixins.json"

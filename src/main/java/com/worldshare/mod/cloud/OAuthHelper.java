@@ -1,8 +1,9 @@
 package com.worldshare.mod.cloud;
 
+import com.google.api.client.auth.oauth2.AuthorizationCodeRequestUrl;
 import com.google.api.client.auth.oauth2.Credential;
-import com.google.api.client.extensions.java6.auth.oauth2.AuthorizationCodeInstalledApp;
-import com.google.api.client.extensions.java6.auth.oauth2.VerificationCodeReceiver;
+import com.google.api.client.auth.oauth2.TokenResponse;
+import com.google.api.client.auth.oauth2.TokenResponseException;
 import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow;
 import com.google.api.client.googleapis.auth.oauth2.GoogleClientSecrets;
 import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
@@ -29,15 +30,19 @@ import java.util.List;
 
 /**
  * Owns the Google OAuth 2.0 flow: loading client secrets, triggering the browser
- * consent screen on first run, and persisting refresh tokens for silent reuse.
+ * consent screen, and persisting refresh tokens for silent reuse.
  *
- * <p>Call {@link #authorize()} to obtain a {@link Credential}. On the very first
- * call, this pops the system browser and blocks until the user approves. On every
- * subsequent call it uses the stored refresh token and returns immediately.
+ * <p>There are two entry points, and the difference between them matters:
+ * <ul>
+ *   <li>{@link #authorize(Consumer)} - get a usable token. Returns immediately
+ *       from the token store when possible. Grants no new file access.</li>
+ *   <li>{@link #authorizeWithPicker} - consent <em>plus</em> a file-selection
+ *       step, always a full browser round trip. This is the only way to widen
+ *       what the mod can see under {@code drive.file}.</li>
+ * </ul>
  *
- * <p><b>Threading:</b> {@link #authorize()} can block for minutes on the first
- * invocation. It must not be called on the Minecraft main thread. Callers should
- * dispatch via {@link CloudModule#executor()}.
+ * <p><b>Threading:</b> both can block for minutes. Neither may be called on the
+ * Minecraft main thread - dispatch via {@link CloudModule#executor()}.
  */
 public final class OAuthHelper {
 
@@ -50,16 +55,71 @@ public final class OAuthHelper {
 
     /**
      * Single logical user. We don't support multi-account within one
-     * installation — each installer authenticates as themselves.
+     * installation - each installer authenticates as themselves.
      */
     private static final String USER_ID = "default-user";
 
     /**
-     * Full Drive access. See docs/GOOGLE_CLOUD_SETUP.md for the "why" on this
-     * scope choice - narrower scopes like {@code drive.file} don't work across
-     * shared folders created by another user.
+     * Per-file Drive access, and nothing more.
+     *
+     * <p>This is deliberately NOT {@code DriveScopes.DRIVE}. The broad scope is
+     * classified <em>restricted</em> by Google, which caps an unverified app at
+     * 100 test users with 7-day token expiry and requires a recurring paid CASA
+     * security audit to escape that cap - a non-starter for this project. See
+     * {@code docs/CLOUD_BACKEND_DECISION.md} for the full reasoning and the
+     * testing behind it.
+     *
+     * <p>The tradeoff this buys us: the mod can only ever touch files the user
+     * personally selected through the Picker. It cannot browse the user's Drive,
+     * and it cannot see files created later inside a shared folder. That
+     * constraint is what drives the fixed-bucket remote layout in
+     * {@link com.worldshare.mod.sync.BucketLayout}.
      */
-    private static final List<String> SCOPES = Collections.singletonList(DriveScopes.DRIVE);
+    private static final List<String> SCOPES = Collections.singletonList(DriveScopes.DRIVE_FILE);
+
+    /**
+     * Authorization-URL parameter that makes Google show its file Picker as part
+     * of the consent screen, returning the selection on the same redirect as the
+     * auth code. Documented for desktop/mobile apps at
+     * https://developers.google.com/workspace/drive/picker/guides/desktop-mobile-picker
+     *
+     * <p>The web-app integration pattern (a {@code PickerBuilder} widget fed an
+     * existing access token) does <em>not</em> work here - it was tried, and it
+     * silently granted nothing. Don't "simplify" this back into two steps.
+     */
+    private static final String PARAM_TRIGGER_PICKER = "trigger_onepick";
+
+    /** Authorization-URL parameter allowing multi-select in the Picker step. */
+    private static final String PARAM_ALLOW_MULTIPLE = "allow_multiple";
+
+    /**
+     * Authorization-URL parameter letting the Picker select folders.
+     *
+     * <p>Used by the world <em>creator</em>, who needs a folder to create the fixed
+     * file set inside. Note what this does and doesn't buy: a folder grant lets the
+     * app create files in that folder, and files an app creates are always
+     * reachable by that app for that user - but it does not extend to files another
+     * account adds later. That limitation is exactly why the file set is fixed and
+     * created up front.
+     */
+    private static final String PARAM_ALLOW_FOLDER_SELECTION = "allow_folder_selection";
+
+    /**
+     * Authorization-URL parameter restricting what the Picker offers, as a
+     * comma-separated list of Drive IDs.
+     *
+     * <p>This is what turns joining a world from "find these eighteen files
+     * somewhere in your Drive" into a single screen showing exactly the right
+     * ones. Passing the world's <em>folder</em> ID is the useful case: the Picker
+     * shows that one folder, the user opens it, and its contents are selectable
+     * inside. Verified directly against the API.
+     *
+     * <p>Pair it with {@code allow_folder_selection} left off. The folder then
+     * stays navigable but cannot itself be selected - which matters, because
+     * selecting the folder returns a grant that reaches none of its contents and
+     * looks like success to the user.
+     */
+    private static final String PARAM_FILE_IDS = "file_ids";
 
     private OAuthHelper() {
         // utility class
@@ -71,73 +131,108 @@ public final class OAuthHelper {
      * <p>This overload uses {@link BrowserOpener} to try launching the system
      * browser with a log-warn fallback. Good for headless / CLI contexts.
      * For Minecraft chat integration, use {@link #authorize(Consumer)}.
-     *
-     * @return a Credential whose access token will be automatically refreshed
-     *         by the Google client library.
-     * @throws IOException              if the token store or network fails, or
-     *                                  if the user denies / times out the flow
-     * @throws GeneralSecurityException if the Google trusted transport can't be built
      */
     public static Credential authorize() throws IOException, GeneralSecurityException {
         return authorize(url -> BrowserOpener.open(url));
     }
 
     /**
-     * Obtain a Credential, triggering the OAuth flow if necessary, using a
-     * caller-supplied function to present the authorization URL to the user.
+     * Obtain a Credential, triggering the consent flow only if the stored token
+     * is missing or unusable.
      *
-     * <p>The {@code urlPresenter} is invoked exactly once, only when the stored
-     * credential is missing or expired. It receives the full
-     * {@code https://accounts.google.com/o/oauth2/auth?...} URL. The typical
-     * implementations are:
-     * <ul>
-     *   <li>Desktop: open the URL in the system browser</li>
-     *   <li>Minecraft: post the URL as a clickable chat link</li>
-     * </ul>
+     * <p>The {@code urlPresenter} is invoked at most once, and only when a
+     * browser round trip is actually needed. It receives the full authorization
+     * URL. Typical implementations open the system browser, or post the URL as
+     * a clickable Minecraft chat link. It should return promptly - waiting for
+     * the user is handled internally by the redirect receiver.
      *
-     * <p>The presenter does NOT wait for the user to complete the flow -
-     * that's handled internally by the redirect receiver. Presenter
-     * implementations should return promptly.
+     * <p>Note that on a fresh install this grants a token with <em>no</em> file
+     * access at all under {@code drive.file}. Use {@link #authorizeWithPicker}
+     * for world setup.
      *
      * @param urlPresenter callback receiving the authorization URL
      */
     public static Credential authorize(final Consumer<String> urlPresenter)
             throws IOException, GeneralSecurityException {
-        final NetHttpTransport transport = GoogleNetHttpTransport.newTrustedTransport();
-        final GsonFactory jsonFactory = GsonFactory.getDefaultInstance();
+        final GoogleAuthorizationCodeFlow flow = buildFlow();
 
-        final GoogleClientSecrets secrets = loadClientSecrets(jsonFactory);
-
-        // The FileDataStore persists the refresh token between JVM restarts.
-        // Path: <gamedir>/config/worldshare/tokens/StoredCredential
-        final Path tokensDir = WorldSharePaths.tokensDir();
-        Files.createDirectories(tokensDir);
-        final FileDataStoreFactory dataStore = new FileDataStoreFactory(tokensDir.toFile());
-
-        final GoogleAuthorizationCodeFlow flow =
-                new GoogleAuthorizationCodeFlow.Builder(transport, jsonFactory, secrets, SCOPES)
-                        .setDataStoreFactory(dataStore)
-                        // "offline" access so we receive a refresh token, not just an access token.
-                        .setAccessType("offline")
-                        // Force the consent prompt on the very first authorization so the refresh
-                        // token is always issued. If we've already authorized once, the flow
-                        // skips the browser entirely and uses the stored token.
-                        .setApprovalPrompt("force")
-                        .build();
-
-        final VerificationCodeReceiver receiver = new LocalRedirectReceiver();
-        // AuthorizationCodeInstalledApp's third param is a Browser functional interface
-        // whose single method takes a URL and returns void. We delegate to our
-        // Consumer<String>, which the caller provides.
-        final AuthorizationCodeInstalledApp app = new AuthorizationCodeInstalledApp(
-                flow,
-                receiver,
-                url -> urlPresenter.accept(url));
+        final Credential stored = loadUsableCredential(flow);
+        if (stored != null) {
+            WorldShareMod.LOGGER.debug("Reusing stored OAuth credential for '{}'", USER_ID);
+            return stored;
+        }
 
         WorldShareMod.LOGGER.info("Starting OAuth authorization for user '{}'", USER_ID);
-        final Credential credential = app.authorize(USER_ID);
-        WorldShareMod.LOGGER.info("OAuth authorization complete");
-        return credential;
+        return runBrowserFlow(flow, urlPresenter, false, false, false, null).credential();
+    }
+
+    /**
+     * Run a full consent + Picker round trip, returning both the credential and
+     * the Drive file IDs the user selected.
+     *
+     * <p>Unlike {@link #authorize(Consumer)}, this <b>always</b> opens the
+     * browser, even when a valid token is already stored. That's the point: the
+     * token isn't what we're after, the file grants are, and Google only issues
+     * those through a fresh trip past the Picker.
+     *
+     * <p>Previously-granted files are not revoked by re-running this. Grants
+     * accumulate per (user, OAuth client), so a player can be walked through
+     * setup again later to add newly-created buckets without losing access to
+     * the ones they already picked.
+     *
+     * @param urlPresenter  callback receiving the authorization URL
+     * @param allowMultiple whether the Picker permits selecting several files at
+     *                      once. World setup wants {@code true}; re-picking a
+     *                      single replaced file wants {@code false}.
+     * @return the credential paired with whatever the user picked (possibly nothing)
+     */
+    public static PickerAuthResult authorizeWithPicker(final Consumer<String> urlPresenter,
+                                                       final boolean allowMultiple)
+            throws IOException, GeneralSecurityException {
+        return authorizeWithPicker(urlPresenter, allowMultiple, false);
+    }
+
+    /**
+     * As {@link #authorizeWithPicker(Consumer, boolean)}, but able to offer folders
+     * in the Picker.
+     *
+     * @param allowFolderSelection whether folders are selectable. World creation
+     *                             wants {@code true} (it needs somewhere to create
+     *                             the fixed file set); joining an existing world
+     *                             depends on whether a folder grant reaches files
+     *                             already inside it.
+     */
+    public static PickerAuthResult authorizeWithPicker(final Consumer<String> urlPresenter,
+                                                       final boolean allowMultiple,
+                                                       final boolean allowFolderSelection)
+            throws IOException, GeneralSecurityException {
+        return authorizeWithPicker(urlPresenter, allowMultiple, allowFolderSelection, null);
+    }
+
+    /**
+     * As {@link #authorizeWithPicker(Consumer, boolean, boolean)}, but restricting
+     * what the Picker shows.
+     *
+     * @param scopeToIds Drive IDs the Picker should be limited to, or null for the
+     *                   user's whole Drive. Passing a world's folder ID here is
+     *                   what lets a joining player see just that world's files
+     *                   instead of hunting for them - see {@link #PARAM_FILE_IDS}.
+     */
+    public static PickerAuthResult authorizeWithPicker(final Consumer<String> urlPresenter,
+                                                       final boolean allowMultiple,
+                                                       final boolean allowFolderSelection,
+                                                       final List<String> scopeToIds)
+            throws IOException, GeneralSecurityException {
+        final GoogleAuthorizationCodeFlow flow = buildFlow();
+        WorldShareMod.LOGGER.info(
+                "Starting OAuth authorization WITH Picker (allowMultiple={}, allowFolders={}, scoped={})",
+                allowMultiple, allowFolderSelection,
+                scopeToIds == null ? "no" : scopeToIds.size() + " id(s)");
+        final PickerAuthResult result = runBrowserFlow(
+                flow, urlPresenter, true, allowMultiple, allowFolderSelection, scopeToIds);
+        WorldShareMod.LOGGER.info("Picker flow complete: {} file(s) granted",
+                result.pickedFileIds().size());
+        return result;
     }
 
     /**
@@ -153,6 +248,14 @@ public final class OAuthHelper {
     /**
      * Erase the stored credential. The next call to {@link #authorize()} will
      * trigger a full browser flow. Used by a "Sign out" menu action.
+     *
+     * <p>This does not cost the user their file picks. Grants live server-side
+     * against the (Google account, OAuth client) pair, not inside the token, so
+     * signing back in with the same account restores access to everything they
+     * previously selected without another trip through the Picker. Verified
+     * directly: token deleted, plain consent re-run with no Picker step, and a
+     * previously-picked object was still reachable. Revoking access for real is
+     * done from the user's Google account permissions page, not here.
      */
     public static void forgetStoredCredential() throws IOException {
         final Path stored = WorldSharePaths.tokensDir().resolve("StoredCredential");
@@ -161,6 +264,188 @@ public final class OAuthHelper {
     }
 
     // -----------------------------------------------------------------
+
+    /**
+     * Drive the browser half of the OAuth dance by hand.
+     *
+     * <p>This deliberately doesn't use {@code AuthorizationCodeInstalledApp},
+     * which the mod used before. That helper hides the redirect entirely and
+     * hands back only a Credential - but under the Picker flow the redirect also
+     * carries {@code picked_file_ids}, which is the whole reason we're here.
+     * Doing the four steps ourselves is the only way to read both halves of it.
+     */
+    private static PickerAuthResult runBrowserFlow(final GoogleAuthorizationCodeFlow flow,
+                                                   final Consumer<String> urlPresenter,
+                                                   final boolean triggerPicker,
+                                                   final boolean allowMultiple,
+                                                   final boolean allowFolderSelection,
+                                                   final List<String> scopeToIds)
+            throws IOException {
+        final LocalRedirectReceiver receiver = new LocalRedirectReceiver();
+        try {
+            final String redirectUri = receiver.getRedirectUri();
+
+            final AuthorizationCodeRequestUrl authUrl = flow.newAuthorizationUrl()
+                    .setRedirectUri(redirectUri);
+            if (triggerPicker) {
+                authUrl.set(PARAM_TRIGGER_PICKER, "true");
+                if (allowMultiple) {
+                    authUrl.set(PARAM_ALLOW_MULTIPLE, "true");
+                }
+                if (allowFolderSelection) {
+                    authUrl.set(PARAM_ALLOW_FOLDER_SELECTION, "true");
+                }
+                if (scopeToIds != null && !scopeToIds.isEmpty()) {
+                    authUrl.set(PARAM_FILE_IDS, String.join(",", scopeToIds));
+                }
+            }
+
+            urlPresenter.accept(authUrl.build());
+
+            // Blocks until the browser hits our loopback listener (or times out).
+            final String code = receiver.waitForCode();
+            final List<String> picked = receiver.pickedFileIds();
+
+            final TokenResponse token = flow.newTokenRequest(code)
+                    .setRedirectUri(redirectUri)
+                    .execute();
+            final Credential credential = flow.createAndStoreCredential(token, USER_ID);
+
+            WorldShareMod.LOGGER.info("OAuth authorization complete");
+            return new PickerAuthResult(credential, picked);
+        } finally {
+            receiver.stop();
+        }
+    }
+
+    /**
+     * Load the stored credential, but only hand it back if it's actually good for
+     * something - i.e. it can refresh itself, or its current access token still
+     * has meaningful life left. Mirrors the check
+     * {@code AuthorizationCodeInstalledApp} used to do for us.
+     *
+     * @return a usable Credential, or null if the caller must re-consent
+     */
+    /**
+     * The stored credential, if there is one and it still works.
+     *
+     * <p>"Has a refresh token" used to be taken as proof it was usable, and it
+     * is not. A refresh token can be revoked by the user, invalidated by a
+     * password change, or - the case this was actually hit by - simply expire,
+     * because tokens issued while the Cloud app sat in Testing publishing status
+     * last seven days. The refresh then failed at the first Drive call with a raw
+     * {@code 400 invalid_grant} and a suggestion to try again when back online,
+     * which was wrong twice over: the network was fine, and trying again would
+     * fail identically forever.
+     *
+     * <p>So the refresh is proved here instead of assumed. A refusal from Google
+     * means the stored credential is worthless, and the honest response is to
+     * throw it away and let the caller run the consent flow, which succeeds - the
+     * player just signs in again.
+     *
+     * <p>A network failure is deliberately not treated that way. Being offline
+     * says nothing about whether the token is good, and discarding it would turn
+     * a temporary outage into a forced re-authorization.
+     */
+    /**
+     * Why the next sign-in prompt is appearing, when there is a reason worth
+     * saying, or null.
+     *
+     * <p>Set here and read by whoever presents the authorization link. A player
+     * who signed in perfectly well last week and is suddenly handed "[Click here
+     * to authorize]" deserves to know that their previous sign-in expired rather
+     * than being left to wonder whether something is broken.
+     *
+     * <p>Static for the same reason {@code LocalRedirectReceiver} tracks its
+     * browser wait that way: the presenter has no route back to this class, and
+     * the whole flow runs on the single-threaded Drive executor, so there is only
+     * ever one in flight.
+     */
+    private static final java.util.concurrent.atomic.AtomicReference<String> REAUTH_REASON =
+            new java.util.concurrent.atomic.AtomicReference<>();
+
+    /**
+     * The stored credential if there is a working one, without ever prompting.
+     *
+     * <p>For work the player didn't ask for. Background code that calls the
+     * ordinary {@code authorize} path will, on a machine with no stored token,
+     * launch the system browser at Google - which is how opening the game could
+     * throw somebody into Chrome before they had touched the main menu. Nothing
+     * running on a timer should be able to do that.
+     *
+     * @return a usable credential, or null if signing in would be needed
+     */
+    public static Credential storedCredentialIfUsable() {
+        try {
+            return loadUsableCredential(buildFlow());
+        } catch (final IOException | GeneralSecurityException e) {
+            WorldShareMod.LOGGER.debug("No usable stored credential: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** Take the pending sign-in reason, clearing it. Null if there isn't one. */
+    public static String consumeReauthReason() {
+        return REAUTH_REASON.getAndSet(null);
+    }
+
+    private static Credential loadUsableCredential(final GoogleAuthorizationCodeFlow flow)
+            throws IOException {
+        final Credential credential = flow.loadCredential(USER_ID);
+        if (credential == null) {
+            return null;
+        }
+
+        final Long expiresIn = credential.getExpiresInSeconds();
+        if (expiresIn != null && expiresIn > 60L) {
+            return credential;
+        }
+        if (credential.getRefreshToken() == null) {
+            return null;
+        }
+
+        try {
+            if (credential.refreshToken()) {
+                return credential;
+            }
+            WorldShareMod.LOGGER.info("Stored credential could not be refreshed; signing in again");
+        } catch (final TokenResponseException e) {
+            WorldShareMod.LOGGER.info(
+                    "Google rejected the stored credential ({}); signing in again",
+                    e.getDetails() != null ? e.getDetails().getError() : e.getStatusCode());
+        } catch (final IOException e) {
+            // Couldn't reach Google at all. The token may be perfectly good, so
+            // keep it and let the caller's own request report the outage.
+            WorldShareMod.LOGGER.warn("Couldn't verify the stored credential: {}", e.getMessage());
+            return credential;
+        }
+
+        forgetStoredCredential();
+        REAUTH_REASON.set("Your Google sign-in has expired, so WorldShare needs it again.");
+        return null;
+    }
+
+    private static GoogleAuthorizationCodeFlow buildFlow()
+            throws IOException, GeneralSecurityException {
+        final NetHttpTransport transport = GoogleNetHttpTransport.newTrustedTransport();
+        final GsonFactory jsonFactory = GsonFactory.getDefaultInstance();
+        final GoogleClientSecrets secrets = loadClientSecrets(jsonFactory);
+
+        // The FileDataStore persists the refresh token between JVM restarts.
+        // Path: <gamedir>/config/worldshare/tokens/StoredCredential
+        final Path tokensDir = WorldSharePaths.tokensDir();
+        Files.createDirectories(tokensDir);
+        final FileDataStoreFactory dataStore = new FileDataStoreFactory(tokensDir.toFile());
+
+        return new GoogleAuthorizationCodeFlow.Builder(transport, jsonFactory, secrets, SCOPES)
+                .setDataStoreFactory(dataStore)
+                // "offline" access so we receive a refresh token, not just an access token.
+                .setAccessType("offline")
+                // Force the consent prompt so a refresh token is always issued, and so the
+                // Picker step reliably appears rather than being skipped for a returning user.
+                .setApprovalPrompt("force")
+                .build();
+    }
 
     private static GoogleClientSecrets loadClientSecrets(final GsonFactory jsonFactory)
             throws IOException {

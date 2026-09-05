@@ -1,12 +1,13 @@
 package com.worldshare.mod.sync;
 
 import com.worldshare.mod.WorldShareMod;
+import com.worldshare.mod.cloud.RemoteFileSet;
 import com.worldshare.mod.cloud.CloudModule;
 import com.worldshare.mod.cloud.LockManager;
 import com.worldshare.mod.config.WorldLink;
 import com.worldshare.mod.relay.E4mcCoordinator;
+import com.worldshare.mod.util.PlayerNotice;
 import net.minecraft.client.Minecraft;
-import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.storage.LevelResource;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -36,7 +37,13 @@ public final class AutoSyncListener {
     private static volatile Path capturedWorldRoot;
     private static volatile UUID capturedPlayerUuid;
     private static volatile String capturedWorldName;
-    private static volatile String capturedFolderId;
+    /**
+     * The world's Drive file set, captured while the server is still stopping.
+     *
+     * <p>Captured rather than re-read on {@code onServerStopped} because by then
+     * the world context is gone and the link file may no longer be resolvable.
+     */
+    private static volatile RemoteFileSet capturedRemote;
     private static volatile boolean serverHasStopped = false;
     private static volatile Object suppressionToken = null;
 
@@ -84,23 +91,51 @@ public final class AutoSyncListener {
             final WorldLink link = WorldLink.read(worldRoot);
             if (link == null) return; // Not a WorldShare world
 
-            if (!LockManager.weHoldLock()) {
+            // An upload from a previous world may still be running - that is what
+            // "Continue in Background" is for. Say so, because the two worlds share
+            // one Drive connection and one lock slot, and the second world's session
+            // will behave oddly until the first finishes.
+            if (SyncActivity.isSyncing() && !LockManager.weHoldLock(link.remote)) {
+                notifyClientChat("§e[WorldShare] An upload for another world is still "
+                        + "running in the background.");
+                notifyClientChat("§f Let it finish before saving here, or this world's "
+                        + "sync may be refused.");
+            }
+
+            // World-aware, because the lock we hold might be a different world's.
+            // Reaching the title screen while still holding one is possible - a
+            // backgrounded upload, or a failed push that deliberately kept it - and
+            // the argument-less check would then report true here and silently
+            // suppress the warning below for a world we hold nothing on.
+            if (!LockManager.weHoldLock(link.remote)) {
                 // No lock — warn the player.
                 WorldShareMod.LOGGER.warn(
-                        "AutoSync: WorldShare world loaded without session lock (world: '{}')",
-                        worldRoot.getFileName());
+                        "AutoSync: WorldShare world loaded without its session lock "
+                                + "(world: '{}', lock held on: {})",
+                        worldRoot.getFileName(), LockManager.heldControlFileId());
                 notifyClientChat("§e[WorldShare] [!] No session lock held.");
                 notifyClientChat("§e Changes made here will NOT be saved to Drive.");
                 notifyClientChat("§c Your local copy may also be out of date with Drive.");
                 notifyClientChat("§c Locking from here is blocked if Drive has newer changes.");
-                notifyClientChat("§7 Save and quit, then open via Contributor Worlds for proper sync.");
+                notifyClientChat("§f Save and quit, then open via Contributor Worlds for proper sync.");
+                if (LockManager.weHoldLock()) {
+                    notifyClientChat("§f (You still hold a lock on a different world - "
+                            + "finish that upload first.)");
+                }
                 return;
             }
 
-            // Lock is held — auto-open to LAN via e4mc so guests can join
-            // without needing /worldshare invite.
+            // Lock is held. Hosting is opt-in: it publishes a public relay address,
+            // and doing that as a side effect of opening a world means anyone who
+            // installed e4mc once is broadcasting every session thereafter.
+            if (!com.worldshare.mod.config.WorldShareConfig.get().autoHostOnOpen.get()) {
+                WorldShareMod.LOGGER.debug(
+                        "AutoSync: lock held, but autoHostOnOpen is off - "
+                                + "use /worldshare host to go live");
+                return;
+            }
             WorldShareMod.LOGGER.info(
-                    "AutoSync: lock held, auto-opening world to LAN via e4mc");
+                    "AutoSync: lock held and autoHostOnOpen is on, opening world to LAN via e4mc");
             final Minecraft mc = Minecraft.getInstance();
             mc.execute(() -> {
                 new Thread(() -> {
@@ -132,13 +167,13 @@ public final class AutoSyncListener {
             final Path worldRoot = levelDat.getParent();
             if (worldRoot == null) return;
 
-            // M5: Read Drive folder ID from the world's link file.
+            // Read the Drive file set from the world's own link file.
             final WorldLink link = WorldLink.read(worldRoot);
-            final String folderId = (link != null) ? link.driveFolderId : null;
+            final RemoteFileSet remote = (link != null) ? link.remote : null;
 
-            if (folderId == null) {
+            if (remote == null) {
                 WorldShareMod.LOGGER.debug(
-                        "AutoSync: no WorldLink for '{}'; auto-push disabled for this world",
+                        "AutoSync: no usable WorldLink for '{}'; auto-push disabled for this world",
                         worldRoot.getFileName());
             }
 
@@ -160,14 +195,14 @@ public final class AutoSyncListener {
 
             capturedWorldRoot = worldRoot;
             capturedPlayerUuid = uuid;
-            capturedFolderId = folderId;
+            capturedRemote = remote;
             capturedWorldName = worldRoot.getFileName() == null
                     ? "(unnamed)" : worldRoot.getFileName().toString();
 
             WorldShareMod.LOGGER.info(
-                    "AutoSync: captured world path on ServerStopping: {} (uuid={}, folderId={})",
+                    "AutoSync: captured world path on ServerStopping: {} (uuid={}, world={})",
                     worldRoot, uuid,
-                    folderId != null ? folderId.substring(0, Math.min(8, folderId.length())) + "..." : "none");
+                    remote != null ? remote.controlFileId : "not set up");
 
         } catch (final Throwable t) {
             WorldShareMod.LOGGER.warn("AutoSync onServerStopping failed", t);
@@ -182,11 +217,11 @@ public final class AutoSyncListener {
         final Path worldRoot = capturedWorldRoot;
         final UUID uuid = capturedPlayerUuid;
         final String worldName = capturedWorldName;
-        final String folderId = capturedFolderId;
+        final RemoteFileSet remote = capturedRemote;
         capturedWorldRoot = null;
         capturedPlayerUuid = null;
         capturedWorldName = null;
-        capturedFolderId = null;
+        capturedRemote = null;
 
         if (worldRoot == null) return;
 
@@ -197,9 +232,9 @@ public final class AutoSyncListener {
             return;
         }
 
-        if (folderId == null) {
+        if (remote == null) {
             WorldShareMod.LOGGER.debug(
-                    "AutoSync: no folder ID for '{}'; skipping auto-push", worldName);
+                    "AutoSync: '{}' isn't set up for sharing; skipping auto-push", worldName);
             return;
         }
 
@@ -207,11 +242,11 @@ public final class AutoSyncListener {
 // vanilla Singleplayer), don't auto-push. The local copy may be out of
 // date with Drive, and uploading it would risk overwriting another
 // player's work.
-        if (!LockManager.weHoldLock()) {
+        if (!LockManager.weHoldLock(remote)) {
             WorldShareMod.LOGGER.info(
                     "AutoSync: no session lock held for '{}'; skipping auto-push "
                             + "(world was likely opened from Singleplayer)", worldName);
-            notifyClientChat("§7[WorldShare] §fNo lock held for '" + worldName
+            notifyClientChat("§f[WorldShare] §fNo lock held for '" + worldName
                     + "' - changes were not uploaded to Drive.");
             return;
         }
@@ -222,58 +257,67 @@ public final class AutoSyncListener {
         CloudModule.executor().submit(() -> {
             try {
                 final SyncEngine.PushResult result = SyncEngine.push(
-                        worldRoot, folderId, uuid, /*baseline*/ null);
+                        worldRoot, remote, uuid);
                 if (result.failed == 0) {
                     WorldShareMod.LOGGER.info(
-                            "AutoSync: push complete for '{}': {} files, {} bytes",
-                            worldName, result.uploaded, result.bytes);
+                            "AutoSync: push complete for '{}': {} file(s) in {} bucket(s), {} bytes",
+                            worldName, result.filesUploaded, result.bucketsUploaded, result.bytes);
                     // M7: refresh modpack.json if mod list changed.
                     try {
-                        com.worldshare.mod.modmanager.ModManagerModule.generateAndUpload(folderId);
-                        WorldShareMod.LOGGER.info("AutoSync: modpack.json refreshed");
+                        com.worldshare.mod.modmanager.ModManagerModule.generateAndUpload(remote);
+                        WorldShareMod.LOGGER.info("AutoSync: modpack refreshed");
                     } catch (final Throwable modErr) {
                         WorldShareMod.LOGGER.warn(
                                 "AutoSync: modpack refresh failed (non-fatal): {}", modErr.getMessage());
                     }
                     notifyClientChat("§a[WorldShare] §f'" + worldName
-                            + "' synced to Drive: " + result.uploaded + " files ("
+                            + "' synced to Drive: " + result.filesUploaded + " files ("
                             + (result.bytes / (1024 * 1024)) + " MB).");
                 } else {
                     WorldShareMod.LOGGER.warn(
                             "AutoSync: push had {} failures for '{}'", result.failed, worldName);
-                    notifyClientChat("§c[WorldShare] §f" + result.failed
-                            + " files failed to upload. Run /worldshare push to retry.");
+                    notifyClientError("§c[WorldShare] §f" + result.failed
+                            + " bucket(s) failed to upload. Run /worldshare push to retry.");
                 }
 
-                if (LockManager.weHoldLock()) {
-                    LockManager.release();
-                    WorldShareMod.LOGGER.info("AutoSync: released lock after push");
+                // Only on success - see the same reasoning in SaveAndUploadScreen.
+                // A failed push leaves archives on Drive that the published manifest
+                // does not describe, and the lock is what keeps anyone from pulling
+                // them.
+                if (result.failed == 0) {
+                    if (LockManager.weHoldLock(remote)) {
+                        LockManager.release();
+                        WorldShareMod.LOGGER.info("AutoSync: released lock after push");
+                    }
+                } else {
+                    WorldShareMod.LOGGER.warn(
+                            "AutoSync: {} bucket(s) failed; keeping the session lock",
+                            result.failed);
                 }
             } catch (final Throwable t) {
                 WorldShareMod.LOGGER.error(
                         "AutoSync: push failed for '{}'; local files preserved",
                         worldName, t);
-                notifyClientChat("§c[WorldShare] Auto-push failed: " + t.getMessage()
+                notifyClientError("§c[WorldShare] Auto-push failed: " + t.getMessage()
                         + ". Local changes preserved. Retry with /worldshare push.");
             }
         });
     }
 
+    /**
+     * Tell the player something about the auto-sync.
+     *
+     * <p>Delegates to {@link PlayerNotice} rather than writing to chat directly,
+     * because this class runs on {@code ServerStopping} - the player is already
+     * gone by the time any of these messages exist, so chat alone dropped every
+     * one of them into the log.
+     */
     private static void notifyClientChat(final String message) {
-        try {
-            final Minecraft mc = Minecraft.getInstance();
-            if (mc != null) {
-                mc.execute(() -> {
-                    if (mc.player != null) {
-                        mc.player.displayClientMessage(
-                                Component.literal(message), false);
-                    } else {
-                        WorldShareMod.LOGGER.info("[chat-while-no-player] {}", message);
-                    }
-                });
-            }
-        } catch (final Throwable t) {
-            WorldShareMod.LOGGER.debug("notifyClientChat failed silently", t);
-        }
+        PlayerNotice.info(message);
+    }
+
+    /** As above, for outcomes that need the player to do something about them. */
+    private static void notifyClientError(final String message) {
+        PlayerNotice.error(message);
     }
 }

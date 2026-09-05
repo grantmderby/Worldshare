@@ -4,6 +4,9 @@ import com.mojang.brigadier.Command;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.worldshare.mod.WorldShareMod;
+import com.worldshare.mod.sync.BucketLayout;
+import com.worldshare.mod.cloud.WorldSetup;
+import com.worldshare.mod.cloud.RemoteFileSet;
 import com.worldshare.mod.cloud.CloudModule;
 import com.worldshare.mod.cloud.DriveClient;
 import com.worldshare.mod.cloud.LockManager;
@@ -19,6 +22,7 @@ import com.worldshare.mod.sync.SyncDiff;
 import com.worldshare.mod.sync.SyncEngine;
 import com.worldshare.mod.sync.SyncProgress;
 import com.worldshare.mod.sync.WorldContext;
+import com.worldshare.mod.ui.SetupProgressScreen;
 import com.worldshare.mod.util.MachineId;
 import com.worldshare.mod.util.SHA256Util;
 import net.minecraft.ChatFormatting;
@@ -44,6 +48,12 @@ import java.time.Instant;
  * <p>Subcommands by milestone:
  * <ul>
  *   <li>M1: {@code test}, {@code signout}</li>
+ * <p>There is deliberately no {@code pull} command. Pulling rewrites world files
+ * underneath whatever has them open, and the command could only ever run with a
+ * world loaded - so its only reachable use was the unsafe one. It previously
+ * warned that it might corrupt the world and then did it anyway. Pulling happens
+ * through the Contributor Worlds screen, which pulls before the world is opened.
+ *
  *   <li>M2: {@code setDriveLink}, {@code clearDriveLink}, {@code lock}, {@code unlock},
  *       {@code lockinfo}, {@code heartbeat}</li>
  *   <li>M3: {@code push}, {@code pull}, {@code status}</li>
@@ -73,33 +83,91 @@ public final class WorldShareCommands {
                 Commands.literal("worldshare")
                         .requires(src -> src.hasPermission(0))
                         .then(Commands.literal("test")
+                                .requires(WorldShareCommands::devCommandsEnabled)
                                 .executes(ctx -> runDriveTest(ctx.getSource())))
+                        // signout existed without a signin, which was survivable
+                        // only while "not signed in" was unreachable in practice.
+                        // It isn't: a token expires, or somebody signs out.
+                        .then(Commands.literal("signin")
+                                .executes(ctx -> runSignIn(ctx.getSource())))
                         .then(Commands.literal("signout")
                                 .executes(ctx -> runSignOut(ctx.getSource())))
-                        .then(Commands.literal("setDriveLink")
-                                .then(Commands.argument("id", StringArgumentType.greedyString())
-                                        .executes(ctx -> runSetDriveLink(
-                                                ctx.getSource(),
-                                                StringArgumentType.getString(ctx, "id")))))
+                        // "setup existing" is now an escape hatch rather than a
+                        // route anyone should need. Plain setup finds an existing
+                        // world folder by its private tag, wherever in Drive the
+                        // player has moved it, so the returning creator it was
+                        // written for is handled without a second command. It stays
+                        // behind the dev flag for the case the tag can't help with:
+                        // a folder created before tagging, and moved out of the
+                        // library.
+                        .then(Commands.literal("setup")
+                                .then(Commands.literal("existing")
+                                        .requires(WorldShareCommands::devCommandsEnabled)
+                                        .executes(ctx -> runSetupExisting(ctx.getSource())))
+                                .executes(ctx -> runSetup(ctx.getSource())))
                         .then(Commands.literal("clearDriveLink")
                                 .executes(ctx -> runClearDriveLink(ctx.getSource())))
                         .then(Commands.literal("lock")
+                                .requires(WorldShareCommands::devCommandsEnabled)
                                 .executes(ctx -> runLock(ctx.getSource())))
                         .then(Commands.literal("unlock")
+                                .requires(WorldShareCommands::devCommandsEnabled)
                                 .executes(ctx -> runUnlock(ctx.getSource())))
                         .then(Commands.literal("lockinfo")
+                                .requires(WorldShareCommands::devCommandsEnabled)
                                 .executes(ctx -> runLockInfo(ctx.getSource())))
                         .then(Commands.literal("heartbeat")
+                                .requires(WorldShareCommands::devCommandsEnabled)
                                 .executes(ctx -> runHeartbeat(ctx.getSource())))
                         .then(Commands.literal("status")
                                 .executes(ctx -> runStatus(ctx.getSource())))
+                        .then(Commands.literal("doctor")
+                                .executes(ctx -> runDoctor(ctx.getSource(), false))
+                                .then(Commands.literal("full")
+                                        .executes(ctx -> runDoctor(ctx.getSource(), true))))
                         .then(Commands.literal("push")
+                                .requires(WorldShareCommands::devCommandsEnabled)
                                 .executes(ctx -> runPush(ctx.getSource())))
-                        .then(Commands.literal("pull")
-                                .executes(ctx -> runPull(ctx.getSource())))
+                        // Two ways to invite somebody, and they do genuinely
+                        // different things, so they get names that say which.
+                        // "invite" adds a contributor who will sync through Drive;
+                        // "host" opens the world for live co-op right now.
+                        // greedyString, not string(): brigadier's quotable string
+                        // stops at the first character outside its word set, and
+                        // "@" is outside it. Typing an email bare truncated it at
+                        // the @ and reported trailing data; quoting worked but
+                        // nothing tells you to. greedy takes the rest of the line.
                         .then(Commands.literal("invite")
-                                .executes(ctx -> runInvite(ctx.getSource())))
+                                .executes(ctx -> runDriveInvite(ctx.getSource(), null))
+                                .then(Commands.argument("email",
+                                                com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                                        .executes(ctx -> runDriveInvite(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType
+                                                        .getString(ctx, "email")))))
+                        .then(Commands.literal("host")
+                                .executes(ctx -> runHost(ctx.getSource())))
+                        // Two words, because it republishes the whole world over
+                        // whatever is on Drive. Easy to reach when needed, hard to
+                        // fire by accident.
+                        .then(Commands.literal("exclude")
+                                .executes(ctx -> runExcludeList(ctx.getSource()))
+                                .then(Commands.argument("path",
+                                                com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                                        .executes(ctx -> runExcludeAdd(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType
+                                                        .getString(ctx, "path")))))
+                        .then(Commands.literal("include")
+                                .then(Commands.argument("path",
+                                                com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                                        .executes(ctx -> runExcludeRemove(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType
+                                                        .getString(ctx, "path")))))
+                        .then(Commands.literal("repair")
+                                .executes(ctx -> explainRepair(ctx.getSource()))
+                                .then(Commands.literal("confirm")
+                                        .executes(ctx -> runRepair(ctx.getSource()))))
                         .then(Commands.literal("modpack")
+                                .requires(WorldShareCommands::devCommandsEnabled)
                                 .then(Commands.literal("generate")
                                         .executes(ctx -> runModpackGenerate(ctx.getSource()))))
         );
@@ -108,13 +176,52 @@ public final class WorldShareCommands {
 
     // ----- M1 -----
 
+    /**
+     * Whether the debugging subcommands are exposed.
+     *
+     * <p>Off by default. Seven of the fifteen subcommands exist for developing the
+     * mod rather than playing with it, and two of those are actively harmful in a
+     * player's hands: {@code push} publishes a world from memory-backed state that
+     * hasn't been written yet, and {@code lock}/{@code unlock} move the Drive lock
+     * without the local session knowing, which is the disagreement half this
+     * session's bugs came from.
+     *
+     * <p>Hidden rather than deleted. They are how the next confusing sync gets
+     * diagnosed, and Brigadier's {@code requires} keeps them out of tab-completion
+     * entirely, so nothing is lost but the temptation.
+     */
+    static boolean devCommandsEnabled(final CommandSourceStack ignored) {
+        try {
+            return WorldShareConfig.get().devCommands.get();
+        } catch (final Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * Enough of a check to catch a typo, and no more.
+     *
+     * <p>Deliberately not a real address grammar: the only consumer is Google,
+     * which has the authoritative answer and returns a clear 400 when it says
+     * no. This exists so the obvious mistakes - a username, a truncated address -
+     * fail immediately with something readable instead of a Drive stack trace.
+     */
+    private static boolean looksLikeEmail(final String value) {
+        final int at = value.indexOf('@');
+        return at > 0
+                && at == value.lastIndexOf('@')
+                && value.indexOf('.', at) > at + 1
+                && !value.endsWith(".")
+                && value.indexOf(' ') < 0;
+    }
+
     private static int runDriveTest(final CommandSourceStack source) {
-        sendFeedback(source, "Starting Google Drive round-trip test.", ChatFormatting.GRAY);
+        sendFeedback(source, "Starting Google Drive round-trip test.", ChatFormatting.WHITE);
         CloudModule.executor().submit(() -> {
             try {
                 final DriveClient client = CloudModule.driveClient(
                         WorldShareCommands::postClickableAuthLink);
-                sendClientMessage("§7[WorldShare] Authenticating with Google...");
+                sendClientMessage("§f[WorldShare] Authenticating with Google...");
                 final Path tmp = Files.createTempFile("worldshare-test-", ".txt");
                 final String content = "WorldShare round-trip test - " + Instant.now();
                 Files.writeString(tmp, content, StandardCharsets.UTF_8);
@@ -146,22 +253,107 @@ public final class WorldShareCommands {
         return Command.SINGLE_SUCCESS;
     }
 
-    private static void postClickableAuthLink(final String url) {
+    /**
+     * Post the invite link as one clickable line that copies to the clipboard.
+     *
+     * <p>Printing the raw URL was worse than merely untidy: a Drive folder URL is
+     * about sixty characters, so it wrapped across three chat lines and could not
+     * reliably be copied out of the game at all - and copying it is the entire
+     * point, since it has to reach the other player.
+     */
+    /**
+     * Offer the world's Drive folder two ways: open it, or copy its link.
+     *
+     * <p>Copying alone was not enough. Setup tells the host to go and share the
+     * folder as Editor, which means finding it in Drive - and handing them a URL
+     * on the clipboard leaves them to work out where to paste it. Opening is the
+     * step they actually have to take next; the copy is for the message they send
+     * afterwards.
+     */
+    private static void postCopyableInviteLink(final String folderId) {
+        final String url = "https://drive.google.com/drive/folders/" + folderId;
         final Minecraft mc = Minecraft.getInstance();
         if (mc == null) return;
         mc.execute(() -> {
+            final MutableComponent open = Component.literal("  [Open in Drive]")
+                    .setStyle(Style.EMPTY
+                            .withColor(ChatFormatting.AQUA)
+                            .withUnderlined(true)
+                            .withClickEvent(new ClickEvent(ClickEvent.Action.OPEN_URL, url))
+                            .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
+                                    Component.literal("Opens the world's folder in your browser."
+                                            + "\n\nShare it there with your friend, as Editor."))));
+            final MutableComponent copy = Component.literal("  [Copy link]")
+                    .setStyle(Style.EMPTY
+                            .withColor(ChatFormatting.AQUA)
+                            .withUnderlined(true)
+                            .withClickEvent(new ClickEvent(
+                                    ClickEvent.Action.COPY_TO_CLIPBOARD, url))
+                            .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
+                                    Component.literal("Click to copy:\n" + url
+                                            + "\n\nSend this to the person you're sharing with."))));
+            if (mc.player != null) {
+                mc.player.displayClientMessage(open.append(copy), false);
+            }
+        });
+    }
+
+    /**
+     * Ask the player to sign in to Google, saying why and what happens next.
+     *
+     * <p>On its own the link explains nothing. Somebody who signed in fine last
+     * week and is suddenly shown "[Click here to authorize]" has no way to tell
+     * whether their sign-in expired or something is broken - and no way to know
+     * that the command they ran is still waiting and will carry on by itself.
+     * Both of those went unsaid, so both are said now.
+     */
+    private static void postClickableAuthLink(final String url) {
+        final Minecraft mc = Minecraft.getInstance();
+        if (mc == null) return;
+        final String reason = com.worldshare.mod.cloud.OAuthHelper.consumeReauthReason();
+        mc.execute(() -> {
+            if (mc.player == null) return;
+            mc.player.displayClientMessage(Component.literal(
+                            reason != null ? reason
+                                    : "Your Google sign-in is required to authorize "
+                                            + "WorldShare to access Drive.")
+                    .withStyle(ChatFormatting.WHITE), false);
             final MutableComponent link = Component.literal("[Click here to authorize]")
                     .setStyle(Style.EMPTY
                             .withColor(ChatFormatting.AQUA)
                             .withUnderlined(true)
                             .withClickEvent(new ClickEvent(ClickEvent.Action.OPEN_URL, url))
                             .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
-                                    Component.literal("Opens Google OAuth in your browser.\n"
-                                            + "Return to Minecraft after authorizing."))));
-            if (mc.player != null) {
-                mc.player.displayClientMessage(link, false);
+                                    Component.literal("Opens Google sign-in in your browser.\n"
+                                            + "Return to Minecraft afterwards - "
+                                            + "you don't need to re-run anything."))));
+            mc.player.displayClientMessage(link, false);
+            mc.player.displayClientMessage(Component.literal(
+                            "WorldShare will continue after authorization.")
+                    .withStyle(ChatFormatting.WHITE), false);
+        });
+    }
+
+    /**
+     * Sign in to Google, on purpose, without needing anything else to want it.
+     *
+     * <p>There was a signout and no signin. Everything else that authorizes does
+     * so as a side effect of another job, so a player who had signed out - or
+     * whose token had expired - had no way back except to trigger some unrelated
+     * command and hope it asked. Two "not signed in" messages pointed at
+     * /worldshare test, which is dev-only and doesn't exist for them.
+     */
+    private static int runSignIn(final CommandSourceStack source) {
+        CloudModule.executor().submit(() -> {
+            try {
+                CloudModule.driveClient(WorldShareCommands::postClickableAuthLink);
+                sendClientMessage("§a✅ Signed in to Google Drive.");
+            } catch (final Throwable t) {
+                WorldShareMod.LOGGER.error("sign-in failed", t);
+                sendClientMessage("§c[WorldShare] Sign-in failed: " + t.getMessage());
             }
         });
+        return Command.SINGLE_SUCCESS;
     }
 
     private static int runSignOut(final CommandSourceStack source) {
@@ -182,124 +374,194 @@ public final class WorldShareCommands {
     // ----- M2 -----
 
     /**
-     * M5: renamed from {@code setfolder}. Now also writes a
-     * {@code worldshare-link.json} into the world folder and registers the
-     * world in the subscription store. This binds the open world to its Drive
-     * folder permanently on this machine.
+     * Set this world up for sharing: pick a Drive folder, create the fixed remote
+     * file set inside it, and record the resulting file IDs locally.
+     *
+     * <p>Replaces the old {@code setDriveLink <url>} command, which took a pasted
+     * folder ID. That approach can't work any more - under the {@code drive.file}
+     * scope a folder ID the user typed grants nothing, because access comes from
+     * having gone through Google's Picker, not from knowing an identifier. So the
+     * command now takes no argument and opens the consent screen instead.
      */
-    private static int runSetDriveLink(final CommandSourceStack source, final String id) {
-        final String extracted = extractFolderId(id);
+    private static int runSetup(final CommandSourceStack source) {
+        return runSetup(source, false);
+    }
 
+    /**
+     * Adopt a world already sitting in a Drive folder, rather than making a new one.
+     *
+     * <p>For the creator who reinstalled, or moved machines, and no longer has
+     * {@code worldshare-link.json}. Plain setup would create a fresh folder and a
+     * fresh set of files, leaving their real world orphaned in the old folder with
+     * nothing pointing at it - and nothing about that looks like a failure at the
+     * time.
+     */
+    private static int runSetupExisting(final CommandSourceStack source) {
+        sendFeedback(source, "Pick the Drive folder your world is already in.",
+                ChatFormatting.WHITE);
+        return runSetup(source, true);
+    }
 
+    /**
+     * Whether a setup is already running.
+     *
+     * <p>The "already set up" check below reads worldshare-link.json, which is
+     * written only after setup succeeds - so during the half-minute it spends
+     * creating files, nothing stopped the command being run a second time. Two
+     * runs meant two Drive folders and two sets of twenty-six files.
+     */
+    private static final java.util.concurrent.atomic.AtomicBoolean SETUP_RUNNING =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
 
-        if (extracted == null) {
-            sendFeedback(source,
-                    "Couldn't parse a Drive folder ID from that input.", ChatFormatting.RED);
-            return 0;
-        }
-
+    private static int runSetup(final CommandSourceStack source, final boolean pickExisting) {
         final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
         if (ctx.isEmpty()) {
             sendFeedback(source,
-                    "You must be in a world to use /worldshare setDriveLink. "
+                    "You must be in a world to run /worldshare setup. "
                     + "Open a singleplayer world first.",
                     ChatFormatting.RED);
             return 0;
         }
         final WorldContext.CurrentWorld world = ctx.get();
 
-        sendFeedback(source, "Verifying folder with Drive...", ChatFormatting.GRAY);
-
-
-        final String localFolderName = world.worldRoot.getFileName().toString();
-        final WorldSubscription claimed = SubscriptionStore.get().findByFolderId(extracted);
-        if (claimed != null && claimed.localFolderName != null
-                && !claimed.localFolderName.equals(localFolderName)) {
-            sendFeedback(source,
-                    "This Drive folder is already linked to local world '"
-                            + claimed.localFolderName + "'.",
-                    ChatFormatting.RED);
-            sendFeedback(source,
-                    "Two local worlds cannot share one Drive folder.",
-                    ChatFormatting.RED);
-            sendFeedback(source,
-                    "Open '" + claimed.localFolderName
-                            + "' and run /worldshare clearDriveLink first if you want to move the link.",
-                    ChatFormatting.GRAY);
+        // Running setup on a world that already has one is not a mistake worth
+        // an error. It is what somebody types when they want the link again -
+        // setup is the command they remember, because it is the one they ran the
+        // first time. So give them the link rather than a refusal.
+        final RemoteFileSet already = WorldLink.readRemote(world.worldRoot);
+        if (already != null) {
+            if (already.driveFolderId != null) {
+                sendClientMessage("§a[WorldShare] '" + world.name
+                        + "' is already set up for sharing.");
+                postCopyableInviteLink(already.driveFolderId);
+                sendClientMessage("§fRun /worldshare invite <their email> to give "
+                        + "somebody access.");
+            } else {
+                sendFeedback(source,
+                        "This world is already set up for sharing. Run "
+                                + "/worldshare clearDriveLink first if you want to redo it.",
+                        ChatFormatting.YELLOW);
+            }
             return 0;
         }
 
+        final int bucketCount = BucketLayout.newWorldBucketCount();
+        if (!SETUP_RUNNING.compareAndSet(false, true)) {
+            sendFeedback(source, "Setup is already running for this world. Give it a moment.",
+                    ChatFormatting.YELLOW);
+            return 0;
+        }
+
+        // Says what setup is doing, not what the browser is doing. Announcing a
+        // sign-in was wrong whenever the token was already stored: authorize()
+        // returns the cached credential without ever calling the presenter, so
+        // nothing opened and the message read as a failure. The auth link posts
+        // itself through postClickableAuthLink on the trips that need one.
+        //
+        // No "use setup existing" hint here any more. It arrived after the folder
+        // had already been made, which is too late to act on, and setup now finds
+        // and reuses a folder of its own in the library - so the case the hint
+        // warned about mostly handles itself.
+        sendFeedback(source,
+                "Setting up '" + world.name + "' for sharing. This takes about half a minute.",
+                ChatFormatting.WHITE);
+
+        final SetupProgressScreen screen =
+                new SetupProgressScreen(world.name, bucketCount + 2);
+
         CloudModule.executor().submit(() -> {
             try {
-                final DriveClient client = CloudModule.driveClient(
-                        WorldShareCommands::postClickableAuthLink);
-                final com.google.api.services.drive.model.File meta =
-                        client.getFileMeta(extracted);
-                if (meta == null) {
-                    sendClientMessage("§c[WorldShare] Folder not found or not accessible.");
-                    return;
-                }
-                if (!DriveClient.MIME_TYPE_FOLDER.equals(meta.getMimeType())) {
-                    sendClientMessage(
-                            "§c[WorldShare] That ID is a file, not a folder.");
-                    return;
-                }
+                final RemoteFileSet remote = WorldSetup.createNewWorld(
+                        WorldShareCommands::postClickableAuthLink, bucketCount,
+                        world.name, pickExisting,
+                        (done, total, created) -> {
+                            screen.update(done, total, created);
+                            // Tried on every file, not just the first.
+                            //
+                            // It only fires when no other screen is open, so that
+                            // it never steals the sign-in link out from under a
+                            // player who is about to click it. But attempting that
+                            // once, at the moment the first file appears, meant it
+                            // almost never showed on a fresh sign-in: the player is
+                            // still in their browser, or looking at Minecraft's
+                            // "open this link?" confirmation, so a screen is open
+                            // and the one chance is spent. Retrying means the bar
+                            // appears as soon as they are back in the world.
+                            Minecraft.getInstance().execute(() -> {
+                                final Minecraft mc = Minecraft.getInstance();
+                                if (mc.screen == null) {
+                                    mc.setScreen(screen);
+                                }
+                            });
+                        });
+                screen.finish();
 
-                final String folderName = meta.getName() != null ? meta.getName() : extracted;
                 final String localFolder = world.worldRoot.getFileName().toString();
+                SubscriptionStore.get().linkWorldToRemote(
+                        world.worldRoot, localFolder, remote, world.name);
 
-                // Write link file + subscribe in store.
-                SubscriptionStore.get().linkWorldToFolder(
-                        world.worldRoot, localFolder, extracted, folderName);
+                // Three lines, deliberately. This used to print sixteen, and Minecraft
+                // shows about ten - so the success line and the first two invite steps
+                // scrolled off before the player could read them, making a successful
+                // setup look like it had done nothing. The step-by-step for the person
+                // being invited belongs in the README, not in the host's chat log.
+                sendClientMessage("§a\u2705 '" + world.name + "' is ready to share \u2014 "
+                        + remote.layout().remoteFileCount() + " files created in Drive.");
+                postCopyableInviteLink(remote.driveFolderId);
+                sendClientMessage("§fInvite someone with §e/worldshare invite <their email>"
+                        + "§f - for example §e/worldshare invite john.doe@gmail.com");
 
-                // Keep legacy global config in sync (for any remaining M4 reads).
-                WorldShareConfig.get().driveFolderId.set(extracted);
-                WorldShareConfig.get().driveFolderId.save();
+                WorldShareMod.LOGGER.info("setup: '{}' (local: '{}') -> control file {}",
+                        world.name, localFolder, remote.controlFileId);
 
-                sendClientMessage("§a[WorldShare] \u2705 Drive link set: '"
-                        + folderName + "' (" + extracted + ")");
-                sendClientMessage("§7 World '" + world.name
-                        + "' will now sync to this Drive folder.");
-                sendClientMessage("§a[WorldShare] Drive link set: '" + folderName + "'");
-                sendClientMessage("§7 World '" + world.name + "' will now sync to this Drive folder.");
-// ADD THESE THREE LINES:
-                sendClientMessage("§e ");
-                sendClientMessage("§e[WorldShare] Note: this world is NOT yet locked for syncing.");
-                sendClientMessage("§e To play with Drive sync, save and quit, then open via");
-                sendClientMessage("§e Contributor Worlds tab. Running from vanilla Singleplayer");
-                sendClientMessage("§7 will not save changes to Drive.");
-                WorldShareMod.LOGGER.info(
-                        "setDriveLink: linked '{}' (local: '{}') -> Drive '{}'",
-                        world.name, localFolder, extracted);
-
-                // Auto-generate modpack.json so guests immediately know
-                // which mods are required. Runs on same executor thread.
+                // Publish the mod list so guests know what they need. Non-fatal:
+                // a world that syncs but doesn't advertise its mods is still usable.
                 try {
-                    sendClientMessage(
-                            "§7[WorldShare] Generating modpack.json for guests...");
+                    sendClientMessage("§f[WorldShare] Publishing mod list for guests...");
                     final com.worldshare.mod.modmanager.ModManagerModule.GenerateResult modResult =
-                            com.worldshare.mod.modmanager.ModManagerModule
-                                    .generateAndUpload(extracted);
+                            com.worldshare.mod.modmanager.ModManagerModule.generateAndUpload(remote);
                     if (modResult.total > 0) {
-                        sendClientMessage("§7[WorldShare] Modpack published: "
+                        sendClientMessage("§f[WorldShare] Modpack published: "
                                 + modResult.total + " mods ("
                                 + modResult.autoInstallable + " auto-installable, "
                                 + modResult.manualInstall + " manual).");
+                    } else if (com.worldshare.mod.modmanager.LocalModScanner
+                            .isDevEnvironment()) {
+                        sendClientMessage("§f[WorldShare] No mods published "
+                                + "(dev environment - mods load from class dirs).");
                     } else {
-                        sendClientMessage(
-                                "§7[WorldShare] No mods published (dev environment?).");
+                        sendClientMessage("§f[WorldShare] No extra mods to publish - "
+                                + "your friend needs only WorldShare.");
                     }
                 } catch (final Throwable modErr) {
                     WorldShareMod.LOGGER.warn(
-                            "setDriveLink: modpack generate failed (non-fatal): {}",
-                            modErr.getMessage());
-                    sendClientMessage(
-                            "§e[WorldShare] modpack.json generation failed - "
-                                    + "run /worldshare modpack generate manually.");
+                            "setup: modpack generate failed (non-fatal): {}", modErr.getMessage());
+                    sendClientMessage("§e[WorldShare] Mod list publish failed - "
+                            + "run /worldshare modpack generate manually.");
                 }
+                // Yellow, and phrased as the consequence rather than the state.
+                // As dark grey saying "not locked for syncing yet" this was the
+                // least readable line on screen and the most important one: a
+                // host who skips it leaves a world nobody can download.
+                sendClientMessage("§eYour friend can't download this world until "
+                        + "you've uploaded it once \u2014 open it from Contributor "
+                        + "Worlds to do that.");
             } catch (final Throwable t) {
-                WorldShareMod.LOGGER.error("setDriveLink failed", t);
-                sendClientMessage("§c[WorldShare] setDriveLink failed: " + t.getMessage());
+                WorldShareMod.LOGGER.error("setup failed", t);
+                screen.fail(String.valueOf(t.getMessage()));
+                sendClientMessage("§c[WorldShare] Setup failed: " + t.getMessage());
+                // Worth saying, because the world still has no link file and so
+                // still looks unconfigured. Re-running is now a resume: setup
+                // finds the folder it already made and fills in the gaps.
+                //
+                // Doesn't guess at the cause any more. It used to say "when you're
+                // back online", which was wrong for the failure it most often
+                // followed - a rejected stored credential, where the network was
+                // fine and waiting would have changed nothing.
+                sendClientMessage("§eRun /worldshare setup again - it picks up where "
+                        + "this left off.");
+            } finally {
+                SETUP_RUNNING.set(false);
             }
         });
         return Command.SINGLE_SUCCESS;
@@ -317,11 +579,12 @@ public final class WorldShareCommands {
         }
         final Path worldRoot = ctx.get().worldRoot;
 
-        // Read folder ID BEFORE deleting the link file — we need it to unsubscribe.
-        final String folderId = WorldLink.readFolderId(worldRoot);
+        // Read the file set BEFORE deleting the link file - we need it to unsubscribe
+        // and to stand the presence file down.
+        final RemoteFileSet remote = WorldLink.readRemote(worldRoot);
         // M7: release lock first to avoid orphan on Drive.
         if (LockManager.weHoldLock()) {
-            sendFeedback(source, "Releasing session lock first...", ChatFormatting.GRAY);
+            sendFeedback(source, "Releasing session lock first...", ChatFormatting.WHITE);
             CloudModule.executor().submit(() -> {
                 try {
                     LockManager.release();
@@ -333,24 +596,16 @@ public final class WorldShareCommands {
             });
         }
 
-        // M7: explicitly clean up Drive artifacts using the folderId we just read,
-// before we delete the link file that gives us access to it.
-        final String folderIdToClean = folderId;
-        if (folderIdToClean != null) {
+        // Stand our presence down before dropping the link that lets us reach it.
+        // Note this clears the file's contents rather than deleting it: the other
+        // player holds a grant on that exact Drive file ID, and a recreated file
+        // would come back with an ID their grant doesn't cover.
+        if (remote != null) {
             CloudModule.executor().submit(() -> {
                 try {
-                    // Stop active hosting if we're currently the host.
                     E4mcCoordinator.stopHostingIfActive();
-                    // Also explicitly find-and-delete presence.json in case
-                    // presenceFileId was null (e.g. after a restart).
-                    final DriveClient client = CloudModule.driveClient();
-                    final String presId = client.findFileByName(
-                            com.worldshare.mod.relay.PresenceFile.FILENAME, folderIdToClean);
-                    if (presId != null) {
-                        client.deleteFile(presId);
-                        WorldShareMod.LOGGER.info(
-                                "clearDriveLink: deleted presence.json from Drive");
-                    }
+                    com.worldshare.mod.relay.PresenceFile.clear(remote);
+                    WorldShareMod.LOGGER.info("clearDriveLink: presence stood down");
                 } catch (final Throwable t) {
                     WorldShareMod.LOGGER.warn(
                             "clearDriveLink: presence cleanup failed (non-fatal): {}",
@@ -369,9 +624,9 @@ public final class WorldShareCommands {
         }
 
         // Remove from subscription store so it disappears from Contributor Worlds tab.
-        if (folderId != null) {
-            SubscriptionStore.get().unsubscribe(folderId);
-            WorldShareMod.LOGGER.info("clearDriveLink: unsubscribed folder {}", folderId);
+        if (remote != null) {
+            SubscriptionStore.get().unsubscribe(remote.controlFileId);
+            WorldShareMod.LOGGER.info("clearDriveLink: unsubscribed world {}", remote.controlFileId);
         }
 
         // Clear legacy global config.
@@ -386,13 +641,13 @@ public final class WorldShareCommands {
     }
 
     private static int runLockInfo(final CommandSourceStack source) {
-        final String folderId = requireFolderIdForCurrentWorld(source);
-        if (folderId == null) return 0;
+        final RemoteFileSet remote = requireRemoteForCurrentWorld(source);
+        if (remote == null) return 0;
 
         CloudModule.executor().submit(() -> {
             try {
-                sendClientMessage("§7[WorldShare] Reading session.lock from Drive...");
-                final LockManager.LockStatus status = LockManager.readStatus(folderId);
+                sendClientMessage("§f[WorldShare] Reading session.lock from Drive...");
+                final LockManager.LockStatus status = LockManager.readStatus(remote);
                 switch (status.state) {
                     case FREE:
                         sendClientMessage("§a[WorldShare] \uD83D\uDD13 No lock. World is available.");
@@ -434,8 +689,8 @@ public final class WorldShareCommands {
     }
 
     private static int runLock(final CommandSourceStack source) {
-        final String folderId = requireFolderIdForCurrentWorld(source);
-        if (folderId == null) return 0;
+        final RemoteFileSet remote = requireRemoteForCurrentWorld(source);
+        if (remote == null) return 0;
 
         // M7: /worldshare lock is disabled when the world is opened from vanilla
         // Singleplayer. The Contributor Worlds tab acquires the lock BEFORE
@@ -451,7 +706,7 @@ public final class WorldShareCommands {
                     ChatFormatting.YELLOW);
             sendFeedback(source,
                     "The tab pulls the latest changes and acquires the lock automatically.",
-                    ChatFormatting.GRAY);
+                    ChatFormatting.WHITE);
             return 0;
         }
 
@@ -509,24 +764,24 @@ public final class WorldShareCommands {
             return 0;
         }
         final WorldContext.CurrentWorld world = ctx.get();
-        final String folderId = requireFolderIdForCurrentWorld(source);
-        if (folderId == null) return 0;
+        final RemoteFileSet remote = requireRemoteForCurrentWorld(source);
+        if (remote == null) return 0;
 
         sendFeedback(source,
-                "Computing sync status for '" + world.name + "'...", ChatFormatting.GRAY);
+                "Computing sync status for '" + world.name + "'...", ChatFormatting.WHITE);
         CloudModule.executor().submit(() -> {
             try {
                 final SyncDiff diff =
-                        SyncEngine.status(world.worldRoot, folderId, world.playerUuid);
+                        SyncEngine.status(world.worldRoot, remote, world.playerUuid);
                 if (diff.isEmpty()) {
                     sendClientMessage("§a[WorldShare] \u2705 In sync. "
                             + diff.identical.size() + " files identical.");
                 } else {
                     sendClientMessage("§e[WorldShare] Sync diff for '" + world.name + "':");
-                    sendClientMessage("§7  " + diff.onlyLocal.size() + " files only local");
-                    sendClientMessage("§7  " + diff.onlyOnDrive.size() + " files only on Drive");
-                    sendClientMessage("§7  " + diff.different.size() + " files differ");
-                    sendClientMessage("§7  " + diff.identical.size() + " files identical");
+                    sendClientMessage("§f  " + diff.onlyLocal.size() + " files only local");
+                    sendClientMessage("§f  " + diff.onlyOnDrive.size() + " files only on Drive");
+                    sendClientMessage("§f  " + diff.different.size() + " files differ");
+                    sendClientMessage("§f  " + diff.identical.size() + " files identical");
                 }
             } catch (final Throwable t) {
                 WorldShareMod.LOGGER.error("status failed", t);
@@ -543,8 +798,8 @@ public final class WorldShareCommands {
             return 0;
         }
         final WorldContext.CurrentWorld world = ctx.get();
-        final String folderId = requireFolderIdForCurrentWorld(source);
-        if (folderId == null) return 0;
+        final RemoteFileSet remote = requireRemoteForCurrentWorld(source);
+        if (remote == null) return 0;
 
         // M7: refuse push if no lock held (Singleplayer protection).
         if (!LockManager.weHoldLock()) {
@@ -562,7 +817,7 @@ public final class WorldShareCommands {
 
         final SyncProgress chatProgress = newChatProgressReporter();
         final Thread precheck = new Thread(() -> {
-            final OnlineChecker.Result online = OnlineChecker.check(folderId);
+            final OnlineChecker.Result online = OnlineChecker.check(remote);
             if (online == OnlineChecker.Result.OFFLINE) {
                 sendClientMessage(
                         "§c[WorldShare] Drive unreachable. Local changes preserved.");
@@ -570,19 +825,21 @@ public final class WorldShareCommands {
             }
             if (online == OnlineChecker.Result.NOT_AUTHENTICATED) {
                 sendClientMessage(
-                        "§c[WorldShare] Not signed in. Run /worldshare test first.");
+                        "§c[WorldShare] Not signed in to Drive. Run /worldshare signin, "
+                                + "then try again.");
                 return;
             }
             CloudModule.executor().submit(() -> {
                 try {
                     final SyncEngine.PushResult result = SyncEngine.push(
-                            world.worldRoot, folderId, world.playerUuid, null, chatProgress);
+                            world.worldRoot, remote, world.playerUuid, chatProgress);
                     sendClientMessage("§a[WorldShare] Push complete:");
-                    sendClientMessage("§a  uploaded: " + result.uploaded + " files");
-                    sendClientMessage("§7  skipped (someone else's edits): "
+                    sendClientMessage("§a  uploaded: " + result.filesUploaded
+                            + " files in " + result.bucketsUploaded + " bucket(s)");
+                    sendClientMessage("§f  skipped (someone else's edits): "
                             + result.skippedSomeoneElsesEdit);
-                    sendClientMessage("§7  failed: " + result.failed);
-                    sendClientMessage("§7  bytes: " + result.bytes
+                    sendClientMessage("§f  failed: " + result.failed);
+                    sendClientMessage("§f  bytes: " + result.bytes
                             + " (" + (result.bytes / (1024 * 1024)) + " MB)");
                 } catch (final Throwable t) {
                     WorldShareMod.LOGGER.error("push failed", t);
@@ -603,7 +860,7 @@ public final class WorldShareCommands {
             @Override
             public void onStart(final int total, final long bytes) {
                 if (total == 0) {
-                    sendClientMessage("§7[WorldShare] Nothing to upload.");
+                    sendClientMessage("§f[WorldShare] Nothing to upload.");
                     return;
                 }
                 sendClientMessage("§e[WorldShare] Uploading " + total
@@ -626,7 +883,7 @@ public final class WorldShareCommands {
                 lastUpdateMs = now;
                 lastReportedPercent = percent;
                 sendClientMessage(String.format(
-                        "§7[WorldShare] §f%d%%§7 - %d/%d files, %d/%d MB",
+                        "§f[WorldShare] §f%d%%§f - %d/%d files, %d/%d MB",
                         percent, filesDone, total,
                         bytesDone / (1024 * 1024), bytesTotal / (1024 * 1024)));
             }
@@ -638,40 +895,308 @@ public final class WorldShareCommands {
         };
     }
 
-    private static int runPull(final CommandSourceStack source) {
+    // ----- M4 -----
+
+    /**
+     * Show what this installation is leaving out of sync.
+     *
+     * <p>Editing a TOML by hand while the game is running is a poor answer to "this
+     * mod folder is enormous", which is exactly the moment somebody wants to fix it.
+     */
+    private static int runExcludeList(final CommandSourceStack source) {
+        final java.util.List<? extends String> current =
+                WorldShareConfig.get().extraSyncExcludes.get();
+        if (current == null || current.isEmpty()) {
+            sendFeedback(source, "Nothing is excluded - the whole world folder syncs.",
+                    ChatFormatting.WHITE);
+        } else {
+            sendFeedback(source, "Excluded from sync on this installation:",
+                    ChatFormatting.YELLOW);
+            for (final String p : current) {
+                sendClientMessage("§f  " + p);
+            }
+        }
+        sendFeedback(source, "/worldshare exclude <folder/>  or  /worldshare include <folder/>",
+                ChatFormatting.WHITE);
+        sendFeedback(source, "Only affects this installation - see /worldshare exclude "
+                + "for what that means for other players.", ChatFormatting.WHITE);
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int runExcludeAdd(final CommandSourceStack source, final String rawPath) {
+        final String path = rawPath.trim().replace('\\', '/');
+        if (path.isEmpty()) {
+            sendFeedback(source, "Give a path, e.g. /worldshare exclude bigmod/",
+                    ChatFormatting.RED);
+            return 0;
+        }
+
+        final java.util.List<String> updated =
+                new java.util.ArrayList<>(WorldShareConfig.get().extraSyncExcludes.get());
+        if (updated.contains(path)) {
+            sendFeedback(source, "'" + path + "' is already excluded.", ChatFormatting.WHITE);
+            return Command.SINGLE_SUCCESS;
+        }
+        updated.add(path);
+        WorldShareConfig.get().extraSyncExcludes.set(updated);
+        WorldShareConfig.get().extraSyncExcludes.save();
+
+        sendFeedback(source, "Excluded '" + path + "' from sync.", ChatFormatting.GREEN);
+        sendFeedback(source, "It stays on your disk, and stays on Drive - this stops YOUR "
+                + "copy uploading or downloading it.", ChatFormatting.WHITE);
+        // Worth stating, because the obvious reading is wrong. Excluding is a local
+        // decision: it does not delete anything from Drive, and it does not stop
+        // another player uploading their copy of the same folder.
+        sendFeedback(source, "Other players are unaffected unless they exclude it too.",
+                ChatFormatting.WHITE);
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int runExcludeRemove(final CommandSourceStack source, final String rawPath) {
+        final String path = rawPath.trim().replace('\\', '/');
+        final java.util.List<String> updated =
+                new java.util.ArrayList<>(WorldShareConfig.get().extraSyncExcludes.get());
+        if (!updated.remove(path)) {
+            sendFeedback(source, "'" + path + "' wasn't excluded. "
+                    + "Run /worldshare exclude to see the list.", ChatFormatting.RED);
+            return 0;
+        }
+        WorldShareConfig.get().extraSyncExcludes.set(updated);
+        WorldShareConfig.get().extraSyncExcludes.save();
+        sendFeedback(source, "'" + path + "' will sync again from your next save.",
+                ChatFormatting.GREEN);
+        return Command.SINGLE_SUCCESS;
+    }
+
+    /**
+     * Republish this world from the local copy, making Drive self-consistent.
+     *
+     * <p>{@code RepairWorldScreen} covers the case where a pull fails and the
+     * player cannot open the world at all. This covers the opposite: the world
+     * opens fine, but its remote state is suspect - archives and manifest written
+     * by different versions, or a bucket mapping the control file misreports. There
+     * is no failure to hang a screen off, so it needs to be asked for.
+     *
+     * <p>Deliberately available rather than hidden. A world whose remote is subtly
+     * wrong has no other way back, and the alternative to a documented command is
+     * somebody deleting the Drive folder - which mints new file IDs and cuts every
+     * other player off permanently.
+     */
+    private static int explainRepair(final CommandSourceStack source) {
+        sendFeedback(source, "Repair re-uploads this ENTIRE world and rebuilds the "
+                + "index on Drive.", ChatFormatting.YELLOW);
+        sendFeedback(source, "Your copy becomes the authoritative one. Anything another "
+                + "player pushed that you haven't downloaded is lost.", ChatFormatting.WHITE);
+        sendFeedback(source, "Run /worldshare repair confirm if that's what you want.",
+                ChatFormatting.WHITE);
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int runRepair(final CommandSourceStack source) {
         final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
         if (ctx.isEmpty()) {
             sendFeedback(source, "No world loaded.", ChatFormatting.RED);
             return 0;
         }
         final WorldContext.CurrentWorld world = ctx.get();
-        final String folderId = requireFolderIdForCurrentWorld(source);
-        if (folderId == null) return 0;
+        final RemoteFileSet remote = requireRemoteForCurrentWorld(source);
+        if (remote == null) return 0;
 
-        sendFeedback(source,
-                "WARNING: Pulling while a world is loaded may corrupt it. "
-                + "Save and Quit first.",
-                ChatFormatting.RED);
+        if (!LockManager.weHoldLock(remote)) {
+            sendFeedback(source, "Repair needs this world's session lock.",
+                    ChatFormatting.RED);
+            sendFeedback(source, "Save and quit, then open it from Contributor Worlds.",
+                    ChatFormatting.YELLOW);
+            return 0;
+        }
+
+        // Flush the world to disk before reading it.
+        //
+        // An open world holds state Minecraft hasn't written: chunks modified since
+        // the last autosave live in memory, and player inventory and position live
+        // in the ServerPlayer until a save or a logout. Packing without this uploads
+        // a world missing the current session - a rollback for whoever pulls it, and
+        // one the archive checks cannot detect, because the archive is perfectly
+        // consistent with a manifest that simply describes an older world.
+        //
+        // This is what SaveAndUploadScreen gets for free by waiting for the server
+        // to stop. A command has no such moment, so it has to ask.
+        sendFeedback(source, "Saving '" + world.name + "' to disk first...",
+                ChatFormatting.WHITE);
+        try {
+            // Logged by us rather than by vanilla. saveEverything's first argument
+            // suppresses its own "Saving chunks for level" lines, and leaving them
+            // on would bury the repair in per-dimension chatter - but with them off
+            // there was no way to tell from a log whether the flush had happened at
+            // all, which is exactly the question a bug report needs answered.
+            WorldShareMod.LOGGER.info("repair: flushing '{}' to disk before packing",
+                    world.name);
+            source.getServer().saveEverything(true, true, true);
+            WorldShareMod.LOGGER.info("repair: flush complete");
+        } catch (final Throwable t) {
+            WorldShareMod.LOGGER.error("repair: world save failed", t);
+            sendFeedback(source, "Couldn't save the world first, so nothing was uploaded.",
+                    ChatFormatting.RED);
+            return 0;
+        }
+
+        sendFeedback(source, "Repairing '" + world.name + "' - re-uploading every bucket...",
+                ChatFormatting.YELLOW);
+        sendFeedback(source, "Stay still until it finishes - the world writing to disk "
+                + "mid-upload will abort it.", ChatFormatting.WHITE);
+
+        final SyncProgress chatProgress = newChatProgressReporter();
         CloudModule.executor().submit(() -> {
             try {
-                final SyncEngine.PullResult result =
-                        SyncEngine.pull(world.worldRoot, folderId, world.playerUuid);
-                sendClientMessage("§a[WorldShare] Pull complete:");
-                sendClientMessage("§a  downloaded: " + result.downloaded + " files");
-                sendClientMessage("§7  failed: " + result.failed);
-                sendClientMessage("§7  bytes: " + result.bytes
-                        + " (" + (result.bytes / (1024 * 1024)) + " MB)");
+                final SyncEngine.PushResult r = SyncEngine.repair(
+                        world.worldRoot, remote, world.playerUuid, chatProgress);
+                sendClientMessage("§a[WorldShare] Repaired: " + r.bucketsUploaded
+                        + " bucket(s) republished, " + r.filesUploaded + " file(s), "
+                        + (r.bytes / (1024 * 1024)) + " MB.");
+                sendClientMessage("§fDrive now matches your copy. Other players can pull again.");
             } catch (final Throwable t) {
-                WorldShareMod.LOGGER.error("pull failed", t);
-                sendClientMessage("§c[WorldShare] pull failed: " + t.getMessage());
+                WorldShareMod.LOGGER.error("repair command failed", t);
+                sendClientMessage("§c[WorldShare] Repair failed: " + t.getMessage());
+                sendClientMessage("§fNothing was committed; your local world is untouched.");
             }
         });
         return Command.SINGLE_SUCCESS;
     }
 
-    // ----- M4 -----
+    /**
+     * Print the Drive link that lets somebody else contribute to this world.
+     *
+     * <p>Separate from {@link #runHost}, because the two invitations are not the
+     * same thing and conflating them under one word would guarantee the wrong one
+     * gets used. This one is permanent and asynchronous - the other player joins
+     * the world, syncs through Drive, and plays whenever they like. Hosting is
+     * temporary and simultaneous.
+     *
+     * <p>The link was previously only printed by {@code /worldshare setup}, which
+     * meant recovering it after that message scrolled away required reading the
+     * doctor report.
+     */
+    /**
+     * Give somebody access to this world, and hand back the link to send them.
+     *
+     * <p>With an email address this shares the Drive folder with them as an
+     * Editor directly. That step used to be a manual trip to Drive - the only
+     * part of setting up a shared world that happened outside the game - and it
+     * turned out {@code drive.file} is enough to do it for a folder the mod
+     * created, so there is no reason to make anyone leave.
+     *
+     * <p>Without one it just prints the link, for the host who would rather
+     * share it themselves.
+     *
+     * <p>Either way the person joining still picks the world's files through the
+     * Picker. A folder grant conveys nothing about its contents, so being given
+     * access to the folder is necessary but not sufficient - which is why the
+     * link matters even when the share has already been made for them.
+     */
+    private static int runDriveInvite(final CommandSourceStack source, final String email) {
+        final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
+        if (ctx.isEmpty()) {
+            sendFeedback(source, "No world is currently loaded.", ChatFormatting.RED);
+            return 0;
+        }
+        // Three different reasons this can fail, and telling them apart matters:
+        // "run setup" is actively wrong advice for a legacy world, because setup
+        // refuses while a link file exists. That combination - invite saying not
+        // set up, setup saying already set up - leaves the player with two
+        // contradictory messages and no way forward.
+        final WorldLink link = WorldLink.read(ctx.get().worldRoot);
+        if (link == null) {
+            sendFeedback(source,
+                    "This world isn't set up for sharing yet. Run /worldshare setup first.",
+                    ChatFormatting.RED);
+            return 0;
+        }
+        if (link.isLegacy()) {
+            sendFeedback(source,
+                    "This world was linked by an older version of WorldShare, before "
+                            + "it moved to per-file Drive access.",
+                    ChatFormatting.YELLOW);
+            sendFeedback(source,
+                    "Run /worldshare clearDriveLink, then /worldshare setup to relink it.",
+                    ChatFormatting.WHITE);
+            return 0;
+        }
+        final RemoteFileSet remote = link.remote;
+        if (remote == null || !remote.isComplete()) {
+            sendFeedback(source,
+                    "This world's setup was never finished - still missing "
+                            + (remote == null ? "everything" : remote.missingFilenames())
+                            + ". Re-run /worldshare setup.",
+                    ChatFormatting.RED);
+            return 0;
+        }
+        if (remote.driveFolderId == null) {
+            // A world joined through the Picker knows its files but not the folder
+            // they live in, so there is no link to hand out. The person who created
+            // the world has it.
+            sendFeedback(source,
+                    "You joined this world rather than creating it, so WorldShare "
+                            + "doesn't know its Drive folder.",
+                    ChatFormatting.YELLOW);
+            sendFeedback(source,
+                    "Ask whoever set it up to run /worldshare invite and send you the link.",
+                    ChatFormatting.WHITE);
+            return 0;
+        }
 
-    private static int runInvite(final CommandSourceStack source) {
+        final String worldName = ctx.get().name;
+        final String folderId = remote.driveFolderId;
+
+        if (email == null) {
+            sendClientMessage("§a[WorldShare] Invite someone to contribute to '"
+                    + worldName + "':");
+            postCopyableInviteLink(folderId);
+            sendClientMessage("§fShare that folder with them as Editor yourself, "
+                    + "then send the link.");
+            sendClientMessage("§fOr let WorldShare do it: §e/worldshare invite "
+                    + "<their email>§f - for example "
+                    + "§e/worldshare invite john.doe@gmail.com");
+            return Command.SINGLE_SUCCESS;
+        }
+
+        final String address = email.trim();
+        if (!looksLikeEmail(address)) {
+            sendFeedback(source,
+                    "'" + address + "' doesn't look like an email address. "
+                            + "Use the Google account they sign in to Drive with.",
+                    ChatFormatting.RED);
+            return 0;
+        }
+
+        sendFeedback(source, "Sharing '" + worldName + "' with " + address + "...",
+                ChatFormatting.WHITE);
+        CloudModule.executor().submit(() -> {
+            try {
+                CloudModule.driveClient(WorldShareCommands::postClickableAuthLink)
+                        .shareWithEmail(folderId, address, "writer", true);
+                sendClientMessage("§a✅ " + address + " can now edit this world's "
+                        + "Drive folder. Google has emailed them about it.");
+                sendClientMessage("§fThey still need the link, to pick the world's "
+                        + "files - Drive access alone isn't enough:");
+                postCopyableInviteLink(folderId);
+            } catch (final Throwable t) {
+                WorldShareMod.LOGGER.error("invite: sharing with {} failed", address, t);
+                sendClientMessage("§c[WorldShare] Couldn't share with " + address + ": "
+                        + t.getMessage());
+                sendClientMessage("§fYou can still share the folder yourself:");
+                postCopyableInviteLink(folderId);
+            }
+        });
+        return Command.SINGLE_SUCCESS;
+    }
+
+    /**
+     * Open this world for live co-op through e4mc.
+     *
+     * <p>Was {@code /worldshare invite}, which described the Drive flow just as
+     * well and so said nothing useful about either.
+     */
+    private static int runHost(final CommandSourceStack source) {
         final Minecraft mc = Minecraft.getInstance();
         if (mc.getSingleplayerServer() == null) {
             sendFeedback(source,
@@ -685,11 +1210,387 @@ public final class WorldShareCommands {
                     ChatFormatting.RED);
             return 0;
         }
+        if (!E4mcCoordinator.isAvailable()) {
+            sendFeedback(source,
+                    "Live co-op needs the e4mc mod, which isn't installed.",
+                    ChatFormatting.RED);
+            sendFeedback(source,
+                    "Install it from modrinth.com/mod/e4mc and restart. "
+                    + "Drive sync works fine without it.",
+                    ChatFormatting.WHITE);
+            return 0;
+        }
         sendFeedback(source,
                 "Opening world to LAN via e4mc... waiting for relay domain.",
                 ChatFormatting.GREEN);
+        sendFeedback(source,
+                "Others can join from Contributor Worlds once the domain appears.",
+                ChatFormatting.WHITE);
         E4mcCoordinator.startHosting();
         return Command.SINGLE_SUCCESS;
+    }
+
+    /**
+     * Dump everything known about the current world's sync state, in one place.
+     *
+     * <p>Exists because diagnosing a sync problem otherwise means correlating half
+     * a dozen log lines across two machines. Every value here is already available
+     * through some other command or buried in a log; the point is having them
+     * together, in an order that makes the usual failures obvious, and phrased so
+     * the output can be pasted at somebody rather than summarised.
+     *
+     * <p>Read-only. It never writes to Drive or to the world.
+     *
+     * @param full also fetch per-bucket metadata from Drive and scan the world for
+     *             a local-vs-remote comparison. Costs a full world scan plus one
+     *             API call per bucket, hence opt-in.
+     */
+    private static int runDoctor(final CommandSourceStack source, final boolean full) {
+        final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
+        if (ctx.isEmpty()) {
+            sendFeedback(source, "No world is currently loaded.", ChatFormatting.RED);
+            return 0;
+        }
+        final WorldContext.CurrentWorld world = ctx.get();
+
+        sendFeedback(source, "Collecting diagnostics" + (full ? " (full scan)" : "") + "...",
+                ChatFormatting.WHITE);
+
+        CloudModule.executor().submit(() -> {
+            final java.util.List<String> report = new java.util.ArrayList<>();
+            final java.util.List<String> problems = new java.util.ArrayList<>();
+            try {
+                buildDoctorReport(report, problems, world, full);
+            } catch (final Throwable t) {
+                problems.add("Diagnostics aborted: " + t.getClass().getSimpleName()
+                        + ": " + t.getMessage());
+                WorldShareMod.LOGGER.error("doctor: failed", t);
+            }
+
+            // Chat gets a verdict; the file gets everything.
+            //
+            // The full report runs to a dozen-plus lines and Minecraft shows about
+            // ten, so printing it all guaranteed the top scrolled away - and chat
+            // text can't be copied out of the game anyway, which is what you want
+            // to do with a diagnostic. The file is plain, selectable text.
+            final java.nio.file.Path out = writeDoctorReport(report, world);
+
+            if (problems.isEmpty()) {
+                sendClientMessage("§a\u2705 WorldShare looks healthy for '" + world.name + "'.");
+            } else {
+                sendClientMessage("§c\u26a0 " + problems.size() + " problem(s) with '"
+                        + world.name + "':");
+                for (final String problem : problems) {
+                    sendClientMessage("§c  \u2022 " + problem);
+                }
+            }
+            if (out != null) {
+                postCopyableReportPath(out);
+            } else {
+                sendClientMessage("§fFull report is in the log.");
+            }
+        });
+        return Command.SINGLE_SUCCESS;
+    }
+
+    /**
+     * Top-level entries in the world folder that aren't part of a vanilla save,
+     * mapped to their total size on disk.
+     *
+     * <p>Walks the folder directly rather than reading the manifest, so it reports
+     * what is there right now even if nothing has been pushed yet.
+     */
+    private static java.util.Map<String, Long> unfamiliarTopLevelEntries(
+            final java.nio.file.Path worldRoot) throws java.io.IOException {
+        final java.util.Set<String> familiar = java.util.Set.of(
+                "region", "entities", "poi", "playerdata", "stats", "advancements",
+                "data", "resources", "datapacks", "v_data", "serverconfig",
+                "dim-1", "dim1", "dimensions", "level.dat", "level.dat_old",
+                "session.lock", "icon.png",
+                "worldshare-link.json", "worldshare-scan-cache.json");
+
+        final java.util.Map<String, Long> sizes = new java.util.TreeMap<>();
+        try (java.util.stream.Stream<java.nio.file.Path> top =
+                     java.nio.file.Files.list(worldRoot)) {
+            for (final java.nio.file.Path entry : (Iterable<java.nio.file.Path>) top::iterator) {
+                final String name = entry.getFileName().toString();
+                if (familiar.contains(name.toLowerCase(java.util.Locale.ROOT))) continue;
+
+                long bytes = 0L;
+                if (java.nio.file.Files.isDirectory(entry)) {
+                    try (java.util.stream.Stream<java.nio.file.Path> walk =
+                                 java.nio.file.Files.walk(entry)) {
+                        for (final java.nio.file.Path f : (Iterable<java.nio.file.Path>) walk::iterator) {
+                            if (java.nio.file.Files.isRegularFile(f)) {
+                                bytes += java.nio.file.Files.size(f);
+                            }
+                        }
+                    }
+                } else {
+                    bytes = java.nio.file.Files.size(entry);
+                }
+                sizes.put(name, bytes);
+            }
+        }
+        return sizes;
+    }
+
+    /**
+     * Write the full diagnostic somewhere it can be read and pasted.
+     *
+     * <p>Goes next to the game directory rather than into the log, because
+     * latest.log is enormous and finding the report inside it is its own chore.
+     *
+     * @return the file written, or null if it couldn't be (in which case the
+     *         caller falls back to the log)
+     */
+    private static java.nio.file.Path writeDoctorReport(final java.util.List<String> report,
+                                                        final WorldContext.CurrentWorld world) {
+        final java.nio.file.Path out = com.worldshare.mod.util.WorldSharePaths.gameDir()
+                .resolve("worldshare-doctor.txt");
+        final StringBuilder text = new StringBuilder();
+        text.append("WorldShare diagnostic report\n")
+                .append("Generated: ").append(java.time.Instant.now()).append('\n')
+                .append("World: ").append(world.name).append('\n')
+                .append("Path:  ").append(world.worldRoot).append('\n')
+                .append("----------------------------------------\n");
+        for (final String line : report) {
+            // Strip Minecraft's colour codes; they're noise in a text file.
+            text.append(line.replaceAll("\u00a7.", "")).append('\n');
+        }
+
+        WorldShareMod.LOGGER.info("=== /worldshare doctor ===\n{}", text);
+        try {
+            java.nio.file.Files.writeString(out, text.toString(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            return out;
+        } catch (final Exception e) {
+            WorldShareMod.LOGGER.warn("doctor: couldn't write {}: {}", out, e.getMessage());
+            return null;
+        }
+    }
+
+    /** One clickable line that copies the report's path, since chat text can't be selected. */
+    private static void postCopyableReportPath(final java.nio.file.Path path) {
+        final Minecraft mc = Minecraft.getInstance();
+        if (mc == null) return;
+        mc.execute(() -> {
+            final MutableComponent link = Component.literal("  [Copy full report path]")
+                    .setStyle(Style.EMPTY
+                            .withColor(ChatFormatting.AQUA)
+                            .withUnderlined(true)
+                            .withClickEvent(new ClickEvent(ClickEvent.Action.COPY_TO_CLIPBOARD,
+                                    path.toAbsolutePath().toString()))
+                            .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
+                                    Component.literal(path.toAbsolutePath().toString()
+                                            + "\n\nOpen this to read or paste the full report."))));
+            if (mc.player != null) {
+                mc.player.displayClientMessage(link, false);
+            }
+        });
+    }
+
+    private static void buildDoctorReport(final java.util.List<String> out,
+                                          final java.util.List<String> problems,
+                                          final WorldContext.CurrentWorld world,
+                                          final boolean full) {
+        out.add("§b=== WorldShare doctor ===");
+        out.add("§fWorld: §f" + world.name);
+
+        // ---- local link ----
+        final WorldLink link = WorldLink.read(world.worldRoot);
+        if (link == null) {
+            out.add("§eNot set up for sharing. Run /worldshare setup.");
+            problems.add("Not set up for sharing - run /worldshare setup");
+            return;
+        }
+        if (link.isLegacy()) {
+            out.add("§eLinked under the old full-Drive scope (folder "
+                    + link.driveFolderId + ").");
+            out.add("§eRun /worldshare setup again to pick this world's files.");
+            problems.add("Linked under the old full-Drive scope - re-run /worldshare setup");
+            return;
+        }
+        final RemoteFileSet remote = link.remote;
+        if (remote == null) {
+            out.add("§cLink file exists but names no Drive files. Re-run setup.");
+            problems.add("Link file names no Drive files - re-run setup");
+            return;
+        }
+        if (!remote.isComplete()) {
+            out.add("§cSetup incomplete - still missing: §f"
+                    + WorldSetup.describeMissing(remote));
+            out.add("§fRe-run Add World and select the missing files.");
+            problems.add("Setup incomplete, missing: " + WorldSetup.describeMissing(remote));
+            return;
+        }
+        out.add("§aLink OK §f- " + remote.bucketCount + " buckets, "
+                + remote.layout().remoteFileCount() + " remote files");
+        if (remote.driveFolderId != null) {
+            out.add("§f  invite link: §fhttps://drive.google.com/drive/folders/"
+                    + remote.driveFolderId);
+        }
+        out.add("§f  control:  §f" + remote.controlFileId);
+        out.add("§f  presence: §f" + remote.presenceFileId);
+
+        // ---- remote control file ----
+        final com.worldshare.mod.cloud.ControlFile control;
+        try {
+            control = com.worldshare.mod.cloud.ControlFileClient.read(remote.controlFileId);
+        } catch (final Exception e) {
+            out.add("§cControl file unreadable: §f" + e.getMessage());
+            out.add("§fCheck the folder is still shared with this Google account.");
+            problems.add("Control file unreadable - is the folder still shared with you?");
+            return;
+        }
+        if (control == null) {
+            out.add("§eControl file is still an empty placeholder - nobody has pushed yet.");
+        } else {
+            out.add("§aControl file OK §f- schema v" + control.schemaVersion
+                    + ", " + control.bucketCount + " buckets, "
+                    + control.manifestOrEmpty().size() + " files, "
+                    + (control.manifestOrEmpty().totalBytes() / (1024 * 1024)) + " MB");
+            if (control.bucketCount != remote.bucketCount) {
+                out.add("§c!! Bucket layout mismatch: local " + remote.bucketCount
+                        + " vs Drive " + control.bucketCount + ". Syncing is blocked.");
+                problems.add("Bucket layout mismatch: local " + remote.bucketCount
+                        + " vs Drive " + control.bucketCount);
+            }
+            if (control.modpack != null) {
+                out.add("§f  modpack published: §fyes");
+            }
+        }
+
+        // ---- lock ----
+        try {
+            final LockManager.LockStatus status = LockManager.readStatus(remote);
+            final SessionLock lock = status.lock;
+            final StringBuilder line = new StringBuilder("§fLock: §f" + status.state);
+            if (lock != null && !lock.isUnlocked()) {
+                line.append(" §fheld by §f").append(lock.holderName);
+                final java.time.Duration left = java.time.Duration.between(
+                        java.time.Instant.now(), lock.expiresAtInstant());
+                line.append(left.isNegative()
+                        ? " §c(expired)"
+                        : " §f(expires in " + left.toHours() + "h" + (left.toMinutes() % 60) + "m)");
+            }
+            out.add(line.toString());
+        } catch (final Exception e) {
+            out.add("§cCouldn't read the lock: §f" + e.getMessage());
+        }
+        out.add("§fThis machine holds the lock: §f" + LockManager.weHoldLock()
+                + " §f(machine " + MachineId.get() + ")");
+
+        // ---- presence ----
+        try {
+            final com.worldshare.mod.relay.PresenceFile presence =
+                    com.worldshare.mod.relay.PresenceFile.read(remote);
+            if (presence == null || presence.isStale()) {
+                out.add("§fLive session: §fnone");
+            } else {
+                out.add("§aLive session: §f" + presence.host + " §fat " + presence.e4mc_link);
+            }
+        } catch (final Exception e) {
+            out.add("§fLive session: §funknown (" + e.getMessage() + ")");
+        }
+        out.add("§fe4mc installed: §f" + E4mcCoordinator.isAvailable());
+
+        if (!full) {
+            out.add("§fRun /worldshare doctor full for bucket sizes and a local diff.");
+            return;
+        }
+
+        // ---- per-bucket metadata ----
+        try {
+            final DriveClient client = CloudModule.driveClient();
+            long total = 0;
+            int empty = 0;
+            int largestIndex = -1;
+            long largest = -1;
+            final java.util.List<String> strays = new java.util.ArrayList<>();
+            for (int i = 0; i < remote.bucketCount; i++) {
+                final com.google.api.services.drive.model.File meta =
+                        client.getFileMeta(remote.bucketFileId(i));
+                final long size = (meta == null || meta.getSize() == null) ? 0L : meta.getSize();
+                total += size;
+                if (size == 0L) empty++;
+                if (size > largest) { largest = size; largestIndex = i; }
+
+                // Has this file been moved out of the world's folder?
+                //
+                // Sync itself wouldn't notice - every read and write is by file ID,
+                // and IDs survive moves. Two other things do notice, and neither
+                // says so at the time: the other player's access came from the
+                // folder being shared, so a file outside it may no longer be
+                // readable by them; and setup's adoption path finds an existing
+                // world by listing the folder, so a stray file reads as missing and
+                // gets replaced, orphaning whatever was in it.
+                if (meta != null && remote.driveFolderId != null && meta.getParents() != null
+                        && !meta.getParents().contains(remote.driveFolderId)) {
+                    strays.add(BucketLayout.bucketFilename(i));
+                }
+            }
+            out.add("§fBuckets: §f" + (remote.bucketCount - empty) + "/" + remote.bucketCount
+                    + " with content§f, total §f" + (total / (1024 * 1024)) + " MB");
+            if (largestIndex >= 0) {
+                out.add("§f  largest: §f" + BucketLayout.bucketFilename(largestIndex)
+                        + " (" + (largest / (1024 * 1024)) + " MB)");
+            }
+            if (empty > 0) {
+                out.add("§f  " + empty + " empty placeholder(s) - normal before a first push");
+            }
+            if (!strays.isEmpty()) {
+                out.add("§c  " + strays.size() + " file(s) moved out of the world's Drive folder:");
+                for (final String name : strays) {
+                    out.add("§c    " + name);
+                }
+                problems.add(strays.size() + " Drive file(s) moved out of the world folder - "
+                        + "move them back, or other players may lose access");
+            }
+        } catch (final Exception e) {
+            out.add("§cCouldn't read bucket metadata: §f" + e.getMessage());
+        }
+
+        // ---- local vs remote ----
+        try {
+            final SyncDiff diff = SyncEngine.status(world.worldRoot, remote, world.playerUuid);
+            if (diff.isEmpty()) {
+                out.add("§aLocal matches Drive §f(" + diff.identical.size() + " files)");
+            } else {
+                out.add("§eLocal differs from Drive:");
+                out.add("§f  identical §f" + diff.identical.size()
+                        + " §f| changed §f" + diff.different.size()
+                        + " §f| only here §f" + diff.onlyLocal.size()
+                        + " §f| only on Drive §f" + diff.onlyOnDrive.size());
+            }
+        } catch (final Exception e) {
+            out.add("§cCouldn't compare local to Drive: §f" + e.getMessage());
+        }
+
+        // ---- what we're carrying that we don't recognise ----
+        //
+        // WorldShare syncs the whole world folder now, so a mod's data comes along
+        // whether or not we've heard of it. That is the right default, but it means
+        // a bug report about a slow or enormous sync needs to name what is actually
+        // being carried - otherwise the answer is guesswork about which mod is
+        // responsible.
+        try {
+            final java.util.Map<String, Long> unfamiliar =
+                    unfamiliarTopLevelEntries(world.worldRoot);
+            if (unfamiliar.isEmpty()) {
+                out.add("§fExtra content: §fnone beyond vanilla");
+            } else {
+                out.add("§fExtra content synced (from mods or added by hand):");
+                for (final java.util.Map.Entry<String, Long> e : unfamiliar.entrySet()) {
+                    final long mb = e.getValue() / (1024 * 1024);
+                    out.add("§f  " + e.getKey() + " §f"
+                            + (mb > 0 ? mb + " MB" : (e.getValue() / 1024) + " KB")
+                            + (mb >= 128 ? " §c(large - every sync carries this)" : ""));
+                }
+            }
+        } catch (final Exception e) {
+            out.add("§fExtra content: §funknown (" + e.getMessage() + ")");
+        }
     }
 
     private static int runModpackGenerate(final CommandSourceStack source) {
@@ -698,10 +1599,10 @@ public final class WorldShareCommands {
             sendFeedback(source, "No world is currently loaded.", ChatFormatting.RED);
             return 0;
         }
-        final String folderId = WorldLink.readFolderId(ctx.get().worldRoot);
-        if (folderId == null) {
+        final RemoteFileSet remote = WorldLink.readRemote(ctx.get().worldRoot);
+        if (remote == null) {
             sendFeedback(source,
-                    "This world is not linked to Drive. Run /worldshare setDriveLink first.",
+                    "This world is not set up for sharing. Run /worldshare setup first.",
                     ChatFormatting.RED);
             return 0;
         }
@@ -716,24 +1617,29 @@ public final class WorldShareCommands {
         }
 
         sendFeedback(source, "Scanning mods and resolving Modrinth URLs...",
-                ChatFormatting.GRAY);
+                ChatFormatting.WHITE);
 
         sendFeedback(source, "Scanning mods and resolving Modrinth URLs...",
-                ChatFormatting.GRAY);
+                ChatFormatting.WHITE);
 
         CloudModule.executor().submit(() -> {
             try {
                 final com.worldshare.mod.modmanager.ModManagerModule.GenerateResult result =
-                        com.worldshare.mod.modmanager.ModManagerModule.generateAndUpload(folderId);
+                        com.worldshare.mod.modmanager.ModManagerModule.generateAndUpload(remote);
                 sendClientMessage("§a[WorldShare] \u2705 modpack.json published to Drive:");
                 sendClientMessage("§a  total mods: " + result.total);
-                sendClientMessage("§7  auto-installable (on Modrinth): " + result.autoInstallable);
-                sendClientMessage("§7  manual install required: " + result.manualInstall);
+                sendClientMessage("§f  auto-installable (on Modrinth): " + result.autoInstallable);
+                sendClientMessage("§f  manual install required: " + result.manualInstall);
                 if (result.total == 0) {
-                    sendClientMessage(
-                            "§e Note: no mods were published. This is expected in the");
-                    sendClientMessage(
-                            "§e dev environment - generate only works in production installs.");
+                    if (com.worldshare.mod.modmanager.LocalModScanner.isDevEnvironment()) {
+                        sendClientMessage("§e Note: nothing was published. Expected here - "
+                                + "mods load from class");
+                        sendClientMessage("§e directories in a dev environment, and only "
+                                + "jars can be published.");
+                    } else {
+                        sendClientMessage("§f Nothing to publish: WorldShare is the only "
+                                + "mod installed.");
+                    }
                 }
             } catch (final Throwable t) {
                 WorldShareMod.LOGGER.error("modpack generate failed", t);
@@ -750,31 +1656,31 @@ public final class WorldShareCommands {
      * {@code worldshare-link.json}. If no world is loaded or no link exists,
      * prints a helpful error and returns null.
      */
-    private static String requireFolderIdForCurrentWorld(final CommandSourceStack source) {
+    private static RemoteFileSet requireRemoteForCurrentWorld(final CommandSourceStack source) {
         final java.util.Optional<WorldContext.CurrentWorld> ctx = WorldContext.current();
         if (ctx.isEmpty()) {
             sendFeedback(source, "No world is currently loaded.", ChatFormatting.RED);
             return null;
         }
-        final String folderId = WorldLink.readFolderId(ctx.get().worldRoot);
-        if (folderId == null) {
+        final RemoteFileSet remote = WorldLink.readRemote(ctx.get().worldRoot);
+        if (remote == null) {
             sendFeedback(source,
-                    "This world is not linked to a Drive folder. "
-                    + "Run /worldshare setDriveLink <url-or-id> to link it.",
+                    "This world is not set up for sharing. "
+                    + "Run /worldshare setup to link it to Drive.",
                     ChatFormatting.RED);
             return null;
         }
-        return folderId;
+        return remote;
     }
 
     private static void printLockDetails(final SessionLock lock) {
         if (lock == null) return;
-        sendClientMessage("§7         holder:    " + lock.holderName);
-        sendClientMessage("§7         locked_at: " + lock.lockedAt);
-        sendClientMessage("§7         expires:   " + lock.expiresAt);
-        sendClientMessage("§7         heartbeat: " + lock.lastHeartbeatAt);
+        sendClientMessage("§f         holder:    " + lock.holderName);
+        sendClientMessage("§f         locked_at: " + lock.lockedAt);
+        sendClientMessage("§f         expires:   " + lock.expiresAt);
+        sendClientMessage("§f         heartbeat: " + lock.lastHeartbeatAt);
         if (lock.relayAddress != null) {
-            sendClientMessage("§7         relay:     " + lock.relayAddress);
+            sendClientMessage("§f         relay:     " + lock.relayAddress);
         }
     }
 
@@ -808,19 +1714,4 @@ public final class WorldShareCommands {
         });
     }
 
-    private static String extractFolderId(final String raw) {
-        if (raw == null) return null;
-        String s = raw.trim();
-        if (s.isEmpty()) return null;
-        final int idx = s.indexOf("/folders/");
-        if (idx >= 0) s = s.substring(idx + "/folders/".length());
-        final int q = s.indexOf('?');
-        if (q >= 0) s = s.substring(0, q);
-        final int h = s.indexOf('#');
-        if (h >= 0) s = s.substring(0, h);
-        while (s.endsWith("/")) s = s.substring(0, s.length() - 1);
-        if (!s.matches("[A-Za-z0-9_\\-]+")) return null;
-        if (s.length() < 10) return null;
-        return s;
-    }
 }

@@ -1,6 +1,7 @@
 package com.worldshare.mod.ui;
 
 import com.worldshare.mod.WorldShareMod;
+import com.worldshare.mod.cloud.RemoteFileSet;
 import com.worldshare.mod.cloud.CloudModule;
 import com.worldshare.mod.cloud.LockManager;
 import com.worldshare.mod.config.SubscriptionStore;
@@ -265,7 +266,7 @@ public final class ConflictResolutionScreen extends Screen {
         this.clearWidgets();
         this.init();
 
-        final String folderId = resolved.subscription.driveFolderId;
+        final RemoteFileSet remote = resolved.subscription.remote;
         final String localFolderName = resolved.subscription.localFolderName;
         final Path localWorld = WorldSharePaths.gameDir()
                 .resolve("saves").resolve(localFolderName);
@@ -285,7 +286,7 @@ public final class ConflictResolutionScreen extends Screen {
                 workingMessage = "Overriding stale lock...";
                 CloudModule.executor().submit(() -> {
                     try {
-                        LockManager.acquire(folderId);
+                        LockManager.acquire(remote);
                     } catch (final IOException e) {
                         throw new RuntimeException(e);
                     }
@@ -295,7 +296,7 @@ public final class ConflictResolutionScreen extends Screen {
                 workingMessage = "Pulling world from Drive...";
                 CloudModule.executor().submit(() -> {
                     try {
-                        SyncEngine.pull(localWorld, folderId, playerUuid);
+                        SyncEngine.pull(localWorld, remote, playerUuid);
                     } catch (final IOException e) {
                         throw new RuntimeException(e);
                     }
@@ -327,29 +328,10 @@ public final class ConflictResolutionScreen extends Screen {
      * @return the backup path, or null if no backup was needed
      */
     private Path createBackupIfNeeded(final Path localWorld) throws IOException {
-        if (!Files.isDirectory(localWorld)) return null;
-
-        final String timestamp = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")
-                .format(java.time.LocalDateTime.now());
-        final String backupName = localWorld.getFileName() + "_offline_backup_" + timestamp;
-        final Path backupDir = localWorld.getParent().resolve(backupName);
-
-        Files.createDirectories(backupDir);
-        copyDirectory(localWorld, backupDir);
-        return backupDir;
-    }
-
-    private static void copyDirectory(final Path src, final Path dst) throws IOException {
-        try (final Stream<Path> stream = Files.walk(src)) {
-            for (final Path file : (Iterable<Path>) stream::iterator) {
-                final Path dest = dst.resolve(src.relativize(file));
-                if (Files.isDirectory(file)) {
-                    Files.createDirectories(dest);
-                } else {
-                    Files.copy(file, dest, StandardCopyOption.REPLACE_EXISTING);
-                }
-            }
-        }
+        // Shared with RepairWorldScreen. Both operations are irreversible in
+        // opposite directions, and both need "there is a backup" to be true rather
+        // than nearly true, so they use one implementation.
+        return com.worldshare.mod.util.WorldBackup.create(localWorld);
     }
 
     private void openWorldLocally(final String folderName) {

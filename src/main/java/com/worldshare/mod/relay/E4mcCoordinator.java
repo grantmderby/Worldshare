@@ -1,6 +1,7 @@
 package com.worldshare.mod.relay;
 
 import com.worldshare.mod.WorldShareMod;
+import com.worldshare.mod.cloud.RemoteFileSet;
 import com.worldshare.mod.cloud.CloudModule;
 import com.worldshare.mod.cloud.DriveClient;
 import com.worldshare.mod.config.SubscriptionStore;
@@ -53,8 +54,12 @@ public final class E4mcCoordinator {
 
     // ---- Host state ----
     private static volatile boolean isHosting = false;
-    private static volatile String presenceFileId = null;
-    private static volatile String hostingFolderId = null;   // M5: explicit, not from global config
+    /**
+     * The world we're currently hosting, or null when not hosting. Replaces the
+     * old folder ID + presence file ID pair: the presence file's Drive ID now
+     * travels inside the file set, picked once at setup.
+     */
+    private static volatile RemoteFileSet hostingWorld = null;
     private static volatile String currentDomain = null;
     private static volatile ScheduledExecutorService refreshExecutor = null;
     private static volatile ScheduledFuture<?> refreshTask = null;
@@ -71,7 +76,38 @@ public final class E4mcCoordinator {
 
     // ---- Host API ----
 
+    /**
+     * Whether the e4mc mod is actually installed.
+     *
+     * <p>e4mc is an optional dependency: WorldShare's Drive sync, session locking
+     * and push/pull all work without it, and only live co-op needs a relay. There
+     * is no compile-time coupling either - this class discovers the relay domain
+     * by watching e4mc's log output, never by calling into it - so its absence
+     * can't be detected by a missing class. It has to be asked about directly.
+     *
+     * <p>Without this check the failure is silent and confusing: hosting starts,
+     * waits for a domain that will never be logged, and simply never reports
+     * anything.
+     */
+    public static boolean isAvailable() {
+        try {
+            return net.neoforged.fml.ModList.get().isLoaded("e4mc");
+        } catch (final Throwable t) {
+            // ModList isn't available in every context (early startup, tests).
+            // Assume absent - a false negative costs a clear message, a false
+            // positive costs an unexplained hang.
+            WorldShareMod.LOGGER.debug("E4mcCoordinator: couldn't query ModList: {}", t.getMessage());
+            return false;
+        }
+    }
+
     public static void startHosting() {
+        if (!isAvailable()) {
+            WorldShareMod.LOGGER.warn(
+                    "E4mcCoordinator: startHosting() - e4mc is not installed; "
+                            + "live co-op is unavailable. Drive sync is unaffected.");
+            return;
+        }
         if (isHosting) {
             WorldShareMod.LOGGER.warn("E4mcCoordinator: startHosting() called but already hosting");
             return;
@@ -91,18 +127,17 @@ public final class E4mcCoordinator {
                     "E4mcCoordinator: startHosting() - no world context available");
             return;
         }
-        final String folderId = WorldLink.readFolderId(current.worldRoot);
-        if (folderId == null) {
+        final RemoteFileSet remote = WorldLink.readRemote(current.worldRoot);
+        if (remote == null) {
             WorldShareMod.LOGGER.warn(
-                    "E4mcCoordinator: startHosting() - world '{}' has no Drive link; "
-                    + "run /worldshare setfolder first", current.name);
+                    "E4mcCoordinator: startHosting() - world '{}' isn't set up for sharing; "
+                    + "run /worldshare setup first", current.name);
             return;
         }
 
         isHosting = true;
         currentDomain = null;
-        presenceFileId = null;
-        hostingFolderId = folderId;
+        hostingWorld = remote;
 
         attachLogAppender();
 
@@ -124,22 +159,21 @@ public final class E4mcCoordinator {
         detachLogAppender();
 
         isHosting = false;
-        final String fileId = presenceFileId;
-        presenceFileId = null;
+        final RemoteFileSet remote = hostingWorld;
+        hostingWorld = null;
         currentDomain = null;
-        hostingFolderId = null;
         stopRefreshScheduler();
 
-        if (fileId == null) return;
+        if (remote == null) return;
 
         CloudModule.executor().submit(() -> {
             try {
-                CloudModule.driveClient().deleteFile(fileId);
-                WorldShareMod.LOGGER.info(
-                        "E4mcCoordinator: deleted presence.json (id {})", fileId);
+                // Clear, never delete: the guest's grant is on this exact file ID.
+                PresenceFile.clear(remote);
+                WorldShareMod.LOGGER.info("E4mcCoordinator: presence cleared, session ended");
             } catch (final IOException e) {
                 WorldShareMod.LOGGER.warn(
-                        "E4mcCoordinator: failed to delete presence.json: {}", e.getMessage());
+                        "E4mcCoordinator: failed to clear presence: {}", e.getMessage());
             }
         });
     }
@@ -158,18 +192,30 @@ public final class E4mcCoordinator {
 
         final Thread poller = new Thread(() -> {
             try {
-                final DriveClient client = CloudModule.driveClient();
+                // Nothing here is worth a sign-in. This runs the moment the title
+                // screen appears, and reaching Drive without a stored credential
+                // starts a consent flow - which, on this path, means launching the
+                // browser. A player who had never asked WorldShare for anything got
+                // thrown into Chrome before they could click Singleplayer.
+                //
+                // Checking for a live session is a convenience. If we aren't signed
+                // in we simply don't offer it; the next thing the player actually
+                // asks for will prompt properly, in chat, with a reason.
+                if (CloudModule.driveClientIfSignedIn() == null) {
+                    WorldShareMod.LOGGER.debug(
+                            "E4mcCoordinator: not signed in to Drive; skipping presence poll");
+                    return;
+                }
+
                 final List<WorldSubscription> subs = SubscriptionStore.get().all();
 
                 for (final WorldSubscription sub : subs) {
                     if (promptShownThisSession.get()) break;
+                    if (!sub.isUsable()) continue;
 
                     // First: check for live presence
-                    final String fileId = client.findFileByName(
-                            PresenceFile.FILENAME, sub.driveFolderId);
-                    if (fileId != null) {
-                        final PresenceFile presence = PresenceFile.fromJson(
-                                client.readText(fileId));
+                    final PresenceFile presence = PresenceFile.read(sub.remote);
+                    if (presence != null) {
                         if (!presence.isStale()) {
                             if (promptShownThisSession.compareAndSet(false, true)) {
                                 WorldShareMod.LOGGER.info(
@@ -220,11 +266,11 @@ public final class E4mcCoordinator {
                         WorldShareMod.LOGGER.info(
                                 "E4mcCoordinator: domain captured via log appender - {}", domain);
 
-                        final String folderId = hostingFolderId;
-                        if (folderId != null) {
+                        final RemoteFileSet remote = hostingWorld;
+                        if (remote != null) {
                             CloudModule.executor().submit(
-                                    () -> writeOrRefreshPresence(domain, folderId));
-                            startRefreshScheduler(domain, folderId);
+                                    () -> writeOrRefreshPresence(domain, remote));
+                            startRefreshScheduler(domain, remote);
                         }
                     } catch (final Throwable t) {
                         System.err.println("E4mcCoordinator log appender error: " + t);
@@ -261,34 +307,24 @@ public final class E4mcCoordinator {
     // ---- Presence write/refresh ----
 
     private static void writeOrRefreshPresence(final String domain,
-                                               final String folderId) {
+                                               final RemoteFileSet remote) {
         try {
-            final DriveClient client = CloudModule.driveClient();
             final String rawName = com.worldshare.mod.config.WorldShareConfig
                     .get().playerDisplayName.get();
             final String hostName = (rawName != null && !rawName.isBlank())
                     ? rawName : "Host";
-            final PresenceFile presence = PresenceFile.create(hostName, domain);
 
-            final String existingId = (presenceFileId != null)
-                    ? presenceFileId
-                    : client.findFileByName(PresenceFile.FILENAME, folderId);
-
-            final String fileId = client.writeText(
-                    existingId, PresenceFile.FILENAME, folderId,
-                    presence.toJson(), DriveClient.MIME_TYPE_JSON);
-
-            presenceFileId = fileId;
-            WorldShareMod.LOGGER.debug(
-                    "E4mcCoordinator: wrote presence.json (id {})", fileId);
+            PresenceFile.write(remote, PresenceFile.create(hostName, domain));
+            WorldShareMod.LOGGER.debug("E4mcCoordinator: refreshed presence for {}",
+                    remote.controlFileId);
         } catch (final IOException e) {
             WorldShareMod.LOGGER.warn(
-                    "E4mcCoordinator: failed to write presence.json: {}", e.getMessage());
+                    "E4mcCoordinator: failed to write presence: {}", e.getMessage());
         }
     }
 
     private static void startRefreshScheduler(final String domain,
-                                              final String folderId) {
+                                              final RemoteFileSet remote) {
         stopRefreshScheduler();
         refreshExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
             final Thread t = new Thread(r, "WorldShare-PresenceRefresh");
@@ -297,7 +333,7 @@ public final class E4mcCoordinator {
         });
         refreshTask = refreshExecutor.scheduleAtFixedRate(
                 () -> CloudModule.executor().submit(
-                        () -> writeOrRefreshPresence(domain, folderId)),
+                        () -> writeOrRefreshPresence(domain, remote)),
                 PRESENCE_REFRESH_SECONDS,
                 PRESENCE_REFRESH_SECONDS,
                 TimeUnit.SECONDS);

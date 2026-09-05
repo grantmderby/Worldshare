@@ -11,7 +11,10 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -49,10 +52,31 @@ public final class LocalRedirectReceiver implements VerificationCodeReceiver {
      */
     private static final long WAIT_TIMEOUT_MINUTES = 5L;
 
+    /**
+     * True while a browser round trip is outstanding.
+     *
+     * <p>Static because the thing that needs to know is a screen with no route
+     * to the receiver, and there is only ever one of these in flight - the whole
+     * flow runs on the single-threaded Drive executor.
+     */
+    private static final java.util.concurrent.atomic.AtomicBoolean WAITING_FOR_BROWSER =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    /** Whether WorldShare is currently waiting for the player to finish in their browser. */
+    public static boolean isWaitingForBrowser() {
+        return WAITING_FOR_BROWSER.get();
+    }
+
     private HttpServer server;
     private int port;
     private String capturedCode;
     private String capturedError;
+    /**
+     * Comma-joined Drive file IDs the user selected in the Picker, when the
+     * authorization URL carried {@code trigger_onepick=true}. Null on a plain
+     * consent flow, or if the user dismissed the Picker without selecting.
+     */
+    private String capturedPickedFileIds;
 
     // Released once the redirect arrives (or the server is asked to stop).
     private final Semaphore gotRedirect = new Semaphore(0);
@@ -77,11 +101,19 @@ public final class LocalRedirectReceiver implements VerificationCodeReceiver {
     @Override
     public String waitForCode() throws IOException {
         final boolean arrived;
+        // Flagged for the UI. This blocks on the single-threaded Drive executor,
+        // so every screen behind it sits still until the browser comes back -
+        // and a player who left the tab open sees a screen reading "Checking
+        // Drive..." for up to five minutes, which looks like a hang rather than
+        // like something waiting on them.
+        WAITING_FOR_BROWSER.set(true);
         try {
             arrived = gotRedirect.tryAcquire(WAIT_TIMEOUT_MINUTES, TimeUnit.MINUTES);
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("Interrupted while waiting for OAuth redirect", e);
+        } finally {
+            WAITING_FOR_BROWSER.set(false);
         }
 
         if (!arrived) {
@@ -113,6 +145,28 @@ public final class LocalRedirectReceiver implements VerificationCodeReceiver {
         gotRedirect.release();
     }
 
+    /**
+     * Drive file IDs the user picked during the consent screen's Picker step,
+     * in selection order. Empty if the flow didn't trigger the Picker, or the
+     * user selected nothing.
+     *
+     * <p>Only meaningful after {@link #waitForCode()} has returned — the value
+     * arrives on the same redirect as the authorization code.
+     */
+    public List<String> pickedFileIds() {
+        if (capturedPickedFileIds == null || capturedPickedFileIds.isBlank()) {
+            return List.of();
+        }
+        final List<String> ids = new ArrayList<>();
+        for (final String raw : capturedPickedFileIds.split(",")) {
+            final String id = raw.trim();
+            if (!id.isEmpty()) {
+                ids.add(id);
+            }
+        }
+        return Collections.unmodifiableList(ids);
+    }
+
     /** @return the redirect URI if started, or null. Public for tests/debugging. */
     public String getListeningUri() {
         return server == null ? null : "http://127.0.0.1:" + port + "/";
@@ -127,6 +181,7 @@ public final class LocalRedirectReceiver implements VerificationCodeReceiver {
                 final Map<String, String> params = parseQuery(exchange.getRequestURI().getRawQuery());
                 capturedCode = params.get("code");
                 capturedError = params.get("error");
+                capturedPickedFileIds = params.get("picked_file_ids");
 
                 final String body;
                 if (capturedError != null) {
@@ -137,9 +192,17 @@ public final class LocalRedirectReceiver implements VerificationCodeReceiver {
                             + "<p>You can close this tab and try again in Minecraft.</p>"
                             + "</body></html>";
                 } else if (capturedCode != null) {
+                    // Mentions the wait deliberately. Everything after this point -
+                    // exchanging the code, then creating twenty-six files - happens
+                    // back in the game, and the gap between this page appearing and
+                    // Minecraft reacting is long enough to read as nothing having
+                    // happened.
                     body = "<html><body style='font-family:sans-serif;padding:2em'>"
                             + "<h2>WorldShare: Authorization successful ✅</h2>"
                             + "<p>You can close this tab and return to Minecraft.</p>"
+                            + "<p style='color:#555'>Give it a moment to connect to "
+                            + "Drive - the game may sit still for a few seconds "
+                            + "before it responds.</p>"
                             + "</body></html>";
                 } else {
                     body = "<html><body style='font-family:sans-serif;padding:2em'>"

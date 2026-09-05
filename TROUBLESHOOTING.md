@@ -6,11 +6,72 @@
 
 **Fix:** Ask the host to re-share the folder with **Editor** permissions, not Viewer. In Drive, right-click the folder → Share → change your access from Viewer to Editor.
 
-## "Drive folder not found"
+## The world's files can't be reached
 
-**Cause:** The Drive folder was deleted, moved, or renamed by the owner.
+**Cause:** The files were deleted or un-shared by the owner, or your access was
+revoked. Renaming or moving them is fine — WorldShare tracks files by their Drive
+ID, not by name or location, so the owner can reorganise their Drive freely.
 
-**Fix:** In your world, run `/worldshare clearDriveLink`. Then ask the host for the new folder URL and re-add via the Contributor Worlds tab.
+**Fix:** Ask the host to confirm the files still exist and that you still have
+Editor access. Then run `/worldshare clearDriveLink` in the world and re-add it
+from the Contributor Worlds tab, selecting the files again.
+
+## The picker shows my whole Drive instead of the world's folder
+
+**Cause:** No invite link was pasted into Add World, so there was nothing to
+scope the picker to.
+
+**Fix:** Ask the host for their world's folder link — WorldShare prints it in
+chat when they run `/worldshare setup` — and paste it before signing in. Browsing
+manually also works; it's just slower.
+
+## I can't select the folder in the picker
+
+That's deliberate. Open it and select the files inside instead.
+
+Google grants access per file, and a folder is just another file — being given a
+folder tells Google nothing about what's inside it. Selecting it would appear to
+work and then fail, so the join flow makes folders unselectable. (The host's own
+setup flow *does* let them pick a folder, because it needs somewhere to create
+the files.)
+
+## "Missing N file(s): worldshare-bucket_04.zip, ..."
+
+**Cause:** You selected some but not all of the world's files. WorldShare needs
+every one of them — a missing archive is a missing slice of the world.
+
+**Fix:** Run Add World again and select all of them. The named files in the
+message are exactly the ones that were absent.
+
+You don't lose anything by re-running it: grants accumulate, so files you already
+picked stay picked.
+
+## "Bucket layout mismatch: this world is set up locally for N buckets but Drive says M"
+
+**Cause:** Your local record of the world disagrees with Drive about how the world
+is split up. Usually this means someone edited `worldshare-control.json` by hand,
+or a setup was interrupted partway.
+
+**Fix:** Run `/worldshare clearDriveLink` and re-add the world from the
+Contributor Worlds tab.
+
+**Why WorldShare refuses instead of trying:** which archive a file belongs in is
+derived from the bucket count. Syncing with the wrong count would scatter files
+into archives nobody reads back — corrupting the world gradually and silently,
+which is far worse than an error message.
+
+## I have to sign in to Google every week
+
+**Cause:** The app is still in "Testing" status in Google Cloud, where refresh
+tokens expire after 7 days. It has nothing to do with WorldShare or with which
+files you picked.
+
+**Fix (for the mod's maintainer):** publish the app to Production — see
+`docs/GOOGLE_CLOUD_SETUP.md`.
+
+**Note:** signing in again never costs you your file selections. Those are held by
+Google against your account, not stored in the login, so they survive signing out,
+token expiry, and reinstalling the game.
 
 ## Lock won't acquire — "Cannot lock - your local copy is out of date"
 
@@ -26,7 +87,13 @@
 
 ## "Locked by <name>" but they crashed / aren't actually playing
 
-**Cause:** Their game crashed before releasing the lock. The lock will expire automatically after 8 hours.
+**Cause:** Their game crashed before releasing the lock. The lock expires
+automatically after 24 hours, or as soon as they reopen the world and save.
+
+The wait is deliberately long: it exists so someone who lost power mid-session
+can get back online and upload rather than returning to find their world
+overwritten. If you know they aren't coming back, you can override it — the
+confirmation screen explains what that costs them.
 
 **Fix:** Wait, or use the Contributor Worlds tab — if the lock is older than the heartbeat threshold, you'll see a "Stale Lock" badge with an option to override.
 

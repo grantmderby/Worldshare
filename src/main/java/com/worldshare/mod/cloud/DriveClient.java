@@ -7,6 +7,7 @@ import com.google.api.client.json.gson.GsonFactory;
 import com.google.api.services.drive.Drive;
 import com.google.api.services.drive.model.File;
 import com.google.api.services.drive.model.FileList;
+import com.google.api.services.drive.model.Permission;
 import com.worldshare.mod.WorldShareMod;
 
 import java.io.ByteArrayOutputStream;
@@ -16,8 +17,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -42,7 +45,6 @@ public final class DriveClient {
     /** MIME type used for manifest.json and session.lock uploads. */
     public static final String MIME_TYPE_JSON = "application/json";
 
-    /** Default fields we request from Drive for file metadata — id+name+size+md5+modifiedTime. */
     /**
      * Default fields requested for file metadata. Drive only returns the fields
      * you explicitly ask for via {@code setFields}, so {@code mimeType} MUST be
@@ -50,7 +52,8 @@ public final class DriveClient {
      * Adding fields here is safe; removing requires checking every caller of
      * {@link #getFileMeta}.
      */
-    private static final String DEFAULT_FIELDS = "id, name, size, md5Checksum, modifiedTime, mimeType";
+    private static final String DEFAULT_FIELDS =
+            "id, name, size, md5Checksum, modifiedTime, mimeType, parents";
 
     private final Drive drive;
 
@@ -222,6 +225,41 @@ public final class DriveClient {
     }
 
     /**
+     * List the files directly inside a folder.
+     *
+     * <p>Under the {@code drive.file} scope this listing is filtered to what the
+     * app is actually allowed to see, which makes an empty result meaningful
+     * rather than exceptional: it means the user's grant doesn't reach this
+     * folder's contents. Callers must treat empty as data, not as failure.
+     *
+     * <p>Folders themselves are included; filter by {@link #MIME_TYPE_FOLDER} if
+     * that matters to the caller.
+     *
+     * @param folderId Drive folder ID to list
+     * @return the visible children, possibly empty, never null
+     */
+    public List<File> listFolderChildren(final String folderId) throws IOException {
+        final List<File> all = new ArrayList<>();
+        String pageToken = null;
+        do {
+            final FileList page = drive.files().list()
+                    .setQ("'" + folderId + "' in parents and trashed = false")
+                    .setFields("nextPageToken, files(id, name, mimeType, size)")
+                    .setPageSize(200)
+                    .setPageToken(pageToken)
+                    .execute();
+            final List<File> files = page.getFiles();
+            if (files != null) {
+                all.addAll(files);
+            }
+            pageToken = page.getNextPageToken();
+        } while (pageToken != null);
+
+        WorldShareMod.LOGGER.debug("Listed {} visible child(ren) of folder {}", all.size(), folderId);
+        return all;
+    }
+
+    /**
      * Delete a file by ID. Moves it to trash in most Drive UIs.
      */
     public void deleteFile(final String fileId) throws IOException {
@@ -254,17 +292,108 @@ public final class DriveClient {
      * @return Drive ID of the new folder
      */
     public String createFolder(final String name, final String parentFolderId) throws IOException {
+        return createFolder(name, parentFolderId, null);
+    }
+
+    /**
+     * Create a folder on Drive, optionally tagged so we can find it again.
+     *
+     * @param appProperties private key/value tags to attach, or {@code null}.
+     *                      These are visible only to this app and are searchable
+     *                      with {@link #findFolderByAppProperty}. Unlike a name,
+     *                      they survive the user renaming the folder.
+     */
+    public String createFolder(final String name,
+                               final String parentFolderId,
+                               final Map<String, String> appProperties) throws IOException {
         final File metadata = new File();
         metadata.setName(name);
         metadata.setMimeType(MIME_TYPE_FOLDER);
         if (parentFolderId != null) {
             metadata.setParents(Collections.singletonList(parentFolderId));
         }
+        if (appProperties != null && !appProperties.isEmpty()) {
+            metadata.setAppProperties(appProperties);
+        }
         final File created = drive.files().create(metadata)
                 .setFields("id")
                 .execute();
         WorldShareMod.LOGGER.debug("Created drive folder '{}' (id {}) in parent {}",
                 name, created.getId(), parentFolderId);
+        return created.getId();
+    }
+
+    /**
+     * Find a folder this app created and tagged with the given app property.
+     *
+     * <p>Searching by tag rather than by name is deliberate: the user is free to
+     * rename or move anything we put in their Drive, and a name search would
+     * quietly stop matching and start creating duplicates. App properties are
+     * attached to the file itself, are private to this app, and move with it.
+     *
+     * <p>The oldest match wins, so that if duplicates ever do arise - two
+     * installations racing on first setup, say - every client afterwards settles
+     * on the same one instead of alternating.
+     *
+     * @return the folder's Drive ID, or {@code null} if there is no such folder
+     */
+    public String findFolderByAppProperty(final String key, final String value) throws IOException {
+        final String q = "mimeType = '" + MIME_TYPE_FOLDER + "'"
+                + " and trashed = false"
+                + " and appProperties has { key = '" + key + "' and value = '" + value + "' }";
+
+        final FileList result = drive.files().list()
+                .setQ(q)
+                .setFields("files(id, name)")
+                .setOrderBy("createdTime")
+                .setPageSize(10)
+                .execute();
+
+        final List<File> files = result.getFiles();
+        if (files == null || files.isEmpty()) {
+            return null;
+        }
+        if (files.size() > 1) {
+            WorldShareMod.LOGGER.warn(
+                    "Drive holds {} folders tagged {}={}; using the oldest ('{}'). "
+                            + "The others are harmless but can be deleted.",
+                    files.size(), key, value, files.get(0).getName());
+        }
+        return files.get(0).getId();
+    }
+
+    /**
+     * Grant somebody access to a file or folder by email address.
+     *
+     * <p>The point of this is to save the host a trip to Drive. Setup currently
+     * ends by telling them to go and share the folder as Editor themselves, which
+     * is the only step of the whole flow that happens outside the game.
+     *
+     * <p>Whether {@code drive.file} is enough to do this is the open question -
+     * the scope covers files the app created, and Drive's reference lists it
+     * among the scopes accepted for {@code permissions.create}, but that is worth
+     * confirming against a real account before anything is designed around it.
+     *
+     * @param fileId the file or folder to share; must be one this app created
+     * @param email  who to share it with
+     * @param role   a Drive role, {@code "writer"} for an Editor
+     * @param notify whether Google should email them about it
+     * @return the new permission's ID
+     */
+    public String shareWithEmail(final String fileId,
+                                 final String email,
+                                 final String role,
+                                 final boolean notify) throws IOException {
+        final Permission permission = new Permission()
+                .setType("user")
+                .setRole(role)
+                .setEmailAddress(email);
+        final Permission created = drive.permissions().create(fileId, permission)
+                .setSendNotificationEmail(notify)
+                .setFields("id, type, role, emailAddress")
+                .execute();
+        WorldShareMod.LOGGER.info("Shared drive file {} with {} as {} (permission {})",
+                fileId, email, role, created.getId());
         return created.getId();
     }
 

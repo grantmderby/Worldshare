@@ -3,12 +3,9 @@ package com.worldshare.mod.util;
 import com.worldshare.mod.WorldShareMod;
 
 import java.io.IOException;
-import java.net.NetworkInterface;
-import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Enumeration;
 import java.util.UUID;
 
 /**
@@ -17,21 +14,33 @@ import java.util.UUID;
  *
  * <p>We intentionally don't use the Minecraft player UUID because a single
  * Minecraft account can be used on multiple PCs — we want the lock tied to
- * the actual physical machine, so that if Grant plays on his desktop, his
- * laptop doesn't think it already holds the lock.
+ * the installation, so that if Grant plays on his desktop, his laptop doesn't
+ * think it already holds the lock.
  *
- * <p>Generation strategy (tries in order):
+ * <p><b>It is per-installation, not per-machine, and the difference bit us.</b>
+ * This used to derive the ID from the first non-loopback MAC address, which made
+ * two game directories on one PC report the same identity. The lock system asks
+ * "is this lock ours?" by comparing exactly this value, so two installations on
+ * one machine each believed they held the other's lock: one showed the other's
+ * live session as {@code LOCKED_BY_US} and offered to resume it, and - far worse -
+ * the pre-upload ownership check passed for both, so either could overwrite the
+ * other's work with no warning at all.
+ *
+ * <p>That is not only a development-rig problem. Two people sharing a PC under
+ * different Windows accounts, or one person running two instances, hit it exactly
+ * the same way.
+ *
+ * <p>Hardware told us nothing we needed. The ID has to be stable across launches
+ * and distinct between installations, and a random UUID persisted next to the rest
+ * of the installation's config is both, with no way to collide:
  * <ol>
  *   <li>Read existing ID from {@code config/worldshare/machine_id} if present</li>
- *   <li>Derive from the first non-loopback MAC address on the system</li>
- *   <li>Fall back to a random UUID</li>
+ *   <li>Otherwise generate a random UUID and persist it there</li>
  * </ol>
- * The chosen ID is always persisted to {@code machine_id} so subsequent
- * launches read the same value.
  *
- * <p>Note: the MAC-based ID is NOT the raw MAC — it's hashed to a UUID-like
- * form so the file can be safely included in diagnostics/bug reports without
- * exposing network identifiers.
+ * <p>Existing installations keep the ID they already have, since step 1 comes
+ * first - including MAC-derived ones, which are perfectly good as long as no
+ * second installation shares the machine.
  */
 public final class MachineId {
 
@@ -79,16 +88,11 @@ public final class MachineId {
             }
         }
 
-        // 2. Derive from MAC address
-        String id = deriveFromMac();
-
-        // 3. Fallback: random UUID
-        if (id == null) {
-            id = UUID.randomUUID().toString();
-            WorldShareMod.LOGGER.info("Generated random machine ID (no MAC available): {}", id);
-        } else {
-            WorldShareMod.LOGGER.info("Derived machine ID from MAC: {}", id);
-        }
+        // 2. Generate one. Random, not derived: see the class note on why deriving
+        // from the MAC made two installations on one PC indistinguishable to the
+        // lock, and let each of them overwrite the other's work.
+        final String id = UUID.randomUUID().toString();
+        WorldShareMod.LOGGER.info("Generated machine ID for this installation: {}", id);
 
         // Persist
         try {
@@ -101,34 +105,4 @@ public final class MachineId {
         return id;
     }
 
-    /**
-     * Build a stable ID by hashing the first usable MAC address on the system,
-     * then formatting as a UUID so it's safe to share in logs/reports.
-     *
-     * @return a deterministic UUID-string, or null if no MAC was available
-     */
-    private static String deriveFromMac() {
-        try {
-            final Enumeration<NetworkInterface> ifs = NetworkInterface.getNetworkInterfaces();
-            while (ifs != null && ifs.hasMoreElements()) {
-                final NetworkInterface ni = ifs.nextElement();
-                if (ni.isLoopback() || ni.isVirtual() || !ni.isUp()) {
-                    continue;
-                }
-                final byte[] mac = ni.getHardwareAddress();
-                if (mac != null && mac.length > 0) {
-                    final String hex = SHA256Util.hashBytes(mac);
-                    // Format first 32 hex chars as a UUID for readability.
-                    return hex.substring(0, 8) + "-"
-                            + hex.substring(8, 12) + "-"
-                            + hex.substring(12, 16) + "-"
-                            + hex.substring(16, 20) + "-"
-                            + hex.substring(20, 32);
-                }
-            }
-        } catch (final SocketException e) {
-            WorldShareMod.LOGGER.warn("Could not enumerate network interfaces", e);
-        }
-        return null;
-    }
 }

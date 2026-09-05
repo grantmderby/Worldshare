@@ -74,6 +74,19 @@ def main():
     parser.add_argument("--client-secret", default="client_secret.json")
     parser.add_argument("--allow-folder-selection", action="store_true")
     parser.add_argument("--allow-multiple", action="store_true")
+    parser.add_argument(
+        "--file-ids",
+        default=None,
+        help="Comma-separated Drive file IDs. Documented as filtering the picker's "
+             "search results - if it works as hoped, the picker shows ONLY these "
+             "files, so a joining player never has to navigate Drive at all.",
+    )
+    parser.add_argument(
+        "--mimetypes",
+        default=None,
+        help="Comma-separated MIME types to filter the picker by, "
+             "e.g. application/zip,application/json",
+    )
     args = parser.parse_args()
 
     with socketserver.TCPServer(("127.0.0.1", 0), Handler) as httpd:
@@ -93,6 +106,10 @@ def main():
             extra["allow_folder_selection"] = "true"
         if args.allow_multiple:
             extra["allow_multiple"] = "true"
+        if args.file_ids:
+            extra["file_ids"] = args.file_ids
+        if args.mimetypes:
+            extra["mimetypes"] = args.mimetypes
 
         auth_url, _ = flow.authorization_url(**extra)
 

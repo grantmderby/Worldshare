@@ -46,6 +46,33 @@ public final class LocalModScanner {
 
     private LocalModScanner() {}
 
+    /**
+     * Whether this installation runs from class directories rather than jars.
+     *
+     * <p>Exists so "nothing to publish" can be explained accurately. Both a dev
+     * client and a player with no mods besides WorldShare scan zero eligible
+     * mods, and they are not the same situation: one is an artefact of how the
+     * mod is being run, the other is an ordinary vanilla-plus-WorldShare install
+     * that works perfectly. Guessing "dev environment?" at the second is
+     * meaningless to the person reading it.
+     *
+     * <p>WorldShare's own mod file is the tell. In a production install it is a
+     * jar in the mods folder; under userdev it is the build output directory.
+     */
+    public static boolean isDevEnvironment() {
+        try {
+            final Path self = ModList.get()
+                    .getModFileById(WorldShareMod.MOD_ID)
+                    .getFile()
+                    .getFilePath();
+            return self == null || !self.toString().endsWith(".jar");
+        } catch (final Throwable t) {
+            WorldShareMod.LOGGER.debug(
+                    "LocalModScanner: couldn't determine own mod file path", t);
+            return false;
+        }
+    }
+
     public static final class ScannedMod {
         public final String modId;
         public final String displayName;

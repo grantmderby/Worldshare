@@ -39,15 +39,18 @@ public final class PauseMenuHijacker {
         if (ctx.isEmpty()) return;
 
         final WorldLink link = WorldLink.read(ctx.get().worldRoot);
-        if (link == null || link.driveFolderId == null || link.driveFolderId.isBlank()) {
-            // Not a WorldShare world — leave vanilla button alone.
+        if (link == null || !link.isUsable()) {
+            // Not a WorldShare world, or one still awaiting setup — leave the
+            // vanilla button alone. Checking isUsable() rather than a bare field
+            // matters: a link from before the drive.file migration names a folder
+            // but has no picked files, and cannot sync.
             return;
         }
 
 // M5 safety: if no lock is held (e.g. opened from vanilla Singleplayer),
 // leave the vanilla "Save and Quit" button alone. AutoSyncListener will
 // also skip the auto-push since no lock is held.
-        if (!LockManager.weHoldLock()) {
+        if (!LockManager.weHoldLock(link.remote)) {
             return;
         }
 

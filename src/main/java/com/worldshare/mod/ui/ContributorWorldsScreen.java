@@ -1,7 +1,9 @@
 package com.worldshare.mod.ui;
 
 import com.worldshare.mod.WorldShareMod;
+import com.worldshare.mod.cloud.RemoteFileSet;
 import com.worldshare.mod.cloud.CloudModule;
+import com.worldshare.mod.cloud.ControlFileClient;
 import com.worldshare.mod.cloud.LockManager;
 import com.worldshare.mod.config.SubscriptionStore;
 import com.worldshare.mod.config.WorldLink;
@@ -20,6 +22,7 @@ import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
 import net.minecraft.network.chat.Component;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -49,6 +52,16 @@ public final class ContributorWorldsScreen extends Screen {
 
     private volatile LoadState loadState = LoadState.IDLE;
     private volatile String loadError = null;
+    /**
+     * Headline above {@link #loadError}, and whether Refresh can help.
+     *
+     * <p>Both used to be hardcoded: every failure was titled "Could not reach
+     * Drive." and every failure offered a retry. A bucket that fails its content
+     * check reached Drive perfectly well, and retrying it can only fail the same
+     * way - the fix is for the other player to push again.
+     */
+    private volatile String loadErrorTitle = "Could not reach Drive.";
+    private volatile boolean loadErrorRetryable = true;
     private volatile int dlFilesDone = 0;
     private volatile int dlTotalFiles = 0;
     private volatile long dlBytesDone = 0L;
@@ -104,7 +117,14 @@ public final class ContributorWorldsScreen extends Screen {
                     .bounds(this.width / 2 + 55, bY, 100, 20).build());
         }
 
-        if (loadState == LoadState.IDLE || refreshRequested.compareAndSet(true, false)) {
+        // Never kick off a world-list reload while a transfer is running. onDownload
+        // rebuilds the widgets to swap in the progress bar, and this init() runs as
+        // part of that - so without the guard, the act of showing the progress bar
+        // started a second load that finished first and repainted the world list
+        // over it. From the outside the screen flickered and came back with the
+        // Download button still sitting there, as if nothing had happened.
+        if (!downloadInProgress
+                && (loadState == LoadState.IDLE || refreshRequested.compareAndSet(true, false))) {
             startLoading();
         }
     }
@@ -114,9 +134,30 @@ public final class ContributorWorldsScreen extends Screen {
         refreshRequested.set(true);
         loadState = LoadState.IDLE;
         startLoading();
+
+        // Rebuild the widgets, or the nav buttons never come back.
+        //
+        // init() skips creating Add World / Refresh / Back while a transfer is
+        // running, so starting a download removes them. Clearing the flag here
+        // isn't enough on its own - nothing re-runs init(), so the screen returns
+        // to the world list with no buttons at all and no way off it except the
+        // remove-subscription dialog.
+        final Minecraft mc = Minecraft.getInstance();
+        if (mc != null) {
+            mc.execute(() -> {
+                if (mc.screen == this) {
+                    this.clearWidgets();
+                    this.init();
+                }
+            });
+        }
     }
 
     private void startLoading() {
+        // This IS the refresh, so consume the request. triggerRefresh() both sets
+        // the flag and calls straight in here, which used to leave it set for the
+        // next init() to find and act on a second time.
+        refreshRequested.set(false);
         loadState = LoadState.LOADING;
         loadError = null;
         worlds = List.of();
@@ -137,7 +178,7 @@ public final class ContributorWorldsScreen extends Screen {
                 loadState = LoadState.DONE;
             } catch (final Throwable t) {
                 WorldShareMod.LOGGER.error("ContributorWorldsScreen: load failed", t);
-                loadError = formatDriveError(t, "Could not reach Drive");
+                setLoadError("Could not reach Drive.", formatDriveError(t, "Could not reach Drive"), true);
                 loadState = LoadState.ERROR;
             }
         });
@@ -164,9 +205,38 @@ public final class ContributorWorldsScreen extends Screen {
     private void renderLoading(final GuiGraphics gfx) {
         final int cx = this.width / 2;
         if (!dlActive || dlTotalFiles == 0) {
+            // Everything here runs on the single-threaded Drive executor, so a
+            // backgrounded upload makes this wait rather than race. Safe, but from
+            // the outside it looks like the screen has hung.
+            final boolean queuedBehindUpload =
+                    com.worldshare.mod.sync.SyncActivity.isSyncing();
+            // Waiting on the browser looks identical to waiting on Drive from in
+            // here, and it is the one the player can do something about. Leaving
+            // the Google tab open stalls this for up to five minutes, which read
+            // as a frozen game rather than as a question.
+            final boolean waitingOnBrowser =
+                    com.worldshare.mod.cloud.LocalRedirectReceiver.isWaitingForBrowser();
+            final String headline;
+            final String detail;
+            if (waitingOnBrowser) {
+                headline = "Waiting for you to finish in your browser...";
+                detail = "Pick your world's files there, then come back.";
+            } else if (queuedBehindUpload) {
+                headline = "Finishing an upload first...";
+                detail = "This will continue on its own.";
+            } else {
+                headline = "Checking Drive...";
+                detail = null;
+            }
             gfx.drawCenteredString(this.font,
-                    Component.literal("Checking Drive...").withStyle(ChatFormatting.GRAY),
+                    Component.literal(headline).withStyle(
+                            waitingOnBrowser ? ChatFormatting.YELLOW : ChatFormatting.GRAY),
                     cx, this.height / 2, 0xFFFFFF);
+            if (detail != null) {
+                gfx.drawCenteredString(this.font,
+                        Component.literal(detail).withStyle(ChatFormatting.GRAY),
+                        cx, this.height / 2 + 14, 0xFFFFFF);
+            }
             return;
         }
         gfx.drawCenteredString(this.font,
@@ -193,17 +263,25 @@ public final class ContributorWorldsScreen extends Screen {
     }
 
     private void renderLoadError(final GuiGraphics gfx) {
+        final int cx = this.width / 2;
+        int y = this.height / 2 - 30;
         gfx.drawCenteredString(this.font,
-                Component.literal("Could not reach Drive.").withStyle(ChatFormatting.RED),
-                this.width / 2, this.height / 2 - 20, 0xFFFFFF);
+                Component.literal(loadErrorTitle).withStyle(ChatFormatting.RED),
+                cx, y, 0xFFFFFF);
+        y += 16;
         if (loadError != null) {
-            gfx.drawCenteredString(this.font,
-                    Component.literal(loadError).withStyle(ChatFormatting.GRAY),
-                    this.width / 2, this.height / 2, 0xCCCCCC);
+            // Wrapped, because these messages now name a file and a remedy and no
+            // longer fit on one line.
+            for (final net.minecraft.util.FormattedCharSequence line
+                    : this.font.split(Component.literal(loadError), (int) (this.width * 0.8))) {
+                gfx.drawCenteredString(this.font, line, cx, y, 0xCCCCCC);
+                y += this.font.lineHeight + 2;
+            }
         }
-        gfx.drawCenteredString(this.font,
-                Component.literal("Use [Refresh] to try again."),
-                this.width / 2, this.height / 2 + 20, 0xAAAAAA);
+        if (loadErrorRetryable) {
+            gfx.drawCenteredString(this.font,
+                    Component.literal("Use [Refresh] to try again."), cx, y + 6, 0xAAAAAA);
+        }
     }
 
     private void renderWorldList(final GuiGraphics gfx, final int mouseX, final int mouseY) {
@@ -340,6 +418,24 @@ public final class ContributorWorldsScreen extends Screen {
     }
 
     private void handleAction(final WorldStateResolver.ResolvedWorld world) {
+        // Ignore a second click while a transfer is already running.
+        //
+        // downloadInProgress was already being set here, but only to hide the nav
+        // buttons - nothing checked it - and the widget rebuild that removes this
+        // row's button is deferred to Minecraft.execute(...), so the button stayed
+        // clickable for a tick or two afterwards.
+        //
+        // In practice the duplicate did no harm, and it is worth knowing exactly
+        // why: CloudModule.executor() is single-threaded and FIFO, so the second
+        // pull queued behind the first and then found everything already up to
+        // date. That is safety by accident. If that executor ever becomes
+        // multi-threaded, two pulls would unpack into the same world folder at the
+        // same time - so the guard belongs here regardless.
+        if (downloadInProgress) {
+            WorldShareMod.LOGGER.debug(
+                    "ContributorWorlds: ignoring click, a transfer is already running");
+            return;
+        }
         switch (world.state) {
             case LIVE -> onJoin(world);
             case AVAILABLE -> onOpen(world);
@@ -395,11 +491,11 @@ public final class ContributorWorldsScreen extends Screen {
      * First-time download flow with folder collision detection.
      */
     private void onDownload(final WorldStateResolver.ResolvedWorld world) {
-        final String folderId = world.subscription.driveFolderId;
+        final RemoteFileSet remote = world.subscription.remote;
         final String displayName = world.displayName();
         final String preferred = sanitizeFolderName(displayName);
 
-        final String folderName = resolveDownloadFolderName(preferred, folderId);
+        final String folderName = resolveDownloadFolderName(preferred, remote);
         final Path localWorld = WorldSharePaths.gameDir().resolve("saves").resolve(folderName);
 
         final boolean renamedFromPreferred = !folderName.equals(preferred);
@@ -416,12 +512,63 @@ public final class ContributorWorldsScreen extends Screen {
             this.init();
         });
 
+        // Whether this folder is ours to clean up if the download fails. Captured
+        // before anything creates it, so we can never delete a save that was
+        // already sitting there.
+        final boolean folderIsNew = !Files.exists(localWorld);
+
         CloudModule.executor().submit(() -> {
             try {
+                // Nothing has been pushed yet? Then there is nothing to download,
+                // and saying so is the whole job. Without this the pull returns
+                // "0 files, success" - it is correct, the buckets really are empty -
+                // and the download builds a world folder with no level.dat in it,
+                // links the subscription to it and reports a green tick. Opening
+                // that gives Minecraft's "Failed to load world", after taking the
+                // session lock, which locks the host out of their own world.
+                //
+                // Checked before createDirectories so a refusal leaves nothing
+                // behind at all.
+                if (ControlFileClient.read(remote.controlFileId) == null) {
+                    WorldShareMod.LOGGER.info(
+                            "ContributorWorlds: '{}' has never been pushed; refusing to download",
+                            displayName);
+                    downloadInProgress = false;
+                    setLoadError("Nothing to download yet.",
+                            "Nobody has uploaded this world yet. Ask the host to open it "
+                                    + "once from Contributor Worlds - that first upload is "
+                                    + "what you'd be downloading.",
+                            false);
+                    loadState = LoadState.ERROR;
+                    Minecraft.getInstance().execute(() -> {
+                        this.clearWidgets();
+                        this.init();
+                    });
+                    return;
+                }
+
                 Files.createDirectories(localWorld);
-                SubscriptionStore.get().linkWorldToFolder(
-                        localWorld, folderName, folderId, displayName);
-                SyncEngine.pull(localWorld, folderId, playerUuid, makeProgress());
+                SyncEngine.pull(localWorld, remote, playerUuid, makeProgress());
+
+                // A world without level.dat is not a world, whatever the pull
+                // thought. This is the general form of the check above: it does not
+                // care why the download came up short - empty buckets, a partial
+                // push someone interrupted, an exclusion that swallowed too much -
+                // only that what landed cannot be opened. Throwing hands it to the
+                // catch below, which already discards the folder and reports.
+                if (!Files.exists(localWorld.resolve("level.dat"))) {
+                    throw new IOException(
+                            "The download finished but the world has no level.dat, so it "
+                                    + "cannot be opened. Ask the host to run /worldshare push.");
+                }
+
+                // Link only now. Doing it before the pull meant a failed download
+                // still flipped hasLocalFolder() true, so the world resolved as a
+                // real local copy and the row reported a lock state - which is how a
+                // download that should have been a no-op ended up offering a
+                // destructive "Resolve..." button.
+                SubscriptionStore.get().linkWorldToRemote(
+                        localWorld, folderName, remote, displayName);
                 if (renamedFromPreferred) {
                     WorldShareMod.LOGGER.info(
                             "ContributorWorlds: downloaded as '{}' to avoid collision",
@@ -431,7 +578,9 @@ public final class ContributorWorldsScreen extends Screen {
             } catch (final Throwable t) {
                 downloadInProgress = false;  // M7: re-show nav buttons on error
                 WorldShareMod.LOGGER.error("ContributorWorlds: download failed", t);
-                loadError = formatDriveError(t, "Download failed");
+                discardFailedDownload(localWorld, folderIsNew);
+                setLoadError("Download failed.", formatDriveError(t, "Download failed"),
+                        isRetryable(t));
                 loadState = LoadState.ERROR;
                 Minecraft.getInstance().execute(() -> {
                     this.clearWidgets();
@@ -450,7 +599,7 @@ public final class ContributorWorldsScreen extends Screen {
      */
     private void acquireLockThenPullThenOpen(final WorldStateResolver.ResolvedWorld world,
                                              final boolean skipPull) {
-        final String folderId = world.subscription.driveFolderId;
+        final RemoteFileSet remote = world.subscription.remote;
         final String localFolderName = world.subscription.localFolderName;
         if (localFolderName == null) {
             onDownload(world);
@@ -460,6 +609,9 @@ public final class ContributorWorldsScreen extends Screen {
                 .resolve("saves").resolve(localFolderName);
 
         loadState = LoadState.LOADING;
+        // Same re-entry guard the download path uses: this also runs a pull, and a
+        // second click would queue a second one behind it.
+        downloadInProgress = true;
 
         CloudModule.executor().submit(() -> {
             boolean lockAcquired = false;
@@ -467,7 +619,7 @@ public final class ContributorWorldsScreen extends Screen {
                 // Modpack check before lock or pull.
                 final com.worldshare.mod.modmanager.ModManagerModule.ModCheckResult modCheck =
                         com.worldshare.mod.modmanager.ModManagerModule
-                                .checkGuestMissingMods(folderId);
+                                .checkGuestMissingMods(remote);
                 if (modCheck.hasIssues()) {
                     WorldShareMod.LOGGER.info(
                             "ContributorWorlds: modpack issues for '{}': "
@@ -476,6 +628,7 @@ public final class ContributorWorldsScreen extends Screen {
                             modCheck.missing.size(),
                             modCheck.wrongVersion.size());
                     loadState = LoadState.DONE;
+                    downloadInProgress = false;
                     Minecraft.getInstance().execute(() ->
                             Minecraft.getInstance().setScreen(
                                     new com.worldshare.mod.ui.ModpackSyncScreen(
@@ -483,7 +636,13 @@ public final class ContributorWorldsScreen extends Screen {
                     return;
                 }
 
-                LockManager.acquire(folderId);
+                // Before taking the lock, not after: an incompatible world should
+                // send the player to a repair rather than leave them holding a lock
+                // on something they can't sync. Covers the resume path too, which
+                // skips the pull and would otherwise not check at all.
+                SyncEngine.requireCompatibleLayout(remote);
+
+                LockManager.acquire(remote);
                 lockAcquired = true;
 
                 if (skipPull) {
@@ -492,7 +651,7 @@ public final class ContributorWorldsScreen extends Screen {
                                     + "skipping pull, local files are authoritative",
                             world.displayName());
                 } else {
-                    SyncEngine.pull(localWorld, folderId, playerUuid, makeProgress());
+                    SyncEngine.pull(localWorld, remote, playerUuid, makeProgress());
                 }
                 openWorldLocally(localFolderName);
             } catch (final Throwable t) {
@@ -513,7 +672,23 @@ public final class ContributorWorldsScreen extends Screen {
                     }
                 }
 
-                loadError = formatDriveError(t, "Could not open world");
+                downloadInProgress = false;
+
+                // A world that failed its content check isn't a dead end any more.
+                // We have a local copy, so we can offer to republish it and make
+                // Drive self-consistent again - otherwise nobody can open this world
+                // until the player whose push was interrupted comes back.
+                if (!isRetryable(t) && world.subscription.hasLocalFolder()) {
+                    final String detail = t.getMessage();
+                    loadState = LoadState.DONE;
+                    Minecraft.getInstance().execute(() ->
+                            Minecraft.getInstance().setScreen(new RepairWorldScreen(
+                                    this, world, playerUuid, detail)));
+                    return;
+                }
+
+                setLoadError("Could not open world.", formatDriveError(t, "Could not open world"),
+                        isRetryable(t));
                 loadState = LoadState.ERROR;
                 Minecraft.getInstance().execute(() -> {
                     this.clearWidgets();
@@ -547,6 +722,8 @@ public final class ContributorWorldsScreen extends Screen {
 
             @Override
             public void onComplete() {
+                dlFilesDone = dlTotalFiles;
+                dlBytesDone = dlTotalBytes;
                 dlActive = false;
             }
 
@@ -585,13 +762,18 @@ public final class ContributorWorldsScreen extends Screen {
     }
 
     private static String resolveDownloadFolderName(final String preferred,
-                                                    final String driveFolderId) {
+                                                    final RemoteFileSet remote) {
         final Path savesDir = WorldSharePaths.gameDir().resolve("saves");
 
         if (!Files.exists(savesDir.resolve(preferred))) return preferred;
 
+        // A folder of this name already exists. Reuse it only if it holds the very
+        // same shared world; otherwise take a suffixed name, so one world's pull can
+        // never land on top of another's save.
         final WorldLink existingLink = WorldLink.read(savesDir.resolve(preferred));
-        if (existingLink != null && driveFolderId.equals(existingLink.driveFolderId)) {
+        if (existingLink != null && existingLink.remote != null && remote != null
+                && remote.controlFileId != null
+                && remote.controlFileId.equals(existingLink.remote.controlFileId)) {
             return preferred;
         }
 
@@ -677,6 +859,53 @@ public final class ContributorWorldsScreen extends Screen {
         return UUID.randomUUID();
     }
 
+    /**
+     * Remove a world folder this download created, so a failure leaves no trace.
+     *
+     * <p>Only when we created it. A folder that already existed belongs to a
+     * previous download or another save, and deleting it would turn a failed
+     * transfer into data loss - the opposite of the point.
+     *
+     * <p>Best-effort: if the delete fails, the folder is unlinked anyway, so the
+     * row still reads Download and the next attempt adopts or renames around it.
+     */
+    private static void discardFailedDownload(final Path localWorld, final boolean folderIsNew) {
+        if (!folderIsNew || !Files.isDirectory(localWorld)) return;
+        try (var paths = Files.walk(localWorld)) {
+            paths.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
+                try { Files.deleteIfExists(p); } catch (final Exception ignored) {}
+            });
+            WorldShareMod.LOGGER.info(
+                    "ContributorWorlds: removed partial download at {}", localWorld);
+        } catch (final Exception e) {
+            WorldShareMod.LOGGER.warn(
+                    "ContributorWorlds: couldn't remove partial download at {}: {}",
+                    localWorld, e.getMessage());
+        }
+    }
+
+    private void setLoadError(final String title, final String detail, final boolean retryable) {
+        loadErrorTitle = title;
+        loadError = detail;
+        loadErrorRetryable = retryable;
+    }
+
+    /**
+     * Whether offering [Refresh] is honest for this failure.
+     *
+     * <p>A bucket that failed its content check will fail identically on every
+     * retry - the archives on Drive disagree with the manifest, and only a push can
+     * change that. Telling the player to retry sends them round a loop that cannot
+     * terminate.
+     *
+     * <p>Matched by type rather than by message. It used to test for a substring of
+     * the wording, which silently stopped working the moment that wording was
+     * rewritten to name the lock holder instead of a region file.
+     */
+    private static boolean isRetryable(final Throwable t) {
+        return !(t instanceof com.worldshare.mod.sync.ManifestMismatchException);
+    }
+
     private static String formatDriveError(final Throwable t, final String defaultPrefix) {
         final String msg = t.getMessage() != null ? t.getMessage() : "";
         if (msg.contains("403")) {
@@ -686,7 +915,12 @@ public final class ContributorWorldsScreen extends Screen {
             return "Drive folder not found - it may have been deleted or moved. "
                     + "Run /worldshare clearDriveLink in your world, then re-add via Contributor Worlds.";
         }
-        return defaultPrefix + ": " + (msg.isEmpty() ? t.getClass().getSimpleName() : msg);
+        if (msg.isEmpty()) {
+            return defaultPrefix + ": " + t.getClass().getSimpleName();
+        }
+        // The title above already says what failed, so don't repeat it in front of a
+        // message that is a full explanation in its own right.
+        return msg;
     }
 
     @Override

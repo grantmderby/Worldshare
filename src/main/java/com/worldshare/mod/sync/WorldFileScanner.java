@@ -55,7 +55,8 @@ public final class WorldFileScanner {
      * Optimized scan with optional mtime pre-check and dirty-region filtering.
      *
      * @param worldRoot         absolute path to the world folder
-     * @param ownPlayerUuid     UUID of the local player; used to filter per-UUID files
+     * @param ownPlayerUuid     retained for callers' convenience; no longer used for
+     *                          filtering, since every player's data syncs
      * @param scanCache         local scan cache from previous push; null = always hash every file.
      *                          When provided, files whose mtime+size match the cache reuse the
      *                          cached hash without reading the file.
@@ -137,7 +138,63 @@ public final class WorldFileScanner {
                 totalBytes / (1024 * 1024),
                 cacheHits,
                 trackedFiles.size() - cacheHits);
+        reportUnfamiliarContent(manifest);
         return manifest;
+    }
+
+    /**
+     * Top-level entries Minecraft itself is known to write.
+     *
+     * <p>Only used for reporting. Nothing here affects what syncs - the point is to
+     * be able to say "this came from a mod" without pretending to know which.
+     */
+    private static final java.util.Set<String> FAMILIAR_TOP_LEVEL = java.util.Set.of(
+            "region", "entities", "poi", "playerdata", "stats", "advancements",
+            "data", "resources", "datapacks", "v_data", "serverconfig",
+            "dim-1", "dim1", "dimensions", "level.dat", "level.dat_old");
+
+    /** A single unfamiliar entry big enough to be worth a warning: 128 MB. */
+    private static final long LARGE_UNFAMILIAR_BYTES = 128L * 1024 * 1024;
+
+    /**
+     * Say what we're carrying that we don't recognise.
+     *
+     * <p>Syncing everything by default is the right trade - a file that silently
+     * never syncs costs somebody their work - but it must not become a different
+     * kind of silence, where a mod parks a large cache in the world folder and every
+     * push quietly carries it forever.
+     *
+     * <p>So the log names every unfamiliar top-level entry with its size, which is
+     * also how we find out what mods actually write rather than guessing.
+     *
+     * <p>Log only. Telling the player lives in the push, where it can be said
+     * truthfully: a scan sees a large folder whether or not this sync will carry
+     * it, and warning here claimed a 225 MB folder would "sync every time" on every
+     * world open, when in fact it uploads only when it changes. A warning that
+     * cries wolf on every save teaches people to ignore it.
+     */
+    private static void reportUnfamiliarContent(final WorldManifest manifest) {
+        final java.util.Map<String, Long> byTopLevel = new java.util.TreeMap<>();
+        for (final java.util.Map.Entry<String, WorldManifest.Entry> e
+                : manifest.files().entrySet()) {
+            final String rel = e.getKey();
+            final int slash = rel.indexOf('/');
+            final String top = slash > 0 ? rel.substring(0, slash) : rel;
+            if (FAMILIAR_TOP_LEVEL.contains(top.toLowerCase(java.util.Locale.ROOT))) {
+                continue;
+            }
+            byTopLevel.merge(top, e.getValue() == null ? 0L : e.getValue().size, Long::sum);
+        }
+        if (byTopLevel.isEmpty()) return;
+
+        for (final java.util.Map.Entry<String, Long> e : byTopLevel.entrySet()) {
+            WorldShareMod.LOGGER.info("WorldFileScanner: also syncing '{}' ({} KB)",
+                    e.getKey(), e.getValue() / 1024);
+            if (e.getValue() >= LARGE_UNFAMILIAR_BYTES) {
+                WorldShareMod.LOGGER.warn("WorldFileScanner: '{}' is {} MB",
+                        e.getKey(), e.getValue() / (1024 * 1024));
+            }
+        }
     }
 
     /**
@@ -153,7 +210,7 @@ public final class WorldFileScanner {
         Files.walkFileTree(worldRoot, new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult visitFile(final Path file, final BasicFileAttributes attrs) {
-                if (!TrackedPaths.isTracked(worldRoot, file, ownUuid)) {
+                if (!TrackedPaths.isTracked(worldRoot, file)) {
                     return FileVisitResult.CONTINUE;
                 }
 

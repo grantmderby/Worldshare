@@ -38,6 +38,17 @@ runs {
         systemProperty 'forge.logging.console.level', 'debug'
         modSource project.sourceSets.main
 
+        // 6 GB each. This started at 2 GB, on the reasoning that three clients
+        // side by side is more memory than a 32 GB machine has left after
+        // Windows, and that test worlds are small anyway.
+        //
+        // That held until the testing became exploration: generating terrain for
+        // thousands of blocks is the one thing these clients do that a small
+        // world does not bound. Two clients at 6 GB still fits; if a third is
+        // needed at the same time, drop this back.
+        jvmArgument '-Xmx6G'
+        jvmArgument '-Xms512M'
+
         // Add Google libs explicitly to the run classpath
         dependencies {
             runtime 'com.google.api-client:google-api-client:2.2.0'
@@ -49,6 +60,43 @@ runs {
 
     client {
         systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+    }
+
+    // A second client, for testing the two-player flows on one machine.
+    //
+    // This works because everything that distinguishes two WorldShare users lives
+    // under the game directory: the Google token store, the subscription list, and
+    // machine_id - which is what SessionLock.isOwnedBy() compares. A separate
+    // gameDir therefore reads as a genuinely different machine, so stale-lock
+    // override and the per-player inventory behaviour can both be exercised here
+    // rather than needing a second PC.
+    //
+    // The username matters too: offline UUIDs are derived from it, so without this
+    // both clients would be the same player and playerdata/<uuid>.dat would collide.
+    clientTwo {
+        configure 'client'
+        workingDirectory project.file('run2')
+        programArguments.addAll '--username', 'Player2'
+        systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+    }
+
+    // A third client. Two is enough for the lock and round-trip tests, but not for
+    // the ones that only go wrong with a crowd: a three-way contest for a single
+    // lock, and whether a bucket repack preserves the playerdata of players who
+    // aren't the one pushing. playerCap already defaults to 5.
+    clientThree {
+        configure 'client'
+        workingDirectory project.file('run3')
+        programArguments.addAll '--username', 'Player3'
+        systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+
+        // Creates 16-bucket worlds rather than the default 24.
+        //
+        // A world's bucket count is frozen when it is created, so the only way to
+        // check that a current client opens a world made before the default moved
+        // is to have a client that still makes them. Both dev clients load the
+        // same classes, so this cannot be a constant.
+        systemProperty 'worldshare.setupBucketCount', '16'
     }
 
     server {
@@ -89,8 +137,52 @@ configurations.all {
     }
 }
 
+// ----- Unit tests -----
+//
+// These live in their own source set rather than in `test`, and that is deliberate.
+// NeoGradle claims the `test` task and runs it under ModLauncher with the
+// `forgejunitdev` launch target - it boots an actual Minecraft in "unit testing
+// mode". That is the right machinery for tests that need the game, and entirely
+// wrong for these: bucket assignment, archive packing and manifest diffing are
+// plain Java, and asking for a Minecraft runtime to test them only bought us
+// "Failed to start Minecraft".
+//
+// A source set NeoGradle doesn't know about gets a plain JVM, which is all these
+// need. Anything that genuinely requires a world belongs in docs/E2E_TEST_PLAN.md.
+sourceSets {
+    unitTest {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+    }
+}
+
+tasks.register('unitTest', Test) {
+    description = 'Runs the pure-logic unit tests (no Minecraft, no Drive).'
+    group = 'verification'
+    testClassesDirs = sourceSets.unitTest.output.classesDirs
+    classpath = sourceSets.unitTest.runtimeClasspath
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat 'full'
+    }
+}
+
+tasks.named('check') { dependsOn 'unitTest' }
+
 dependencies {
     implementation "net.neoforged:neoforge:${neo_version}"
+
+    // Unit tests cover the pure logic only - bucket assignment, archive round-trips,
+    // manifest diffing. None of it touches Minecraft or Drive, which is precisely why
+    // it can run on every build. Anything needing a world or a Google account lives in
+    // docs/E2E_TEST_PLAN.md and is run by hand.
+    //
+    // These attach to the `unitTest` source set, NOT to `test`. See the sourceSets
+    // block below for why.
+    unitTestImplementation platform('org.junit:junit-bom:5.10.2')
+    unitTestImplementation 'org.junit.jupiter:junit-jupiter'
+    unitTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
     // Shade for jar packing (relocates packages into the output jar)
     compileOnly files('run/mods/e4mc-neoforge-6.1.0.jar')

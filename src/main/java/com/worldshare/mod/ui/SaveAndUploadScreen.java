@@ -1,14 +1,17 @@
 package com.worldshare.mod.ui;
 
 import com.worldshare.mod.WorldShareMod;
+import com.worldshare.mod.cloud.RemoteFileSet;
 import com.worldshare.mod.cloud.CloudModule;
 import com.worldshare.mod.cloud.LockManager;
 import com.worldshare.mod.config.WorldLink;
 import com.worldshare.mod.sync.AutoSyncListener;
 import com.worldshare.mod.sync.OnlineChecker;
+import com.worldshare.mod.sync.SyncActivity;
 import com.worldshare.mod.sync.SyncEngine;
 import com.worldshare.mod.sync.SyncProgress;
 import com.worldshare.mod.sync.WorldContext;
+import com.worldshare.mod.util.PlayerNotice;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -36,7 +39,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   <li>Return to title screen</li>
  * </ol>
  *
- * <p>After 30 seconds, a "Continue in Background" button appears.
+ * <p>A "Continue in Background" button appears after
+ * {@code backgroundButtonDelaySeconds} (default 10).
  *
  * <p><b>M5 change:</b> The Drive folder ID is now read from the world's
  * {@code worldshare-link.json} file rather than the global config. This
@@ -44,7 +48,20 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class SaveAndUploadScreen extends Screen {
 
-    private static final long BACKGROUND_BUTTON_DELAY_MS = 30_000L;
+    /**
+     * How long before "Continue in Background" appears.
+     *
+     * <p>Was 30 seconds, chosen when a push meant re-uploading most of the world.
+     * Bucket tiling and dirty tracking cut a typical save to a few seconds, so the
+     * button became effectively unreachable - you had to explore for a while just
+     * to make a push long enough to see it. Ten seconds still keeps it out of the
+     * way of an ordinary save while making it available on the slow connection or
+     * large world it exists for.
+     */
+    private static long backgroundButtonDelayMs() {
+        return 1000L * com.worldshare.mod.config.WorldShareConfig.get()
+                .backgroundButtonDelaySeconds.get();
+    }
 
     private volatile String stage = "Checking connection to Drive...";
     private volatile int filesDone = 0;
@@ -107,7 +124,7 @@ public final class SaveAndUploadScreen extends Screen {
     public void tick() {
         super.tick();
         if (!done && !errored && !backgroundButton.visible
-                && System.currentTimeMillis() - openTime > BACKGROUND_BUTTON_DELAY_MS) {
+                && System.currentTimeMillis() - openTime >= backgroundButtonDelayMs()) {
             backgroundButton.visible = true;
         }
 
@@ -168,6 +185,11 @@ public final class SaveAndUploadScreen extends Screen {
             final long mbDone = bytesDone / (1024 * 1024);
             final long mbTotal = totalBytes / (1024 * 1024);
             gfx.drawCenteredString(this.font,
+                    // This MB figure is world data processed, not bytes over the
+                    // wire - the archives compress, and their size isn't known until
+                    // each is built. Left unqualified on screen because the caveat
+                    // matters to whoever compares it against Drive, which is not the
+                    // person watching a progress bar.
                     Component.literal(filesDone + " / " + totalFiles + " files  -  "
                             + mbDone + " / " + mbTotal + " MB"),
                     cx, barY + barH + 10, 0xCCCCCC);
@@ -200,16 +222,16 @@ public final class SaveAndUploadScreen extends Screen {
     // ---- Flow orchestration ----
 
     private void startSyncFlow() {
-        // M5: read Drive folder from the world's link file, not the global config.
-        // This supports multiple worlds each linked to their own Drive folder.
-        final String folderId = WorldLink.readFolderId(worldRoot);
-        if (folderId == null || folderId.isBlank()) {
-            stage = "(world is not linked to Drive - skipping upload)";
+        // Read the Drive file set from the world's own link file, so several
+        // worlds can each sync to their own set of files.
+        final RemoteFileSet remote = WorldLink.readRemote(worldRoot);
+        if (remote == null) {
+            stage = "(world is not set up for sharing - skipping upload)";
             done = true;
             return;
         }
 
-        if (!LockManager.weHoldLock()) {
+        if (!LockManager.weHoldLock(remote)) {
             stage = "[!] No session lock held - upload blocked.";
             errorMessage = "You must hold the session lock to upload. "
                     + "Run /worldshare lock first, or open this world "
@@ -223,24 +245,23 @@ public final class SaveAndUploadScreen extends Screen {
         final Thread orchestrator = new Thread(() -> {
             try {
                 if (!waitForServerStopped()) {
-                    errorMessage = "Server didn't stop within 30 seconds. "
-                            + "Local changes are preserved; retry with /worldshare push.";
-                    errored = true;
+                    fail("Server didn't stop within 30 seconds. "
+                            + "Local changes are preserved; retry with /worldshare push.");
                     return;
                 }
 
                 stage = "Checking connection to Drive...";
 
-                final OnlineChecker.Result online = OnlineChecker.check(folderId);
+                final OnlineChecker.Result online = OnlineChecker.check(remote);
                 if (online == OnlineChecker.Result.OFFLINE) {
-                    errorMessage = "Drive is unreachable. Local changes are preserved; "
-                            + "they'll upload next time you have internet.";
-                    errored = true;
+                    fail("Drive is unreachable. Local changes are preserved; "
+                            + "they'll upload next time you have internet.");
                     return;
                 }
                 if (online == OnlineChecker.Result.NOT_AUTHENTICATED) {
-                    errorMessage = "Not signed in to Drive. Run /worldshare test on next launch.";
-                    errored = true;
+                    fail("Not signed in to Drive. Your changes are safe on this "
+                            + "computer - run /worldshare signin next time you open "
+                            + "this world and they'll upload then.");
                     return;
                 }
 
@@ -260,17 +281,55 @@ public final class SaveAndUploadScreen extends Screen {
                         totalBytes = tb;
                         stage = "Uploading: " + currentFile;
                     }
-                    @Override public void onComplete() {}
+                    @Override
+                    public void onComplete() {
+                        // Snap to full. The bar is driven by bucket completions, and
+                        // the last one lands before the manifest commit, so without
+                        // this the run ends looking unfinished.
+                        filesDone = totalFiles;
+                        bytesDone = totalBytes;
+                    }
                     @Override public void onError(final Throwable error) {}
                 };
 
                 stage = "Uploading world to Drive...";
+
+                // Push and release go in ONE task, not two.
+                //
+                // They used to be submitted separately, with this thread waiting on
+                // the first before submitting the second - which left a gap on a
+                // single-threaded executor for anything queued in between to run.
+                // Opening Contributor Worlds during an upload did exactly that: its
+                // world-list read slotted into the gap, saw the lock still held, and
+                // showed "Resume" until a later refresh corrected it to "Open".
+                // Releasing the lock is part of finishing the push, so it belongs in
+                // the same unit of work.
                 final java.util.concurrent.CompletableFuture<SyncEngine.PushResult> pushFuture
                         = new java.util.concurrent.CompletableFuture<>();
                 CloudModule.executor().submit(() -> {
                     try {
                         final SyncEngine.PushResult r = SyncEngine.push(
-                                worldRoot, folderId, playerUuid, null, prog);
+                                worldRoot, remote, playerUuid, prog);
+
+                        // Release the lock only if the push actually landed.
+                        //
+                        // A failed push has already replaced some bucket archives
+                        // without publishing the manifest describing them. Handing
+                        // the lock over in that state lets the next player pull
+                        // archives the manifest disagrees with, and their extraction
+                        // check rejects the world. Keeping the lock costs them a
+                        // wait; releasing it costs them a world they cannot open.
+                        if (r.failed == 0) {
+                            stage = "Releasing session lock...";
+                            if (LockManager.weHoldLock(remote)) {
+                                LockManager.release();
+                            }
+                        } else {
+                            WorldShareMod.LOGGER.warn(
+                                    "SaveAndUpload: {} bucket(s) failed; keeping the session "
+                                            + "lock so nobody pulls a world the manifest "
+                                            + "doesn't match", r.failed);
+                        }
                         pushFuture.complete(r);
                     } catch (final Throwable t) {
                         pushFuture.completeExceptionally(t);
@@ -278,33 +337,28 @@ public final class SaveAndUploadScreen extends Screen {
                 });
                 final SyncEngine.PushResult result = pushFuture.get();
 
-                stage = "Releasing session lock...";
-                final java.util.concurrent.CompletableFuture<Void> releaseFuture
-                        = new java.util.concurrent.CompletableFuture<>();
-                CloudModule.executor().submit(() -> {
-                    try {
-                        if (LockManager.weHoldLock()) {
-                            LockManager.release();
-                        }
-                        releaseFuture.complete(null);
-                    } catch (final Throwable t) {
-                        releaseFuture.completeExceptionally(t);
-                    }
-                });
-                releaseFuture.get();
-
                 if (result.failed == 0) {
-                    stage = "\u2705 Done! " + result.uploaded + " files synced.";
+                    final String summary = result.filesUploaded + " files synced ("
+                            + (result.bytes / (1024 * 1024)) + " MB).";
+                    stage = "\u2705 Done! " + summary;
                     done = true;
+                    // Only notify if they walked away; otherwise the screen in front
+                    // of them already says it and a toast would just duplicate it.
+                    if (userContinuedInBackground.get()) {
+                        PlayerNotice.info("\u00a7a[WorldShare] \u00a7f'" + worldName + "' " + summary);
+                    }
                 } else {
-                    errorMessage = result.failed + " files failed to upload. "
-                            + "Local changes are preserved.";
-                    errored = true;
+                    fail(result.failed + " bucket(s) failed to upload. "
+                            + "Local changes are preserved.");
                 }
             } catch (final Throwable t) {
                 WorldShareMod.LOGGER.error("SaveAndUpload flow failed", t);
-                errorMessage = "Upload failed: " + t.getMessage();
-                errored = true;
+                fail("Upload failed: " + t.getMessage());
+            } finally {
+                // The push is over either way, so the token has done its job. Held
+                // until here rather than released at returnToTitle(), which fires
+                // the moment the player backgrounds the upload.
+                AutoSyncListener.clearSuppressionToken();
             }
         }, "WorldShare-SaveAndUpload");
         orchestrator.setDaemon(true);
@@ -330,13 +384,38 @@ public final class SaveAndUploadScreen extends Screen {
         return false;
     }
 
+    /**
+     * Record a failure, and make sure it reaches the player even if they left.
+     *
+     * <p>"Continue in Background" returns to the title screen while the push keeps
+     * running, so writing the message to this screen's fields is not enough on its
+     * own - nobody is looking at them any more. A failed upload that reports
+     * nothing is indistinguishable from a successful one, and the player would go
+     * on believing their world was safely on Drive.
+     */
+    private void fail(final String message) {
+        errorMessage = message;
+        errored = true;
+        if (userContinuedInBackground.get()) {
+            PlayerNotice.error("§c[WorldShare] §f'" + worldName + "' did not sync: " + message);
+        }
+    }
+
     private void onContinueInBackground() {
         userContinuedInBackground.set(true);
         returnToTitle();
     }
 
     private void returnToTitle() {
-        AutoSyncListener.clearSuppressionToken();
+        // Don't drop the suppression token while the push is still running. It
+        // exists to stop AutoSyncListener pushing a world this screen is already
+        // handling, and "Continue in Background" reaches here with the upload very
+        // much still in progress. The executor serialises the two today, so
+        // clearing early happened to be harmless - but that made the invariant true
+        // by luck rather than by design.
+        if (!SyncActivity.isSyncing()) {
+            AutoSyncListener.clearSuppressionToken();
+        }
         final Minecraft mc = Minecraft.getInstance();
         mc.execute(() -> mc.setScreen(new TitleScreen()));
     }

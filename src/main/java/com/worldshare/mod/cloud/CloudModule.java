@@ -51,11 +51,31 @@ public final class CloudModule {
         // normal flow releases via ServerStoppingEvent in later milestones.
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
-                if (LockManager.weHoldLock()) {
-                    WorldShareMod.LOGGER.info(
-                            "Shutdown hook: releasing held session.lock...");
-                    LockManager.release();
+                if (!LockManager.weHoldLock()) {
+                    return;
                 }
+                // Do NOT release the lock out from under a sync that hasn't
+                // finished. The transfer threads are daemons, so a quit during a
+                // background push kills them mid-flight: bucket archives are
+                // already replaced on Drive but commitControl never ran, leaving
+                // the published manifest describing content the archives no longer
+                // hold. Releasing here would invite the next player straight into
+                // that state, where their pull fails verification.
+                //
+                // Keeping the lock makes it self-healing instead - others stay out,
+                // and when we reopen the world we still hold it, push again, and
+                // the commit that never happened happens.
+                if (com.worldshare.mod.sync.SyncActivity.isSyncing()) {
+                    WorldShareMod.LOGGER.warn(
+                            "Shutdown hook: a push did not finish, so the session "
+                                    + "lock is being LEFT HELD deliberately. Reopen this "
+                                    + "world and let it finish uploading; the lock "
+                                    + "releases then.");
+                    return;
+                }
+                WorldShareMod.LOGGER.info(
+                        "Shutdown hook: releasing held session.lock...");
+                LockManager.release();
             } catch (final Throwable t) {
                 // Can't do much here - the JVM is going down. Just log.
                 WorldShareMod.LOGGER.warn("Shutdown hook lock release failed", t);
@@ -93,6 +113,43 @@ public final class CloudModule {
     }
 
     /**
+     * A DriveClient only if we are already signed in, never prompting for it.
+     *
+     * <p>{@link #driveClient()} starts a consent flow when there is no stored
+     * credential, and with a null presenter that means opening the system
+     * browser. That is right for something the player just asked for and wrong
+     * for anything on a timer, which would otherwise hijack the game at startup.
+     *
+     * @return the client, or null if using Drive would mean asking them to sign in
+     */
+    public static DriveClient driveClientIfSignedIn() throws IOException {
+        final DriveClient existing = driveClient;
+        if (existing != null) {
+            return existing;
+        }
+        final Credential credential = OAuthHelper.storedCredentialIfUsable();
+        if (credential == null) {
+            return null;
+        }
+        // Built from the credential just validated, rather than by calling
+        // driveClient(null) again. That would re-enter the path that opens a
+        // browser when no credential is found, and the whole point of this method
+        // is that it cannot do that - a sign-out landing between the two calls
+        // would otherwise defeat it.
+        synchronized (DRIVE_LOCK) {
+            if (driveClient == null) {
+                try {
+                    driveClient = DriveClient.fromCredential(credential);
+                } catch (final GeneralSecurityException e) {
+                    throw new IOException(
+                            "Failed to build trusted HTTP transport for Drive", e);
+                }
+            }
+            return driveClient;
+        }
+    }
+
+    /**
      * Get a ready-to-use DriveClient using a custom URL presenter for the
      * OAuth consent URL.
      *
@@ -120,6 +177,27 @@ public final class CloudModule {
             }
             driveClient = local;
             return local;
+        }
+    }
+
+    /**
+     * Replace the cached DriveClient with one built on a freshly-issued credential.
+     *
+     * <p>Called after a Picker round trip. The credential itself may be equivalent
+     * to the cached one, but the <em>grants</em> behind it are not: the user has
+     * just handed the app files it previously couldn't see. Rebuilding here means
+     * the very next Drive call can reach them, instead of failing against a client
+     * created before the pick.
+     */
+    public static void refreshCredential(final Credential credential) throws IOException {
+        try {
+            final DriveClient rebuilt = DriveClient.fromCredential(credential);
+            synchronized (DRIVE_LOCK) {
+                driveClient = rebuilt;
+            }
+            WorldShareMod.LOGGER.debug("CloudModule: DriveClient rebuilt after Picker grant");
+        } catch (final GeneralSecurityException e) {
+            throw new IOException("Couldn't rebuild the Drive client after authorization", e);
         }
     }
 

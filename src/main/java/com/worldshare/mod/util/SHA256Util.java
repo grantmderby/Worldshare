@@ -43,6 +43,28 @@ public final class SHA256Util {
     }
 
     /**
+     * Computes the hex-encoded SHA-256 hash of a stream, without buffering it.
+     *
+     * <p>For content that has no file of its own to hash - a zip entry being
+     * checked against the manifest before anything is written to disk. Region
+     * files run to several megabytes each, so reading them into a byte array to
+     * use {@link #hashBytes} would be needless memory pressure on a path that
+     * already runs on several threads at once.
+     *
+     * <p>Does not close the stream; the caller owns it (a {@code ZipInputStream}
+     * positioned on an entry must stay open for the entries after it).
+     */
+    public static String hashStream(final InputStream in) throws IOException {
+        final MessageDigest digest = newDigest();
+        final byte[] buffer = new byte[BUFFER_SIZE];
+        int read;
+        while ((read = in.read(buffer)) != -1) {
+            digest.update(buffer, 0, read);
+        }
+        return toHex(digest.digest());
+    }
+
+    /**
      * Computes the hex-encoded SHA-256 hash of an in-memory byte array.
      * Useful for hashing small things like the serialized manifest.
      */
@@ -50,6 +72,23 @@ public final class SHA256Util {
         final MessageDigest digest = newDigest();
         digest.update(data);
         return toHex(digest.digest());
+    }
+
+    /**
+     * A fresh SHA-256 digest, for callers that need to hash a stream they are
+     * already reading for another purpose.
+     *
+     * <p>{@code BucketArchive.build} packs and hashes in a single pass rather than
+     * reading every region file twice, which needs the digest itself rather than
+     * one of the finished helpers above.
+     */
+    public static MessageDigest newSha256() {
+        return newDigest();
+    }
+
+    /** Hex-encode a digest produced by {@link #newSha256()}. */
+    public static String hex(final byte[] bytes) {
+        return toHex(bytes);
     }
 
     private static MessageDigest newDigest() {

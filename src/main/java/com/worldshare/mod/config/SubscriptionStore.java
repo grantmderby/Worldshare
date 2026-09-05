@@ -5,6 +5,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonSyntaxException;
 import com.google.gson.reflect.TypeToken;
 import com.worldshare.mod.WorldShareMod;
+import com.worldshare.mod.cloud.RemoteFileSet;
 import com.worldshare.mod.util.WorldSharePaths;
 
 import java.io.IOException;
@@ -15,10 +16,14 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Manages the user's list of subscribed Contributor Worlds, persisted at
  * {@code config/worldshare/subscriptions.json}.
+ *
+ * <p>Worlds are keyed by control file ID, not Drive folder ID - see
+ * {@link WorldSubscription} for why the identifier had to change.
  *
  * <p>This replaces the single {@code driveFolderId} config value from M0-M4.
  * On first load after the M5 update, if the legacy {@code driveFolderId}
@@ -106,7 +111,10 @@ public final class SubscriptionStore {
             WorldShareMod.LOGGER.info(
                     "SubscriptionStore: migrating legacy driveFolderId '{}' to subscriptions",
                     legacyFolderId);
-            subscriptions.add(new WorldSubscription(
+            // Carried over as a legacy entry: a bare folder ID is unusable under the
+            // drive.file scope, so this exists to be shown in the UI with a
+            // "re-run setup" prompt rather than to be synced.
+            subscriptions.add(WorldSubscription.legacy(
                     legacyFolderId,
                     "Shared World",
                     null
@@ -128,15 +136,31 @@ public final class SubscriptionStore {
     }
 
     /**
-     * Find a subscription by Drive folder ID.
+     * Find a subscription by its control file ID - the stable identifier for a
+     * shared world under the {@code drive.file} scope.
      *
      * @return the subscription, or {@code null} if not found
      */
-    public synchronized WorldSubscription findByFolderId(final String folderId) {
+    public synchronized WorldSubscription findByControlFileId(final String controlFileId) {
+        if (controlFileId == null) return null;
         for (final WorldSubscription s : subscriptions) {
-            if (s.driveFolderId.equals(folderId)) return s;
+            if (controlFileId.equals(s.controlFileId())) return s;
         }
         return null;
+    }
+
+    /**
+     * Subscriptions carried over from before the {@code drive.file} migration.
+     * These can't sync until the player re-runs setup and picks their world's
+     * files; the Contributor Worlds screen surfaces them so they aren't silently
+     * broken.
+     */
+    public synchronized List<WorldSubscription> legacyEntries() {
+        final List<WorldSubscription> out = new ArrayList<>();
+        for (final WorldSubscription s : subscriptions) {
+            if (s.isLegacy()) out.add(s);
+        }
+        return out;
     }
 
     /**
@@ -158,44 +182,55 @@ public final class SubscriptionStore {
     // ----- Mutation -----
 
     /**
-     * Add a new subscription. No-op if a subscription with the same Drive
-     * folder ID already exists.
+     * Add a new subscription. If one already exists for the same world, its file
+     * set is refreshed rather than duplicated - re-running setup to re-pick files
+     * should update the existing entry, not create a second one.
      *
      * @return the new or existing subscription
      */
-    public synchronized WorldSubscription subscribe(final String driveFolderId,
+    public synchronized WorldSubscription subscribe(final RemoteFileSet remote,
                                                     final String displayName) {
-        for (final WorldSubscription s : subscriptions) {
-            if (s.driveFolderId.equals(driveFolderId)) {
-                WorldShareMod.LOGGER.debug(
-                        "SubscriptionStore: already subscribed to {}", driveFolderId);
-                if (displayName != null && !displayName.equals(s.displayName)) {
-                    s.displayName = displayName;
-                    flush();
-                }
-                return s;
+        Objects.requireNonNull(remote, "remote");
+        final String controlFileId = remote.controlFileId;
+
+        final WorldSubscription existing = findByControlFileId(controlFileId);
+        if (existing != null) {
+            WorldShareMod.LOGGER.debug(
+                    "SubscriptionStore: already subscribed to {}", controlFileId);
+            existing.remote = remote;
+            if (displayName != null && !displayName.equals(existing.displayName)) {
+                existing.displayName = displayName;
             }
+            flush();
+            return existing;
         }
-        final WorldSubscription sub = new WorldSubscription(driveFolderId, displayName, null);
+
+        final WorldSubscription sub = new WorldSubscription(remote, displayName, null);
         subscriptions.add(sub);
         flush();
-        WorldShareMod.LOGGER.info("SubscriptionStore: subscribed to '{}' ({})",
-                displayName, driveFolderId);
+        WorldShareMod.LOGGER.info("SubscriptionStore: subscribed to '{}' (control file {})",
+                displayName, controlFileId);
         return sub;
     }
 
     /**
-     * Remove a subscription by Drive folder ID.
+     * Remove a subscription by control file ID.
+     *
+     * <p>This only forgets the world locally. It deliberately does not touch
+     * anything on Drive: the files belong to whoever created them, the other
+     * player may still be using them, and under {@code drive.file} a deleted file
+     * can never be restored to the same ID anyway.
      *
      * @return true if it was found and removed
      */
-    public synchronized boolean unsubscribe(final String driveFolderId) {
+    public synchronized boolean unsubscribe(final String controlFileId) {
+        if (controlFileId == null) return false;
         final boolean removed = subscriptions.removeIf(
-                s -> s.driveFolderId.equals(driveFolderId));
+                s -> controlFileId.equals(s.controlFileId()));
         if (removed) {
             flush();
             WorldShareMod.LOGGER.info(
-                    "SubscriptionStore: unsubscribed from {}", driveFolderId);
+                    "SubscriptionStore: unsubscribed from {}", controlFileId);
         }
         return removed;
     }
@@ -214,15 +249,18 @@ public final class SubscriptionStore {
      * @param localWorldRoot absolute path to the local world folder (for writing link file)
      * @param localFolderName just the folder name component (for subscription record)
      */
-    public synchronized void linkWorldToFolder(final Path localWorldRoot,
+    public synchronized void linkWorldToRemote(final Path localWorldRoot,
                                                final String localFolderName,
-                                               final String driveFolderId,
+                                               final RemoteFileSet remote,
                                                final String displayName) throws IOException {
-        WorldSubscription sub = findByFolderId(driveFolderId);
+        Objects.requireNonNull(remote, "remote");
+
+        WorldSubscription sub = findByControlFileId(remote.controlFileId);
         if (sub == null) {
-            sub = new WorldSubscription(driveFolderId, displayName, localFolderName);
+            sub = new WorldSubscription(remote, displayName, localFolderName);
             subscriptions.add(sub);
         } else {
+            sub.remote = remote;
             sub.localFolderName = localFolderName;
             if (displayName != null && !displayName.isBlank()) {
                 sub.displayName = displayName;
@@ -230,27 +268,37 @@ public final class SubscriptionStore {
         }
         flush();
 
-        WorldLink.write(localWorldRoot, driveFolderId, sub.displayName);
+        WorldLink.write(localWorldRoot, remote, sub.displayName);
 
         WorldShareMod.LOGGER.info(
-                "SubscriptionStore: linked '{}' (local folder: '{}') -> Drive folder {}",
-                sub.displayName, localFolderName, driveFolderId);
+                "SubscriptionStore: linked '{}' (local folder: '{}') -> control file {}",
+                sub.displayName, localFolderName, remote.controlFileId);
     }
 
     /**
      * Update the display name of a subscribed world.
      */
-    public synchronized void rename(final String driveFolderId, final String newName) {
-        for (final WorldSubscription s : subscriptions) {
-            if (s.driveFolderId.equals(driveFolderId)) {
-                s.displayName = newName;
-                flush();
-                return;
-            }
+    public synchronized void rename(final String controlFileId, final String newName) {
+        final WorldSubscription sub = findByControlFileId(controlFileId);
+        if (sub != null) {
+            sub.displayName = newName;
+            flush();
         }
     }
 
     // ----- Disk I/O -----
+
+    /**
+     * Persist the store after a caller edited a subscription in place.
+     *
+     * <p>For incidental corrections rather than deliberate changes - adopting a
+     * world's real name once the host has published it, say. {@link #flush} already
+     * swallows its own errors, so a failed write here costs nothing but a repeat of
+     * the same correction next time.
+     */
+    public synchronized void flushQuietly() {
+        flush();
+    }
 
     private void flush() {
         final Path file = storePath();
