@@ -289,21 +289,29 @@ def build():
     atlas = load_font_atlas()
     boxes = glyph_boxes(atlas)
 
-    # ---- banner: island above the wordmark, square, for the gallery ----
-    W = H = 1024
+    # ---- banner: island above the wordmark, 16:9, for the gallery ----
+    #
+    # The composition is still laid out against a square of side S. Only the
+    # canvas is wider, and sky_backdrop is a pure vertical gradient, so the
+    # extra width is the same sky continued outwards - nothing is stretched and
+    # nothing has to be invented at the edges. Sizing the artwork off W instead
+    # would have scaled the ring and the wordmark with the canvas, which is a
+    # different picture rather than a wider one.
+    H = S = 1080
+    W = int(round(H * 16 / 9))
     canvas = sky_backdrop((W, H))
 
     art_h = int(H * 0.46)
-    scale_f = min(art_h / island.height, (W * 0.62) / island.width)
+    scale_f = min(art_h / island.height, (S * 0.62) / island.width)
     art = island.resize(
         (max(1, int(island.width * scale_f)), max(1, int(island.height * scale_f))),
         Image.LANCZOS)
 
     title_scale = 14
-    while text_width(boxes, TITLE, title_scale) > W * 0.90 and title_scale > 1:
+    while text_width(boxes, TITLE, title_scale) > S * 0.90 and title_scale > 1:
         title_scale -= 1
     sub_scale = max(1, round(title_scale / 3.2))
-    while text_width(boxes, SUBTITLE, sub_scale) > W * 0.90 and sub_scale > 1:
+    while text_width(boxes, SUBTITLE, sub_scale) > S * 0.90 and sub_scale > 1:
         sub_scale -= 1
 
     # Centre the block as a whole rather than placing each piece at a fixed
@@ -317,7 +325,7 @@ def build():
     # The ring is the tall part, not the island. It is centred on the island but
     # reaches well past it, so measuring the block by the island alone pushed the
     # ring into the frame at the top and across the wordmark at the bottom.
-    ring_w = max(8, int(W * 0.034))
+    ring_w = max(8, int(S * 0.034))
     ring_r = max(art.width, art.height) * 0.66
     ring_extent = ring_r + ring_w / 2.0 + OUTLINE_PX
     art_block_h = int(max(art.height, ring_extent * 2))
