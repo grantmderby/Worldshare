@@ -53,7 +53,12 @@ SUBTITLE = "Synchronized Singleplayer for Two"
 # gradient's own noise.
 SKY_TOLERANCE = 26
 
-OUTLINE_PX = 14          # silhouette outline, at screenshot resolution
+# Measured at screenshot resolution, so it shrinks with the island. Near-black
+# at 14px read as a sticker rather than an outline; slate at 9 keeps the shape
+# reading against the sky without stamping on it.
+OUTLINE_PX = 9
+OUTLINE_INK = (34, 38, 50)
+
 BORDER_PX = 10           # frame around the whole canvas
 INK = (17, 17, 20)
 
@@ -105,7 +110,7 @@ def outlined_island(path: str):
     box = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1)
 
     out = np.zeros((rgb.shape[0], rgb.shape[1], 4), dtype=np.uint8)
-    out[ring] = (*INK, 255)          # outline underneath
+    out[ring] = (*OUTLINE_INK, 255)  # outline underneath
     out[mask, :3] = rgb[mask]        # island on top
     out[mask, 3] = 255
     return Image.fromarray(out).crop(box)
@@ -202,7 +207,6 @@ def build():
     art = island.resize(
         (max(1, int(island.width * scale_f)), max(1, int(island.height * scale_f))),
         Image.LANCZOS)
-    canvas.alpha_composite(art, ((W - art.width) // 2, int(H * 0.065)))
 
     title_scale = 9
     while text_width(boxes, TITLE, title_scale) > W * 0.86 and title_scale > 1:
@@ -211,14 +215,28 @@ def build():
     while text_width(boxes, SUBTITLE, sub_scale) > W * 0.88 and sub_scale > 1:
         sub_scale -= 1
 
-    ty = int(H * 0.715)
-    tw = text_width(boxes, TITLE, title_scale)
-    draw_text(canvas, atlas, boxes, TITLE, (W - tw) // 2, ty,
-              title_scale, (255, 255, 255, 255), shadow=(*INK, 255))
+    # Centre the block as a whole rather than placing each piece at a fixed
+    # fraction of the canvas. Positioning them separately left the margins
+    # unequal, and every change to the island's size or the text scale
+    # reintroduced it.
+    glyph_h = atlas.height // 16
+    gap_art_title = int(H * 0.055)
+    gap_title_sub = int(H * 0.028)
 
-    sy = ty + (atlas.height // 16) * title_scale + int(H * 0.028)
+    block_h = (art.height + gap_art_title + glyph_h * title_scale
+               + gap_title_sub + glyph_h * sub_scale)
+    y = (H - block_h) // 2
+
+    canvas.alpha_composite(art, ((W - art.width) // 2, y))
+    y += art.height + gap_art_title
+
+    tw = text_width(boxes, TITLE, title_scale)
+    draw_text(canvas, atlas, boxes, TITLE, (W - tw) // 2, y,
+              title_scale, (255, 255, 255, 255), shadow=(*INK, 255))
+    y += glyph_h * title_scale + gap_title_sub
+
     sw = text_width(boxes, SUBTITLE, sub_scale)
-    draw_text(canvas, atlas, boxes, SUBTITLE, (W - sw) // 2, sy,
+    draw_text(canvas, atlas, boxes, SUBTITLE, (W - sw) // 2, y,
               sub_scale, (26, 34, 48, 255))
 
     frame = ImageDraw.Draw(canvas)
