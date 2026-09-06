@@ -1,10 +1,23 @@
 # Branding assets
 
+Two families here, and they are made differently.
+
+`make_banner.py` composites the **island** - a real Minecraft build, screenshotted
+in game. It lifts the island off the sky, outlines the silhouette, and sets the
+wordmark in Minecraft's own font, pulled from the client jar. That provenance is
+the point: Modrinth forbids AI-generated imagery anywhere on a project page, and
+a photograph of something you built is as clean as provenance gets.
+
+`make_icon.py` draws the **abstract mark** from geometry, described below.
+
 Generated, not hand-drawn — `make_icon.py` renders them, so the icon is
 reproducible and tweakable rather than a binary nobody can edit.
 
 | File | Where it goes |
 |---|---|
+| `island-source.png` | the in-game screenshot everything below is built from |
+| `worldshare-banner.png` (1024px) | Modrinth gallery, README, anywhere with room for the wordmark |
+| `worldshare-island-512.png` | Modrinth project icon |
 | `../../src/main/resources/icon.png` (128px) | `logoFile` in `neoforge.mods.toml`; the in-game mod list |
 | `worldshare-icon-120-consent-screen.png` | Google OAuth consent screen app logo |
 | `worldshare-icon-512.png` | Modrinth project icon |
