@@ -67,6 +67,10 @@ INK = (17, 17, 20)
 ARROW_GREEN = (0x6C, 0xC2, 0x4A)
 ARROW_BLUE = (0x4E, 0xA8, 0xE0)
 
+# Side of one arrow "pixel" in final image pixels. The ring is drawn this much
+# smaller and scaled back up with NEAREST.
+PIXEL_SIZE = 8
+
 SKY_TOP = (0xBE, 0xC6, 0xDD)
 SKY_BOTTOM = (0x9E, 0xB3, 0xCE)
 
@@ -111,8 +115,15 @@ def outlined_island(path: str):
 
     ring = ndimage.binary_dilation(mask, np.ones((3, 3)), iterations=OUTLINE_PX)
 
+    # A little air around the outline. Cropping to its exact bounds put the
+    # lowest pixel flush with the image edge, where downscaling shaved it and
+    # the island looked cut off at the bottom.
+    pad = OUTLINE_PX * 2
     ys, xs = np.where(ring)
-    box = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1)
+    box = (max(0, xs.min() - pad),
+           max(0, ys.min() - pad),
+           min(rgb.shape[1], xs.max() + 1 + pad),
+           min(rgb.shape[0], ys.max() + 1 + pad))
 
     out = np.zeros((rgb.shape[0], rgb.shape[1], 4), dtype=np.uint8)
     out[ring] = (*OUTLINE_INK, 255)  # outline underneath
@@ -187,7 +198,7 @@ def text_width(boxes, text, scale):
 
 # -------------------------------------------------------------------- arrows
 
-def arc_arrow(layer, cx, cy, radius, a0_deg, a1_deg, width, colour):
+def arc_arrow(layer, cx, cy, radius, a0_deg, a1_deg, width, colour, outline_w):
     """One arc with an arrowhead at its far end, outlined to match the island.
 
     Drawn as a run of overlapping discs rather than with ImageDraw.arc, which
@@ -202,7 +213,7 @@ def arc_arrow(layer, cx, cy, radius, a0_deg, a1_deg, width, colour):
     head_len = width * 2.0
     head_half = width * 1.35
 
-    for pass_w, pass_col in ((width + OUTLINE_PX * 0.9, OUTLINE_INK), (width, colour)):
+    for pass_w, pass_col in ((width + outline_w, OUTLINE_INK), (width, colour)):
         d = ImageDraw.Draw(layer)
         # The shaft runs right up to the head's base rather than stopping short
         # of it. The head is wider than the shaft and its tip sits beyond a1, so
@@ -228,17 +239,26 @@ def arc_arrow(layer, cx, cy, radius, a0_deg, a1_deg, width, colour):
         ], fill=(*pass_col, 255))
 
 
-def sync_ring(size, cx, cy, radius, width):
+def sync_ring(size, cx, cy, radius, width, pix=PIXEL_SIZE):
     """Two arrows chasing each other around a circle: the round trip.
 
     Both sweep the same way. The mod is not two one-way transfers, it is one
     world going out and coming back, and two arrows pointing at each other
     would say the opposite.
+
+    Drawn at a fraction of the final size and blown back up with NEAREST, so
+    the curves land on a coarse grid and step the way Minecraft's own art does.
+    Smooth vector arcs beside a block texture looked like clip art dropped on
+    top of a screenshot.
     """
-    layer = Image.new("RGBA", size, (0, 0, 0, 0))
-    arc_arrow(layer, cx, cy, radius, 200, 350, width, ARROW_GREEN)
-    arc_arrow(layer, cx, cy, radius, 20, 170, width, ARROW_BLUE)
-    return layer
+    small = (max(1, size[0] // pix), max(1, size[1] // pix))
+    layer = Image.new("RGBA", small, (0, 0, 0, 0))
+    args = (cx / pix, cy / pix, radius / pix)
+    w = max(1.0, width / pix)
+    ow = max(1.0, OUTLINE_PX * 0.9 / pix)
+    arc_arrow(layer, *args, 200, 350, w, ARROW_GREEN, ow)
+    arc_arrow(layer, *args, 20, 170, w, ARROW_BLUE, ow)
+    return layer.resize(size, Image.NEAREST)
 
 
 # ------------------------------------------------------------------ compose
@@ -263,17 +283,17 @@ def build():
     W = H = 1024
     canvas = sky_backdrop((W, H))
 
-    art_h = int(H * 0.56)
-    scale_f = min(art_h / island.height, (W * 0.72) / island.width)
+    art_h = int(H * 0.46)
+    scale_f = min(art_h / island.height, (W * 0.62) / island.width)
     art = island.resize(
         (max(1, int(island.width * scale_f)), max(1, int(island.height * scale_f))),
         Image.LANCZOS)
 
-    title_scale = 9
-    while text_width(boxes, TITLE, title_scale) > W * 0.86 and title_scale > 1:
+    title_scale = 14
+    while text_width(boxes, TITLE, title_scale) > W * 0.90 and title_scale > 1:
         title_scale -= 1
-    sub_scale = max(1, round(title_scale / 2.6))
-    while text_width(boxes, SUBTITLE, sub_scale) > W * 0.88 and sub_scale > 1:
+    sub_scale = max(1, round(title_scale / 3.2))
+    while text_width(boxes, SUBTITLE, sub_scale) > W * 0.90 and sub_scale > 1:
         sub_scale -= 1
 
     # Centre the block as a whole rather than placing each piece at a fixed
@@ -284,21 +304,25 @@ def build():
     gap_art_title = int(H * 0.055)
     gap_title_sub = int(H * 0.028)
 
-    block_h = (art.height + gap_art_title + glyph_h * title_scale
+    # The ring is the tall part, not the island. It is centred on the island but
+    # reaches well past it, so measuring the block by the island alone pushed the
+    # ring into the frame at the top and across the wordmark at the bottom.
+    ring_w = max(8, int(W * 0.028))
+    ring_r = max(art.width, art.height) * 0.58
+    ring_extent = ring_r + ring_w / 2.0 + OUTLINE_PX
+    art_block_h = int(max(art.height, ring_extent * 2))
+
+    block_h = (art_block_h + gap_art_title + glyph_h * title_scale
                + gap_title_sub + glyph_h * sub_scale)
     y = (H - block_h) // 2
 
     # Behind the island, so the ring passes around and out of sight rather than
     # sitting on top of it - which is what makes it read as circling.
-    ax, ay = (W - art.width) // 2, y
-    canvas.alpha_composite(sync_ring(
-        (W, H),
-        ax + art.width / 2.0,
-        ay + art.height / 2.0,
-        max(art.width, art.height) * 0.56,
-        max(8, int(W * 0.026))))
-    canvas.alpha_composite(art, (ax, ay))
-    y += art.height + gap_art_title
+    cx, cy = W / 2.0, y + art_block_h / 2.0
+    canvas.alpha_composite(sync_ring((W, H), cx, cy, ring_r, ring_w))
+    canvas.alpha_composite(
+        art, (int(cx - art.width / 2), int(cy - art.height / 2)))
+    y += art_block_h + gap_art_title
 
     tw = text_width(boxes, TITLE, title_scale)
     draw_text(canvas, atlas, boxes, TITLE, (W - tw) // 2, y,
