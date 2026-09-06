@@ -68,13 +68,15 @@ def _annotated(step, file_key, marks_key, shrink, accent):
     return Image.open(annotate.render(sub, shrink, accent=accent)).convert("RGB")
 
 
-def _header(d, step, accent, pill_col, label, f_title, f_badge):
+def _header(d, index, step, accent, pill_col, label, f_title, f_badge):
     d.rectangle([0, 0, W, HEADER_H], fill=(0x15, 0x1A, 0x24))
     for x in range(W):
         t = x / float(W - 1)
         d.line([(x, HEADER_H), (x, HEADER_H + 4)],
                fill=tuple(int(GREEN[i] + (BLUE[i] - GREEN[i]) * t) for i in range(3)))
-    num = "%d." % step["n"]
+    # Position in the deck, not a number written into the spec. Those drift the
+    # moment a slide is inserted, and the header and the filename then disagree.
+    num = "%d." % index
     d.text((MARGIN + 8, HEADER_H // 2 - 24), num, font=f_title, fill=accent)
     nw = d.textbbox((0, 0), num, font=f_title)[2]
     d.text((MARGIN + 24 + nw, HEADER_H // 2 - 24), step.get("title", ""),
@@ -95,7 +97,7 @@ def build(step, deck, index):
     d = ImageDraw.Draw(canvas)
     f_title, f_badge = font_at(42), font_at(30)
     f_cap = font_at(30)
-    _header(d, step, accent, pill_col, label, f_title, f_badge)
+    _header(d, index, step, accent, pill_col, label, f_title, f_badge)
 
     body_top = HEADER_H + MARGIN
     body_h = H - body_top - MARGIN

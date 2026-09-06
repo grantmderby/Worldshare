@@ -4,7 +4,7 @@ Encode the slide decks into MP4s.
 Uses the ffmpeg that ships with imageio-ffmpeg, so there is nothing to install
 separately and nothing to find on PATH.
 
-Six seconds a slide by default, with a cross-fade between them. The fade is not
+Five and a half seconds a slide by default, with a cross-fade between them. The fade is not
 decoration: cutting hard between two Minecraft screenshots that differ by one
 chat line reads as a glitch rather than a step, and a short dissolve makes the
 change legible.
@@ -24,14 +24,14 @@ SLIDES = os.path.join(HERE, "slides")
 OUT = os.path.join(HERE, "video")
 
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
-FADE = 0.6          # seconds of cross-fade
+FADE = 0.3          # seconds of cross-fade
 
 
 def deck_files(deck):
     return sorted(glob.glob(os.path.join(SLIDES, "%s-*.png" % deck)))
 
 
-def build(deck, seconds=6.0):
+def build(deck, seconds=5.5):
     files = deck_files(deck)
     if not files:
         print("no slides for", deck)
@@ -63,7 +63,7 @@ def build(deck, seconds=6.0):
              "-c:v", "libx264", "-preset", "medium", "-crf", "18",
              "-r", "30", dst]
 
-    print("encoding %s (%d slides, %.0fs each)..." % (deck, len(files), seconds))
+    print("encoding %s (%d slides, %.1fs each)..." % (deck, len(files), seconds))
     r = subprocess.run(args, capture_output=True, text=True)
     if r.returncode != 0:
         print(r.stderr[-1800:])
@@ -74,6 +74,6 @@ def build(deck, seconds=6.0):
 
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else None
-    secs = float(sys.argv[2]) if len(sys.argv) > 2 else 6.0
+    secs = float(sys.argv[2]) if len(sys.argv) > 2 else 5.5
     for deck in ([which] if which else ["host", "guest", "states"]):
         build(deck, secs)

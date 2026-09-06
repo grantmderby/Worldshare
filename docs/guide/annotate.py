@@ -156,11 +156,34 @@ def crop_to_chat(img, pad=0.04):
                      min(W, x + w + px), min(H, y + h + py)))
 
 
+def _drop_sliced_title(a, y0, y1):
+    """Advance past a screen title the screenshot itself cut in half.
+
+    One of the row shots was taken with the window already cropped through
+    "Contributor Worlds", so its top row of pixels is the bottom half of yellow
+    letters. The band starts at 0 there - it cannot back off any further - and
+    the slide showed a sliced line of text above the row. Only fires when the
+    band is hard against the top edge and the yellow really is there.
+    """
+    if y0 != 0:
+        return y0
+    r, g, b = a[:, :, 0], a[:, :, 1], a[:, :, 2]
+    titleish = (r > 170) & (g > 170) & (b < 120)
+    limit = y0 + int((y1 - y0) * 0.12)
+    y = y0
+    while y < limit and titleish[y].any():
+        y += 1
+    # Clear the letters' antialiased fringe as well, or a row of dim yellow is
+    # left behind that reads as dirt on the slide.
+    return y + 4 if y > y0 else y0
+
+
 def crop_to_row(img):
     band = find_row_band(img)
     if band is None:
         return img
     y0, y1 = band
+    y0 = _drop_sliced_title(np.asarray(img.convert("RGB")).astype(int), y0, y1)
     return img.crop((0, y0, img.width, y1))
 
 
