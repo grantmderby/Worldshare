@@ -964,7 +964,7 @@ public final class ContributorWorldsScreen extends Screen {
         }
         if (msg.contains("404") || msg.toLowerCase().contains("not found")) {
             return "Drive folder not found - it may have been deleted or moved. "
-                    + "Run /worldshare clearDriveLink in your world, then re-add via Contributor Worlds.";
+                    + "Remove it below, then add it again.";
         }
         if (msg.isEmpty()) {
             return defaultPrefix + ": " + t.getClass().getSimpleName();

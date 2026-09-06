@@ -105,7 +105,13 @@ public final class WorldShareCommands {
                                         .requires(WorldShareCommands::devCommandsEnabled)
                                         .executes(ctx -> runSetupExisting(ctx.getSource())))
                                 .executes(ctx -> runSetup(ctx.getSource())))
+                        // Unlinking has a menu: Contributor Worlds -> Remove. That
+                        // runs from the title screen, where there is no open world
+                        // to be halfway through, which is the safer place for it.
+                        // This one exists for the in-world case and is not something
+                        // to reach for by accident.
                         .then(Commands.literal("clearDriveLink")
+                                .requires(WorldShareCommands::devCommandsEnabled)
                                 .executes(ctx -> runClearDriveLink(ctx.getSource())))
                         .then(Commands.literal("lock")
                                 .requires(WorldShareCommands::devCommandsEnabled)
@@ -149,6 +155,15 @@ public final class WorldShareCommands {
                         // Two words, because it republishes the whole world over
                         // whatever is on Drive. Easy to reach when needed, hard to
                         // fire by accident.
+                        // Public, unlike the other sharp tools, because the mod
+                        // itself sends people here: the large-upload warning names
+                        // a folder and tells you to exclude it. Hiding this would
+                        // leave that warning diagnosing a problem it cannot treat.
+                        //
+                        // The blast radius is what makes that safe. Exclusion is
+                        // per-installation and applies to pull as well as push, so
+                        // a misfire stops *this* copy syncing a folder and cannot
+                        // touch the shared world or the other player.
                         .then(Commands.literal("exclude")
                                 .executes(ctx -> runExcludeList(ctx.getSource()))
                                 .then(Commands.argument("path",
@@ -162,7 +177,14 @@ public final class WorldShareCommands {
                                         .executes(ctx -> runExcludeRemove(ctx.getSource(),
                                                 com.mojang.brigadier.arguments.StringArgumentType
                                                         .getString(ctx, "path")))))
+                        // Repair republishes the entire world over whatever is on
+                        // Drive, which can discard work the other player never got
+                        // to upload. RepairWorldScreen is the same operation with
+                        // the explanation attached, and it only appears when Drive
+                        // is genuinely inconsistent. A bare command version is the
+                        // same loaded gun without the label.
                         .then(Commands.literal("repair")
+                                .requires(WorldShareCommands::devCommandsEnabled)
                                 .executes(ctx -> explainRepair(ctx.getSource()))
                                 .then(Commands.literal("confirm")
                                         .executes(ctx -> runRepair(ctx.getSource()))))
@@ -438,8 +460,8 @@ public final class WorldShareCommands {
                         + "somebody access.");
             } else {
                 sendFeedback(source,
-                        "This world is already set up for sharing. Run "
-                                + "/worldshare clearDriveLink first if you want to redo it.",
+                        "This world is already set up for sharing. To start over, "
+                                + "remove it from Contributor Worlds first.",
                         ChatFormatting.YELLOW);
             }
             return 0;
@@ -1160,7 +1182,8 @@ public final class WorldShareCommands {
                             + "it moved to per-file Drive access.",
                     ChatFormatting.YELLOW);
             sendFeedback(source,
-                    "Run /worldshare clearDriveLink, then /worldshare setup to relink it.",
+                    "Remove it from Contributor Worlds, then run /worldshare setup "
+                            + "to relink it.",
                     ChatFormatting.WHITE);
             return 0;
         }
