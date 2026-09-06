@@ -59,3 +59,7 @@ src/main/resources/worldshare/oauth/client_secret*.json
 
 client_secret*.json
 .aider*
+
+# Python bytecode from the branding scripts
+__pycache__/
+*.pyc

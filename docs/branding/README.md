@@ -19,7 +19,7 @@ reproducible and tweakable rather than a binary nobody can edit.
 | `worldshare-banner.png` (1024px) | Modrinth gallery, README, anywhere with room for the wordmark |
 | `worldshare-island-512.png` | Modrinth project icon |
 | `../../src/main/resources/icon.png` (128px) | `logoFile` in `neoforge.mods.toml`; the in-game mod list |
-| `worldshare-icon-120-consent-screen.png` | Google OAuth consent screen app logo |
+| `worldshare-icon-120.png` | Google OAuth consent screen app logo |
 | `worldshare-icon-512.png` | Modrinth project icon |
 
 ## Regenerating

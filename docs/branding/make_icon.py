@@ -17,7 +17,11 @@ OUT_DIR = os.path.dirname(os.path.abspath(__file__))
 SS = 4                 # supersample factor
 PLATE_UNITS = 250.0    # the SVG plate is 250x250 user units
 CONTENT_SCALE = 0.72   # filled out: 0.60 left too much dead plate at 32px
-CONTENT_DY = -10.0
+# Zero, and it must stay zero. This was -10, which lifted the artwork by about
+# 20px at 512 and pushed the top arrowhead flush against the canvas edge - it was
+# being clipped, while 36px sat unused underneath. The geometry is already
+# centred on the plate; nothing needed nudging.
+CONTENT_DY = 0.0
 
 PLATE = (0x1E, 0x24, 0x30)
 SEAM = (0x14, 0x16, 0x1A)
