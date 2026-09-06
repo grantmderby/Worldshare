@@ -119,7 +119,7 @@ def callout(d, xy, text, font, pad=18):
     d.text((x + pad - b[0], y + pad - b[1]), text, font=font, fill=INK)
 
 
-def place_label(d, box, text, font, canvas, want, scale):
+def place_label(d, box, text, font, canvas, want, scale, obstacles=()):
     """Put the card somewhere it actually fits, and return where to aim from.
 
     The first version honoured the requested side and let the card fall off the
@@ -157,7 +157,18 @@ def place_label(d, box, text, font, canvas, want, scale):
         else:
             x, y = bx + bw // 2 - cw // 2, by - gap - ch
             tip = (bx + bw // 2, by - int(14 * scale))
-        if m <= x and x + cw <= W - m and m <= y and y + ch <= H - m:
+        if not (m <= x and x + cw <= W - m and m <= y and y + ch <= H - m):
+            continue
+        # Don't cover a different button. A card sitting on Refresh while
+        # pointing at Add World tells the reader two things at once.
+        card = (x, y, x + cw, y + ch)
+        clash = False
+        for (ox, oy, ow, oh) in obstacles:
+            if not (card[2] < ox or card[0] > ox + ow
+                    or card[3] < oy or card[1] > oy + oh):
+                clash = True
+                break
+        if not clash:
             return (x, y), tip, side
 
     x = min(max(m, bx + bw // 2 - cw // 2), W - m - cw)
@@ -184,23 +195,30 @@ def font_at(size):
 
 # ------------------------------------------------------------------- render
 
-def render(step):
+def render(step, shrink=1.0):
     src = os.path.join(SRC, step["file"])
     img = Image.open(src).convert("RGB")
     W, H = img.size
-    scale = W / 1900.0                      # specs are written against ~1900px wide
+    # Annotations are sized in the pixels they will finally occupy, not the
+    # pixels of the source. The screenshots run from 1432 to 3361 wide and are
+    # all letterboxed into the same slide, so sizing against the source made a
+    # wide shot's labels shrink and a narrow one's balloon. `shrink` is how much
+    # the slide will scale this image down; dividing by it cancels that out.
+    scale = 1.0 / max(0.05, shrink)                      # specs are written against ~1900px wide
     d = ImageDraw.Draw(img)
 
-    f_label = font_at(max(18, int(34 * scale)))
-    f_badge = font_at(max(20, int(46 * scale)))
+    f_label = font_at(max(20, int(30 * scale)))
+    f_badge = font_at(max(24, int(40 * scale)))
 
     for a in step.get("marks", []):
         box = resolve(img, a["at"])
         if a.get("ring", True):
-            ring(d, box, pad=int(14 * scale), width=max(3, int(7 * scale)))
+            ring(d, box, pad=int(9 * scale), width=max(3, int(5 * scale)))
         if "label" in a:
+            others = [b for b in find_buttons(img) if b != box]
             (cx0, cy0), tip, side = place_label(
-                d, box, a["label"], f_label, (W, H), a.get("side", "right"), scale)
+                d, box, a["label"], f_label, (W, H), a.get("side", "right"),
+                scale, obstacles=others)
             cw, ch, _ = measure(d, a["label"], f_label, int(18 * scale))
             # Aim from the card's nearest edge, so the arrow always starts on
             # the card rather than floating beside it.
@@ -210,15 +228,15 @@ def render(step):
                 "below": (cx0 + cw // 2, cy0),
                 "above": (cx0 + cw // 2, cy0 + ch),
             }
-            arrow(d, anchors[side], tip, width=max(4, int(9 * scale)))
-            callout(d, (cx0, cy0), a["label"], f_label, pad=int(18 * scale))
+            arrow(d, anchors[side], tip, width=max(3, int(6 * scale)))
+            callout(d, (cx0, cy0), a["label"], f_label, pad=int(12 * scale))
 
-    if "n" in step:
-        step_badge(d, step["n"], (int(70 * scale), int(70 * scale)), f_badge,
-                   r=int(52 * scale))
+    if step.get("n"):
+        step_badge(d, step["n"], (int(58 * scale), int(58 * scale)), f_badge,
+                   r=int(42 * scale))
 
     os.makedirs(OUT, exist_ok=True)
-    dst = os.path.join(OUT, "%02d-%s" % (step.get("n", 0), step["file"]))
+    dst = os.path.join(OUT, "%02d-%s" % (step.get("n") or 0, step["file"]))
     img.save(dst)
     return dst
 
