@@ -68,9 +68,34 @@ def find_buttons(img, min_w_frac=0.09, min_h=18):
     return out
 
 
+def find_row_action(img):
+    """The green action button on a Contributor Worlds row (Download/Open/Join).
+
+    These are not Minecraft's grey widgets - they are green text on a translucent
+    green panel - so find_buttons cannot see them. They are always the greenest
+    thing in the right-hand third of the row, which is enough to locate them
+    without knowing which word they contain or what size the shot happens to be.
+    """
+    a = np.asarray(img.convert("RGB")).astype(int)
+    H, W, _ = a.shape
+    r, g, b = a[:, :, 0], a[:, :, 1], a[:, :, 2]
+    greenish = (g > r + 12) & (g > b + 12) & (g > 60)
+    greenish[:, :int(W * 0.60)] = False        # right-hand side only
+    greenish = ndimage.binary_closing(greenish, np.ones((5, 25)))
+    lab, n = ndimage.label(greenish)
+    if n == 0:
+        raise SystemExit("no row action button found")
+    sizes = ndimage.sum(greenish, lab, range(1, n + 1))
+    sl = ndimage.find_objects(lab)[int(np.argmax(sizes))]
+    ys, xs = sl
+    return (xs.start, ys.start, xs.stop - xs.start, ys.stop - ys.start)
+
+
 def resolve(img, target):
     """A target spec -> pixel box. 'button:N' or (x, y, w, h) normalised."""
     W, H = img.size
+    if target == "row-action":
+        return find_row_action(img)
     if isinstance(target, str) and target.startswith("button:"):
         idx = int(target.split(":")[1])
         bs = find_buttons(img)
@@ -223,7 +248,10 @@ def render(step, shrink=1.0, accent=None):
         if a.get("ring", True):
             ring(d, box, pad=int(9 * scale), width=max(3, int(5 * scale)), accent=accent)
         if "label" in a:
-            others = [b for b in find_buttons(img) if b != box]
+            try:
+                others = [b for b in find_buttons(img) if b != box]
+            except Exception:
+                others = []
             (cx0, cy0), tip, side = place_label(
                 d, box, a["label"], f_label, (W, H), a.get("side", "right"),
                 scale, obstacles=others)
