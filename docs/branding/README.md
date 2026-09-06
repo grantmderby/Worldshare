@@ -25,8 +25,14 @@ reproducible and tweakable rather than a binary nobody can edit.
 ## Regenerating
 
 ```
-python make_icon.py
+python make_banner.py    # island composite: banner + 512 icon
+python make_icon.py      # abstract mark
 ```
+
+`make_banner.py`'s knobs are all constants at the top: `OUTLINE_PX` and
+`OUTLINE_INK` for the island's outline, `PIXEL_SIZE` for how coarse the ring's
+pixels are, `ARROW_GREEN`/`ARROW_BLUE`, and `TITLE`/`SUBTITLE`. Ring width and
+radius are set in `build()`, as fractions of the canvas and of the island.
 
 Writes all sizes beside the script. `CONTENT_SCALE` controls how much of the
 plate the artwork fills; it was raised from 0.60 to 0.72 because the first pass

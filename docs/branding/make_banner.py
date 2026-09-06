@@ -317,7 +317,7 @@ def build():
     # The ring is the tall part, not the island. It is centred on the island but
     # reaches well past it, so measuring the block by the island alone pushed the
     # ring into the frame at the top and across the wordmark at the bottom.
-    ring_w = max(8, int(W * 0.040))
+    ring_w = max(8, int(W * 0.034))
     ring_r = max(art.width, art.height) * 0.66
     ring_extent = ring_r + ring_w / 2.0 + OUTLINE_PX
     art_block_h = int(max(art.height, ring_extent * 2))
