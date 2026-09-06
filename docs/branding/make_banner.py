@@ -198,45 +198,50 @@ def text_width(boxes, text, scale):
 
 # -------------------------------------------------------------------- arrows
 
-def arc_arrow(layer, cx, cy, radius, a0_deg, a1_deg, width, colour, outline_w):
-    """One arc with an arrowhead at its far end, outlined to match the island.
+def _tri(xx, yy, p0, p1, p2):
+    """Vectorised point-in-triangle."""
+    def side(ax, ay, bx, by):
+        return (xx - bx) * (ay - by) - (ax - bx) * (yy - by)
+    d1 = side(*p0, *p1)
+    d2 = side(*p1, *p2)
+    d3 = side(*p2, *p0)
+    neg = (d1 < 0) | (d2 < 0) | (d3 < 0)
+    pos = (d1 > 0) | (d2 > 0) | (d3 > 0)
+    return ~(neg & pos)
 
-    Drawn as a run of overlapping discs rather than with ImageDraw.arc, which
-    has no control over its caps - and a chunky ring wants round ones. Two
-    passes: the outline first, slightly fatter, then the colour over it.
 
-    The head is built from the arc's own tangent. Its tip sits further along
-    the same circle and its base spans radially, so the triangle points where
-    the curve is actually going instead of at a guessed angle.
+def _arrow_mask(g, cx, cy, radius, a0_deg, a1_deg, width, head_scale=2.1):
+    """Boolean mask of one arc-with-arrowhead on a g x g grid.
+
+    Built by testing every cell against the shape rather than by stamping
+    overlapping discs along the path. Discs gave a stroke that bulged and
+    pinched by a pixel wherever they happened to land, which is exactly the
+    lumpiness that stops pixel art looking deliberate. A band between two radii
+    is the same width everywhere by construction.
     """
-    a0, a1 = math.radians(a0_deg), math.radians(a1_deg)
-    head_len = width * 2.0
-    head_half = width * 1.35
+    yy, xx = np.mgrid[0:g, 0:g].astype(float)
+    yy += 0.5
+    xx += 0.5
+    dx, dy = xx - cx, yy - cy
+    dist = np.hypot(dx, dy)
+    ang = np.degrees(np.arctan2(dy, dx)) % 360.0
 
-    for pass_w, pass_col in ((width + outline_w, OUTLINE_INK), (width, colour)):
-        d = ImageDraw.Draw(layer)
-        # The shaft runs right up to the head's base rather than stopping short
-        # of it. The head is wider than the shaft and its tip sits beyond a1, so
-        # the last cap is swallowed by the triangle - shortening only opened a
-        # visible gap between the two.
-        a_end = a1
-        steps = max(24, int(abs(a_end - a0) * radius / 2))
-        for i in range(steps + 1):
-            t = a0 + (a_end - a0) * i / steps
-            x = cx + radius * math.cos(t)
-            y = cy + radius * math.sin(t)
-            r = pass_w / 2.0
-            d.ellipse([x - r, y - r, x + r, y + r], fill=(*pass_col, 255))
+    a0, a1 = a0_deg % 360.0, a1_deg % 360.0
+    within = (ang >= a0) & (ang <= a1) if a0 <= a1 else (ang >= a0) | (ang <= a1)
+    band = (np.abs(dist - radius) <= width / 2.0) & within
 
-        grow = (pass_w - width) / 2.0
-        tip_a = a1 + (head_len + grow) / radius
-        d.polygon([
-            (cx + radius * math.cos(tip_a), cy + radius * math.sin(tip_a)),
-            (cx + (radius + head_half + grow) * math.cos(a1),
-             cy + (radius + head_half + grow) * math.sin(a1)),
-            (cx + (radius - head_half - grow) * math.cos(a1),
-             cy + (radius - head_half - grow) * math.sin(a1)),
-        ], fill=(*pass_col, 255))
+    # The head, pointing along the tangent at the arc's far end.
+    t = math.radians(a1)
+    ux, uy = math.cos(t), math.sin(t)          # radial, outward
+    vx, vy = -math.sin(t), math.cos(t)         # tangential, direction of travel
+    hl = width * head_scale                    # tip beyond the shaft's end
+    hw = width * head_scale * 0.78             # half-span across the shaft
+    bx, by = cx + radius * ux, cy + radius * uy
+    head = _tri(xx, yy,
+                (bx + vx * hl, by + vy * hl),
+                (bx + ux * hw, by + uy * hw),
+                (bx - ux * hw, by - uy * hw))
+    return band | head
 
 
 def sync_ring(size, cx, cy, radius, width, pix=PIXEL_SIZE):
@@ -246,19 +251,24 @@ def sync_ring(size, cx, cy, radius, width, pix=PIXEL_SIZE):
     world going out and coming back, and two arrows pointing at each other
     would say the opposite.
 
-    Drawn at a fraction of the final size and blown back up with NEAREST, so
-    the curves land on a coarse grid and step the way Minecraft's own art does.
-    Smooth vector arcs beside a block texture looked like clip art dropped on
-    top of a screenshot.
+    Composed on a coarse grid and scaled up with NEAREST so the curves step the
+    way Minecraft's own art does, and outlined by dilating the shape - the same
+    treatment the island gets, so the two sit together instead of looking like
+    a drawing laid over a photograph.
     """
-    small = (max(1, size[0] // pix), max(1, size[1] // pix))
-    layer = Image.new("RGBA", small, (0, 0, 0, 0))
-    args = (cx / pix, cy / pix, radius / pix)
-    w = max(1.0, width / pix)
-    ow = max(1.0, OUTLINE_PX * 0.9 / pix)
-    arc_arrow(layer, *args, 200, 350, w, ARROW_GREEN, ow)
-    arc_arrow(layer, *args, 20, 170, w, ARROW_BLUE, ow)
-    return layer.resize(size, Image.NEAREST)
+    g = max(32, size[0] // pix)
+    sx = g / float(size[0])
+
+    green = _arrow_mask(g, cx * sx, cy * sx, radius * sx, 200, 344, width * sx)
+    blue = _arrow_mask(g, cx * sx, cy * sx, radius * sx, 20, 164, width * sx)
+    shape = green | blue
+    outline = ndimage.binary_dilation(shape, np.ones((3, 3))) & ~shape
+
+    rgba = np.zeros((g, g, 4), dtype=np.uint8)
+    rgba[outline] = (*OUTLINE_INK, 255)
+    rgba[green] = (*ARROW_GREEN, 255)
+    rgba[blue] = (*ARROW_BLUE, 255)
+    return Image.fromarray(rgba).resize(size, Image.NEAREST)
 
 
 # ------------------------------------------------------------------ compose
@@ -307,8 +317,8 @@ def build():
     # The ring is the tall part, not the island. It is centred on the island but
     # reaches well past it, so measuring the block by the island alone pushed the
     # ring into the frame at the top and across the wordmark at the bottom.
-    ring_w = max(8, int(W * 0.028))
-    ring_r = max(art.width, art.height) * 0.58
+    ring_w = max(8, int(W * 0.040))
+    ring_r = max(art.width, art.height) * 0.66
     ring_extent = ring_r + ring_w / 2.0 + OUTLINE_PX
     art_block_h = int(max(art.height, ring_extent * 2))
 
