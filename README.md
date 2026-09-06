@@ -136,21 +136,38 @@ Worlds set up with WorldShare should be loaded from the singleplayer tab only fo
 
 | Command | What it does |
 |---|---|
-| `/worldshare setup` | Set the current world up for sharing (creates its Drive files) |
-| `/worldshare clearDriveLink` | Unlink the current world (releases the lock and unsubscribes) |
-| `/worldshare lock` | Acquire the session lock (host control) |
-| `/worldshare unlock` | Release the session lock |
-| `/worldshare lockinfo` | Show current lock state |
-| `/worldshare push` | Manually push to Drive |
+| `/worldshare setup` | Set the current world up for sharing (creates its Drive folder and files) |
+| `/worldshare invite <email>` | Share the world's folder with someone and print the link |
+| `/worldshare invite` | Just print the link, if you'd rather share the folder yourself |
+| `/worldshare host` | Open the world for live co-op through e4mc |
 | `/worldshare status` | Show what would be synced |
-| `/worldshare invite` | Open the world to LAN via e4mc (auto-runs when you hold the lock) |
-| `/worldshare modpack generate` | Regenerate `modpack.json` (also auto-runs on every upload) |
-| `/worldshare test` | Verify Drive auth is working |
-| `/worldshare signout` | Sign out of Google |
+| `/worldshare doctor` | Check the world's Drive setup; `doctor full` adds bucket sizes and a local diff |
+| `/worldshare exclude <path>` | Stop syncing a file or folder; `exclude` alone lists what's excluded |
+| `/worldshare include <path>` | Undo an exclude |
+| `/worldshare repair confirm` | Republish the whole world from this copy, when Drive is inconsistent |
+| `/worldshare clearDriveLink` | Unlink the current world (releases the lock and unsubscribes) |
+| `/worldshare signin` / `signout` | Sign in to or out of Google |
 
 > **Why there's no `pull` command.** Pulling rewrites world files underneath
 > whatever has them open, so it's only safe before a world loads. Open the world
 > from the **Contributor Worlds** tab instead — that pulls first, then opens.
+
+> **Why there's no `push` command either.** Uploading happens on its own when you
+> quit, and the session lock is taken and released for you when you open and
+> close a world. A push button invites exactly the wrong habit — pushing every
+> few minutes out of nervousness, which uploads the same buckets over and over
+> for nothing. If an upload fails, WorldShare says so and keeps your changes
+> locally until the next one.
+
+### Developer commands
+
+Hidden unless you set `devCommands = true` in `config/worldshare-client.toml`.
+They exist for testing WorldShare itself and can put a world into states the
+normal flow protects you from — `lock` and `unlock` in particular will happily
+strand the other player.
+
+`test`, `test share <email>`, `lock`, `unlock`, `lockinfo`, `heartbeat`, `push`,
+`modpack generate`, `setup existing`.
 
 ## How it works (briefly)
 
