@@ -23,6 +23,9 @@ CONTENT_SCALE = 0.72   # filled out: 0.60 left too much dead plate at 32px
 # centred on the plate; nothing needed nudging.
 CONTENT_DY = 0.0
 
+# Half the block's own vertical span, negated: -(-92 + 122)/2.
+BLOCK_DY = -15.0
+
 PLATE = (0x1E, 0x24, 0x30)
 SEAM = (0x14, 0x16, 0x1A)
 WHITE = (0xEA, 0xF2, 0xFF)
@@ -47,6 +50,17 @@ def render(size):
 
     def poly(pts):
         return [P(x, y) for x, y in pts]
+
+    def bpoly(pts):
+        """Cube points, lifted so the cube's own centre lands on the ring's.
+
+        The block spans y -92..+122, which puts its middle at +15 rather than
+        at 0 - so drawn as authored it hangs low inside a ring that is centred
+        on the origin, and sits visibly nearer the bottom arrow than the top.
+        The old CONTENT_DY of -10 was compensating for this, but by shifting
+        the ring as well, which is how the top arrowhead ended up clipped.
+        """
+        return [P(x, y + BLOCK_DY) for x, y in pts]
 
     img = Image.new("RGBA", (w, w), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
@@ -76,17 +90,19 @@ def render(size):
     d.polygon(poly([(-122.1, 97.6), (-100.4, 143.4), (-71.7, 102.4)]), fill=WHITE)
 
     # --- split block ---
-    d.polygon(poly([(0, -92), (-106, -31), (0, 30)]), fill=GREEN_TOP)
-    d.polygon(poly([(0, -92), (106, -31), (0, 30)]), fill=BLUE_TOP)
-    d.polygon(poly([(-106, -31), (0, 30), (0, 122), (-106, 61)]), fill=BROWN_SIDE)
-    d.polygon(poly([(106, -31), (0, 30), (0, 122), (106, 61)]), fill=BLUE_SIDE)
-    d.polygon(poly([(-106, -31), (0, 30), (0, 50), (-106, -11)]), fill=GREEN_LIP)
-    d.polygon(poly([(106, -31), (0, 30), (0, 50), (106, -11)]), fill=BLUE_LIP)
+    d.polygon(bpoly([(0, -92), (-106, -31), (0, 30)]), fill=GREEN_TOP)
+    d.polygon(bpoly([(0, -92), (106, -31), (0, 30)]), fill=BLUE_TOP)
+    d.polygon(bpoly([(-106, -31), (0, 30), (0, 122), (-106, 61)]), fill=BROWN_SIDE)
+    d.polygon(bpoly([(106, -31), (0, 30), (0, 122), (106, 61)]), fill=BLUE_SIDE)
+    d.polygon(bpoly([(-106, -31), (0, 30), (0, 50), (-106, -11)]), fill=GREEN_LIP)
+    d.polygon(bpoly([(106, -31), (0, 30), (0, 50), (106, -11)]), fill=BLUE_LIP)
 
     # --- seam, so the split reads as deliberate ---
     seam_layer = Image.new("RGBA", (w, w), (0, 0, 0, 0))
     ImageDraw.Draw(seam_layer).line(
-        [P(0, -92), P(0, 122)], fill=SEAM + (140,),
+        # Same lift as the faces - it is the block's front edge, and leaving it
+        # on the unshifted grid left a dark line hanging past the cube.
+        [P(0, -92 + BLOCK_DY), P(0, 122 + BLOCK_DY)], fill=SEAM + (140,),
         width=max(1, int(round(7 * CONTENT_SCALE * k))))
     img = Image.alpha_composite(img, seam_layer)
 
