@@ -28,22 +28,36 @@ HOST = [
          marks=[dict(at="button:2", label="Everything starts here", side="left")]),
 
     dict(n=2, file="WorldShareInSinglePlayer.png", account="A",
-         title="Open the world you want to share", marks=[]),
+         title="Open the world you want to share",
+         marks=[dict(at="button:0", label="Pick your world, then Play",
+                     side="above")]),
 
     dict(n=3, file="RunningWorldshareSetup.png", crop=(0.0, 0.84, 0.80, 0.16), account="A",
          title="Run /worldshare setup", marks=[]),
 
     dict(n=4, file="RanWorldShareSetup.png", crop="chat", account="A",
-         title="Click the link to sign in to Google", marks=[]),
+         title="Click the link to sign in to Google", label_size=60,
+         # Fractions of the CROPPED chat panel, not the whole window.
+         marks=[dict(at=(0.008, 0.637, 0.395, 0.115), label="Click this",
+                     side="right")]),
 
-    dict(n=5, file="WorldShare1stAuthorizationForSetup.png", account="drive",
-         title="Choose your Google account", marks=[]),
+    # Still in Minecraft, not the browser - this is the game's own "open a
+    # link?" guard, so it carries the player's badge, not Drive's.
+    dict(n=5, file="WorldShare1stAuthorizationForSetup.png", account="A",
+         title="Minecraft asks before opening the link",
+         marks=[dict(at="button:0", label="Click Yes", side="below")]),
 
     dict(n=6, file="Worldshare2ndAuthorizationForSetup.png", account="drive",
-         title="Google asks what WorldShare may access", marks=[]),
+         title="Choose your Google account",
+         marks=[dict(at=(0.522, 0.528, 0.440, 0.108),
+                     label="Pick your account\n(this one's mine)", side="left")]),
 
     dict(n=7, file="Worldshare3rdAuthorizationForSetup.png", account="drive",
-         title="Approve it", marks=[]),
+         title="Approve it",
+         # The card overruns "share data safely" - which is a link in a
+         # screenshot, so nobody was going to click it anyway.
+         marks=[dict(at=(0.750, 0.864, 0.215, 0.070), label="Click here",
+                     side="above")]),
 
     dict(n=8, file="WorldShareSetupAuthorized.png", account="drive",
          title="Done - go back to Minecraft", marks=[]),
@@ -124,12 +138,16 @@ GUEST = [
 
     dict(n=9, file="WorldshareAuthStep4ForJoiningWorld.png", account="drive",
          title="Select every file, then Insert",
+         # Both cards point up into the empty half of the picker. Sending the
+         # Insert one left jammed it into the bottom-right corner, where it
+         # collided with its own ring and the shot edge.
          marks=[
-             dict(at=(0.020, 0.950, 0.095, 0.040),
-                  label="Ctrl+A selects them all - every file is needed",
+             dict(at=(0.014, 0.959, 0.074, 0.028),
+                  label="Ctrl+A selects them all" + chr(10)
+                        + "every file is needed",
                   side="above"),
-             dict(at=(0.941, 0.953, 0.052, 0.037), label="Then Insert",
-                  side="left"),
+             dict(at=(0.944, 0.954, 0.045, 0.034), label="Then Insert",
+                  side="above"),
          ]),
 
     # Two rows, one slide: what you see depends on whether e4mc is installed.

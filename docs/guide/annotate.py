@@ -211,7 +211,9 @@ def arrow(d, start, end, width=9, accent=None):
 
 
 def measure(d, text, font, pad):
-    b = d.textbbox((0, 0), text, font=font)
+    # Pillow routes a string containing a newline through its multiline path on
+    # its own, so a two-line label needs nothing here but the matching align.
+    b = d.textbbox((0, 0), text, font=font, align="center")
     return (b[2] - b[0] + pad * 2, b[3] - b[1] + pad * 2, b)
 
 
@@ -222,7 +224,8 @@ def callout(d, xy, text, font, pad=18):
     w, h, b = measure(d, text, font, pad)
     d.rounded_rectangle([x, y, x + w, y + h],
                         radius=pad, fill=PAPER, outline=INK, width=5)
-    d.text((x + pad - b[0], y + pad - b[1]), text, font=font, fill=INK)
+    d.text((x + pad - b[0], y + pad - b[1]), text, font=font, fill=INK,
+           align="center")
 
 
 def place_label(d, box, text, font, canvas, want, scale, obstacles=()):
@@ -323,7 +326,10 @@ def render(step, shrink=1.0, accent=None):
     scale = 1.0 / max(0.05, shrink)                      # specs are written against ~1900px wide
     d = ImageDraw.Draw(img)
 
-    f_label = font_at(max(20, int(30 * scale)))
+    # 42 reads well at the sizes most shots letterbox to. A step can ask for
+    # more when its screenshot is wide and short, so the card lands next to
+    # chat text that is itself huge on the finished slide.
+    f_label = font_at(max(28, int(step.get("label_size", 42) * scale)))
     f_badge = font_at(max(24, int(40 * scale)))
 
     for a in step.get("marks", []):
