@@ -142,12 +142,15 @@ GUEST = [
          # Insert one left jammed it into the bottom-right corner, where it
          # collided with its own ring and the shot edge.
          marks=[
-             dict(at=(0.014, 0.959, 0.074, 0.028),
+             # A note, not a target - "18 selected" is a readout, and ringing
+             # it implied it was something to click. The `at` still positions
+             # the card; it just no longer draws a ring or an arrow.
+             dict(at=(0.014, 0.959, 0.074, 0.028), ring=False, arrow=False,
                   label="Ctrl+A selects them all" + chr(10)
                         + "every file is needed",
                   side="above"),
              dict(at=(0.944, 0.954, 0.045, 0.034), label="Then Insert",
-                  side="above"),
+                  side="above", gap=110),
          ]),
 
     # Two rows, one slide: what you see depends on whether e4mc is installed.

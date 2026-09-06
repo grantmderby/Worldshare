@@ -228,7 +228,7 @@ def callout(d, xy, text, font, pad=18):
            align="center")
 
 
-def place_label(d, box, text, font, canvas, want, scale, obstacles=()):
+def place_label(d, box, text, font, canvas, want, scale, obstacles=(), gap_spec=60):
     """Put the card somewhere it actually fits, and return where to aim from.
 
     The first version honoured the requested side and let the card fall off the
@@ -239,7 +239,10 @@ def place_label(d, box, text, font, canvas, want, scale, obstacles=()):
     """
     W, H = canvas
     bx, by, bw, bh = box
-    gap = int(60 * scale)
+    # A step can widen this. The default clears most targets, but a ring drawn
+    # around a short control eats into it, and on the picker's Insert button
+    # that left the card sitting on the thing it was pointing at.
+    gap = int(gap_spec * scale)
     cw, ch, _ = measure(d, text, font, int(18 * scale))
     m = int(24 * scale)
 
@@ -266,8 +269,18 @@ def place_label(d, box, text, font, canvas, want, scale, obstacles=()):
         else:
             x, y = bx + bw // 2 - cw // 2, by - gap - ch
             tip = (bx + bw // 2, by - int(14 * scale))
-        if not (m <= x and x + cw <= W - m and m <= y and y + ch <= H - m):
-            continue
+        # Slide along the edge we are not pointing from, rather than giving up.
+        # Centring a wide card over a button near the right edge overflowed, so
+        # every side failed and the label fell through to the clamp below -
+        # which put it on top of the button it was labelling.
+        if side in ("above", "below"):
+            x = min(max(m, x), W - m - cw)
+            if not (m <= y and y + ch <= H - m):
+                continue
+        else:
+            y = min(max(m, y), H - m - ch)
+            if not (m <= x and x + cw <= W - m):
+                continue
         # Don't cover a different button. A card sitting on Refresh while
         # pointing at Add World tells the reader two things at once.
         card = (x, y, x + cw, y + ch)
@@ -343,7 +356,7 @@ def render(step, shrink=1.0, accent=None):
                 others = []
             (cx0, cy0), tip, side = place_label(
                 d, box, a["label"], f_label, (W, H), a.get("side", "right"),
-                scale, obstacles=others)
+                scale, obstacles=others, gap_spec=a.get("gap", 60))
             cw, ch, _ = measure(d, a["label"], f_label, int(18 * scale))
             # Aim from the card's nearest edge, so the arrow always starts on
             # the card rather than floating beside it.
@@ -353,7 +366,9 @@ def render(step, shrink=1.0, accent=None):
                 "below": (cx0 + cw // 2, cy0),
                 "above": (cx0 + cw // 2, cy0 + ch),
             }
-            arrow(d, anchors[side], tip, width=max(3, int(6 * scale)), accent=accent)
+            if a.get("arrow", True):
+                arrow(d, anchors[side], tip, width=max(3, int(6 * scale)),
+                      accent=accent)
             callout(d, (cx0, cy0), a["label"], f_label, pad=int(12 * scale))
 
     if step.get("n"):
