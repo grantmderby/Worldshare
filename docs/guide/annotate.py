@@ -31,10 +31,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(os.environ.get("USERPROFILE", ""), "Downloads")
 OUT = os.path.join(HERE, "out")
 
-# Saturated amber. Minecraft's palette is greens, browns and greys, and its own
-# UI text is white - so white annotations vanish into the game and red fights the
-# nether tones. Amber sits outside both.
-ACCENT = (255, 176, 0)
+# WorldShare's own two colours, straight from make_icon.py. The annotation
+# accent is not fixed: it follows whichever account the slide was taken on, so a
+# ring on the host's screen is green and one on the joiner's is blue. Colour then
+# carries the same information as the badge in the header, which means a viewer
+# who glances at the middle of the frame still knows whose game it is.
+#
+# Both stay legible on Minecraft's greens and browns because every mark is drawn
+# twice - a heavy dark pass underneath, the colour on top - so the shape reads
+# even where the hue does not contrast.
+GREEN = (0x6C, 0xC2, 0x4A)
+BLUE = (0x4E, 0xA8, 0xE0)
+ACCENT = BLUE
 INK = (20, 20, 24)
 PAPER = (250, 250, 252)
 
@@ -77,17 +85,17 @@ def resolve(img, target):
 
 # ---------------------------------------------------------------- drawing
 
-def ring(d, box, pad=14, width=7):
+def ring(d, box, pad=14, width=7, accent=None):
     """A rounded ring around something, drawn twice so it reads on any background."""
     x, y, w, h = box
     r = [x - pad, y - pad, x + w + pad, y + h + pad]
     d.rounded_rectangle(r, radius=int(min(w, h) * 0.35) + pad,
                         outline=INK, width=width + 6)
     d.rounded_rectangle(r, radius=int(min(w, h) * 0.35) + pad,
-                        outline=ACCENT, width=width)
+                        outline=accent or ACCENT, width=width)
 
 
-def arrow(d, start, end, width=9):
+def arrow(d, start, end, width=9, accent=None):
     """Straight arrow, dark-edged so it survives a busy screenshot."""
     import math
     (x0, y0), (x1, y1) = start, end
@@ -95,7 +103,7 @@ def arrow(d, start, end, width=9):
     head = width * 3.4
     bx, by = x1 - head * math.cos(ang), y1 - head * math.sin(ang)
     px, py = -math.sin(ang), math.cos(ang)
-    for col, extra in ((INK, 6), (ACCENT, 0)):
+    for col, extra in ((INK, 6), (accent or ACCENT, 0)):
         d.line([(x0, y0), (bx, by)], fill=col, width=width + extra)
         d.polygon([
             (x1 + extra * math.cos(ang), y1 + extra * math.sin(ang)),
@@ -176,9 +184,9 @@ def place_label(d, box, text, font, canvas, want, scale, obstacles=()):
     return (x, y), (bx + bw // 2, by + bh + int(14 * scale)), "below"
 
 
-def step_badge(d, n, xy, font, r=52):
+def step_badge(d, n, xy, font, r=52, accent=None):
     x, y = xy
-    d.ellipse([x - r, y - r, x + r, y + r], fill=ACCENT, outline=INK, width=7)
+    d.ellipse([x - r, y - r, x + r, y + r], fill=accent or ACCENT, outline=INK, width=7)
     t = str(n)
     b = d.textbbox((0, 0), t, font=font)
     d.text((x - (b[2] - b[0]) / 2 - b[0], y - (b[3] - b[1]) / 2 - b[1]),
@@ -195,7 +203,7 @@ def font_at(size):
 
 # ------------------------------------------------------------------- render
 
-def render(step, shrink=1.0):
+def render(step, shrink=1.0, accent=None):
     src = os.path.join(SRC, step["file"])
     img = Image.open(src).convert("RGB")
     W, H = img.size
@@ -213,7 +221,7 @@ def render(step, shrink=1.0):
     for a in step.get("marks", []):
         box = resolve(img, a["at"])
         if a.get("ring", True):
-            ring(d, box, pad=int(9 * scale), width=max(3, int(5 * scale)))
+            ring(d, box, pad=int(9 * scale), width=max(3, int(5 * scale)), accent=accent)
         if "label" in a:
             others = [b for b in find_buttons(img) if b != box]
             (cx0, cy0), tip, side = place_label(
@@ -228,12 +236,12 @@ def render(step, shrink=1.0):
                 "below": (cx0 + cw // 2, cy0),
                 "above": (cx0 + cw // 2, cy0 + ch),
             }
-            arrow(d, anchors[side], tip, width=max(3, int(6 * scale)))
+            arrow(d, anchors[side], tip, width=max(3, int(6 * scale)), accent=accent)
             callout(d, (cx0, cy0), a["label"], f_label, pad=int(12 * scale))
 
     if step.get("n"):
         step_badge(d, step["n"], (int(58 * scale), int(58 * scale)), f_badge,
-                   r=int(42 * scale))
+                   r=int(42 * scale), accent=accent)
 
     os.makedirs(OUT, exist_ok=True)
     dst = os.path.join(OUT, "%02d-%s" % (step.get("n") or 0, step["file"]))

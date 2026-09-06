@@ -66,3 +66,4 @@ __pycache__/
 
 # Annotated guide output - regenerate with docs/guide/annotate.py
 docs/guide/out/
+docs/guide/video/

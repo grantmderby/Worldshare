@@ -25,22 +25,26 @@ import os
 from PIL import Image, ImageDraw
 
 import annotate
-from annotate import ACCENT, INK, font_at
+from annotate import GREEN, BLUE, INK, font_at
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "slides")
 
 W, H = 1920, 1080
-BG = (24, 28, 36)
+# The icon's own plate colour, so a slide and the project icon look related.
+BG = (0x1E, 0x24, 0x30)
 HEADER_H = 96
 MARGIN = 28
 
 # Green host, blue joiner - make_icon.py's arrow colours, so the badge and the
 # logo are saying the same thing.
 ACCOUNTS = {
-    "A": ("Account A  -  the host", (0x6C, 0xC2, 0x4A)),
-    "B": ("Account B  -  joining", (0x4E, 0xA8, 0xE0)),
-    "drive": ("Google Drive  -  in a browser", (0xE0, 0xA8, 0x4E)),
+    "A": ("Account A  -  the host", GREEN, GREEN),
+    "B": ("Account B  -  joining", BLUE, BLUE),
+    # Not an account, so not one of the two colours - a pale pill instead, which
+    # says "this one isn't Minecraft" without inventing a third brand colour.
+    # Its annotations stay blue, which reads well on a white browser page.
+    "drive": ("Google Drive  -  in a browser", (0xE4, 0xEA, 0xF2), BLUE),
 }
 
 
@@ -67,7 +71,9 @@ def build(step, deck, index):
         sw0, sh0 = probe.size
     avail_w0, avail_h0 = W - MARGIN * 2, H - HEADER_H - MARGIN * 2
     shrink = min(avail_w0 / sw0, avail_h0 / sh0)
-    shot = Image.open(annotate.render(dict(step, n=None), shrink)).convert("RGB")
+    label, pill_col, accent = ACCOUNTS.get(step.get("account", "A"), ACCOUNTS["A"])
+    shot = Image.open(
+        annotate.render(dict(step, n=None), shrink, accent=accent)).convert("RGB")
 
     canvas = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(canvas)
@@ -76,17 +82,21 @@ def build(step, deck, index):
     f_badge = font_at(30)
 
     # Header strip
-    d.rectangle([0, 0, W, HEADER_H], fill=(15, 18, 24))
-    d.line([(0, HEADER_H), (W, HEADER_H)], fill=ACCENT, width=4)
+    d.rectangle([0, 0, W, HEADER_H], fill=(0x15, 0x1A, 0x24))
+    # A green-to-blue rule under the header: both colours, in the order the
+    # walkthrough uses them - the host sets up, then the guest joins.
+    for x in range(W):
+        t = x / float(W - 1)
+        d.line([(x, HEADER_H), (x, HEADER_H + 4)],
+               fill=tuple(int(GREEN[i] + (BLUE[i] - GREEN[i]) * t) for i in range(3)))
 
     title = step.get("title", "")
-    d.text((MARGIN + 8, HEADER_H // 2 - 24), "%d." % step["n"], font=f_title, fill=ACCENT)
+    d.text((MARGIN + 8, HEADER_H // 2 - 24), "%d." % step["n"], font=f_title, fill=accent)
     num_w = d.textbbox((0, 0), "%d." % step["n"], font=f_title)[2]
     d.text((MARGIN + 24 + num_w, HEADER_H // 2 - 24), title, font=f_title,
            fill=(240, 243, 248))
 
-    label, colour = ACCOUNTS.get(step.get("account", "A"), ACCOUNTS["A"])
-    pill(d, (W - MARGIN, 24), label, f_badge, colour)
+    pill(d, (W - MARGIN, 24), label, f_badge, pill_col)
 
     # The shot, as large as fits under the header
     avail_w, avail_h = W - MARGIN * 2, H - HEADER_H - MARGIN * 2
@@ -94,7 +104,7 @@ def build(step, deck, index):
     sw, sh = int(shot.width * k), int(shot.height * k)
     shot = shot.resize((sw, sh), Image.LANCZOS)
     ox, oy = (W - sw) // 2, HEADER_H + (H - HEADER_H - sh) // 2
-    d.rectangle([ox - 3, oy - 3, ox + sw + 2, oy + sh + 2], outline=(70, 78, 92), width=3)
+    d.rectangle([ox - 3, oy - 3, ox + sw + 2, oy + sh + 2], outline=(0x3A, 0x44, 0x56), width=3)
     canvas.paste(shot, (ox, oy))
 
     os.makedirs(OUT, exist_ok=True)
