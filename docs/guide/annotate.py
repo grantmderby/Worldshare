@@ -91,6 +91,79 @@ def find_row_action(img):
     return (xs.start, ys.start, xs.stop - xs.start, ys.stop - ys.start)
 
 
+def find_row_band(img, pad_frac=0.55):
+    """Vertical extent of a Contributor Worlds row, for cropping to it.
+
+    The row screenshots were taken at whatever height the window happened to be,
+    so one carries 300px of empty world under the row and another almost none.
+    Stacked on a slide they look like a mistake. Every row has the same landmark:
+    a small red remove button at its left edge, which is the only strongly red
+    thing on screen - so find that, and take the band around it.
+    """
+    a = np.asarray(img.convert("RGB")).astype(int)
+    H, W, _ = a.shape
+    r, g, b = a[:, :, 0], a[:, :, 1], a[:, :, 2]
+    reddish = (r > g + 30) & (r > b + 30) & (r > 70)
+    reddish[:, int(W * 0.25):] = False          # left edge only
+    reddish = ndimage.binary_closing(reddish, np.ones((3, 3)))
+    lab, n = ndimage.label(reddish)
+    if n == 0:
+        return None
+    sizes = ndimage.sum(reddish, lab, range(1, n + 1))
+    ys, xs = ndimage.find_objects(lab)[int(np.argmax(sizes))]
+    h = ys.stop - ys.start
+    pad = int(h * pad_frac)
+    return (max(0, ys.start - pad), min(H, ys.stop + pad))
+
+
+def crop_to_chat(img, pad=0.04):
+    """Crop to Minecraft's chat / command panel, if one can be found confidently.
+
+    The panel is a flat, dark, low-saturation overlay, which is distinctive
+    enough to find - but not always: a progress bar sits on the world with no
+    panel behind it, and a shot that is already mostly chat has nothing to
+    separate. So the result is sanity-checked, and anything implausible is
+    treated as "no crop" rather than trusted. Slides that need a crop the
+    detector cannot find get an explicit rectangle in spec.py.
+    """
+    a = np.asarray(img.convert("RGB")).astype(int)
+    H, W, _ = a.shape
+    v = a.mean(axis=2)
+    sat = a.max(axis=2) - a.min(axis=2)
+    dark = (v < 90) & (sat < 40)
+    dark = ndimage.binary_closing(dark, np.ones((3, 41)))
+    lab, n = ndimage.label(dark)
+    best = None
+    for i, sl in enumerate(ndimage.find_objects(lab), 1):
+        ys, xs = sl
+        w, h = xs.stop - xs.start, ys.stop - ys.start
+        if w < W * 0.30 or h < 12 or (lab[sl] == i).mean() < 0.55:
+            continue
+        # Chat hugs the left edge; the hotbar is centred. Without this the
+        # hotbar wins on several shots, being just as dark and just as wide,
+        # and the slide ends up showing an inventory bar instead of a command.
+        if xs.start > W * 0.15:
+            continue
+        if w * h > W * H * 0.80:        # it found the whole screenshot
+            continue
+        if best is None or w * h > best[0]:
+            best = (w * h, xs.start, ys.start, w, h)
+    if best is None:
+        return img
+    _, x, y, w, h = best
+    px, py = int(W * pad), int(H * pad)
+    return img.crop((max(0, x - px), max(0, y - py),
+                     min(W, x + w + px), min(H, y + h + py)))
+
+
+def crop_to_row(img):
+    band = find_row_band(img)
+    if band is None:
+        return img
+    y0, y1 = band
+    return img.crop((0, y0, img.width, y1))
+
+
 def resolve(img, target):
     """A target spec -> pixel box. 'button:N' or (x, y, w, h) normalised."""
     W, H = img.size
@@ -231,6 +304,16 @@ def font_at(size):
 def render(step, shrink=1.0, accent=None):
     src = os.path.join(SRC, step["file"])
     img = Image.open(src).convert("RGB")
+    c = step.get("crop")
+    if c == "row":
+        img = crop_to_row(img)
+    elif c == "chat":
+        img = crop_to_chat(img)
+    elif isinstance(c, (tuple, list)):
+        W0, H0 = img.size
+        x, y, w, h = c
+        img = img.crop((int(x * W0), int(y * H0),
+                        int((x + w) * W0), int((y + h) * H0)))
     W, H = img.size
     # Annotations are sized in the pixels they will finally occupy, not the
     # pixels of the source. The screenshots run from 1432 to 3361 wide and are

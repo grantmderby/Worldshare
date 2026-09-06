@@ -67,3 +67,6 @@ __pycache__/
 # Annotated guide output - regenerate with docs/guide/annotate.py
 docs/guide/out/
 docs/guide/video/
+
+# Contact sheets for reviewing every slide at once - regenerable
+docs/guide/sheet-*.png

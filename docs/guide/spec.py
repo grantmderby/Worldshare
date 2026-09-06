@@ -30,10 +30,10 @@ HOST = [
     dict(n=2, file="WorldShareInSinglePlayer.png", account="A",
          title="Open the world you want to share", marks=[]),
 
-    dict(n=3, file="RunningWorldshareSetup.png", account="A",
+    dict(n=3, file="RunningWorldshareSetup.png", crop=(0.0, 0.84, 0.80, 0.16), account="A",
          title="Run /worldshare setup", marks=[]),
 
-    dict(n=4, file="RanWorldShareSetup.png", account="A",
+    dict(n=4, file="RanWorldShareSetup.png", crop="chat", account="A",
          title="Click the link to sign in to Google", marks=[]),
 
     dict(n=5, file="WorldShare1stAuthorizationForSetup.png", account="drive",
@@ -48,22 +48,22 @@ HOST = [
     dict(n=8, file="WorldShareSetupAuthorized.png", account="drive",
          title="Done - go back to Minecraft", marks=[]),
 
-    dict(n=9, file="WorldShareSetupProgressBarInGame.png", account="A",
+    dict(n=9, file="WorldShareSetupProgressBarInGame.png", crop=(0.12, 0.43, 0.76, 0.32), account="A",
          title="WorldShare builds the world's files - about half a minute",
          marks=[]),
 
     dict(n=10, file="WorldshareSetupSuccessfulChatMessage.png", account="A",
          title="Setup is finished", marks=[]),
 
-    dict(n=11, file="DriveBeforeRunningWorldshareSetup.png", account="drive",
+    dict(n=11, file="DriveBeforeRunningWorldshareSetup.png", crop=(0.0, 0.0, 0.56, 0.52), account="drive",
          title="Your Drive before", marks=[]),
 
-    dict(n=12, file="DriveAfterRunningWorldshareSetup.png", account="drive",
+    dict(n=12, file="DriveAfterRunningWorldshareSetup.png", crop=(0.0, 0.0, 0.56, 0.52), account="drive",
          title="And after - WorldShare made its own folder", marks=[]),
 
     dict(n=13, file="WorldShareSaveAndUploadMenu.png", account="A",
          title="Quitting uploads the world",
-         marks=[dict(at="button:7", label="This replaces Save and Quit", side="right")]),
+         marks=[dict(at="button:8", label="This replaces Save and Quit", side="below")]),
 
     dict(n=14, file="UploadProgressBar.png", account="A",
          title="Your world uploads to Drive", marks=[]),
@@ -71,10 +71,10 @@ HOST = [
     dict(n=15, file="ContributorWorldsAfterSetup.png", account="A",
          title="The world is ready to share", marks=[]),
 
-    dict(n=16, file="RunningWorldshareHost.png", account="A",
+    dict(n=16, file="RunningWorldshareHost.png", crop=(0.0, 0.84, 0.80, 0.16), account="A",
          title="Optional: /worldshare host opens it for live co-op", marks=[]),
 
-    dict(n=17, file="WorldShareRanWorldshareHost.png", account="A",
+    dict(n=17, file="WorldShareRanWorldshareHost.png", crop="chat", account="A",
          title="Your friend can now join you directly", marks=[]),
 ]
 
@@ -82,14 +82,14 @@ HOST = [
 
 GUEST = [
     # The host's screen first - this is where the link the guest needs comes from.
-    dict(n=1, file="RunningWorldshareInvite.png", account="A",
+    dict(n=1, file="RunningWorldshareInvite.png", crop=(0.0, 0.84, 0.80, 0.16), account="A",
          title="The host runs /worldshare invite with your email", marks=[]),
 
-    dict(n=2, file="RanWorldshareInvite.png", account="A",
+    dict(n=2, file="RanWorldshareInvite.png", crop="chat", account="A",
          title="Google shares the folder, and prints the link to send you",
          marks=[]),
 
-    dict(n=3, file="RunningWorldshareInviteWithNoEmail.png", account="A",
+    dict(n=3, file="RunningWorldshareInviteWithNoEmail.png", crop=(0.0, 0.35, 0.93, 0.53), account="A",
          title="Or /worldshare invite alone, just for the link", marks=[]),
 
     # Handover.
@@ -100,9 +100,15 @@ GUEST = [
     dict(n=5, file="PutInLinkForSharedWorld.png", account="B",
          title="Paste the link, then sign in",
          marks=[
-             dict(at=(0.105, 0.428, 0.803, 0.083), label="Paste the link here",
+             # The URL box is not one of Minecraft's grey widgets, so
+             # find_buttons cannot see it - hence the explicit rect. button:0
+             # is "Sign in and pick world files"; button:1 is Cancel.
+             dict(at=(0.105, 0.424, 0.803, 0.088), label="Paste the link here",
                   side="above"),
-             dict(at="button:0", label="Then click this", side="below"),
+             # Ring only. There is no room for a card beside this button -
+             # left and right both overflow, and below covers Cancel - and the
+             # button already says what it does.
+             dict(at="button:0"),
          ]),
 
     dict(n=6, file="WorldShareAuthStep1ForJoiningWorld.png", account="drive",
@@ -127,7 +133,7 @@ GUEST = [
          ]),
 
     # Two rows, one slide: what you see depends on whether e4mc is installed.
-    dict(n=10, file="WorldshareDownloadAfterSubscribingToWorld.png", account="B",
+    dict(n=10, file="WorldshareDownloadAfterSubscribingToWorld.png", account="B", crop="row",
          title="The world appears - what you can do depends on e4mc",
          pair="WorldshareLiveExample.png",
          caption_a="Without e4mc, or nobody hosting: download it and play later",
@@ -138,14 +144,14 @@ GUEST = [
          marks=[dict(at="row-action")],
          pair_marks=[dict(at="row-action")]),
 
-    dict(n=11, file="WorldshareDownloadingProgressBar.png", account="B",
+    dict(n=11, file="WorldshareDownloadingProgressBar.png", crop="chat", account="B",
          title="Downloading - once only, then it stays", marks=[]),
 
-    dict(n=12, file="WorldshareWorldOpenExample.png", account="B",
+    dict(n=12, file="WorldshareWorldOpenExample.png", account="B", crop="row",
          title="Open it and play",
          marks=[dict(at="row-action", label="Click Open", side="left")]),
 
-    dict(n=13, file="WorldshareLockedExample.png", account="B",
+    dict(n=13, file="WorldshareLockedExample.png", account="B", crop="row",
          title="If they are playing, the world is locked until they finish",
          marks=[]),
 ]

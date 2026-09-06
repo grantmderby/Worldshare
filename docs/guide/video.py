@@ -4,7 +4,7 @@ Encode the slide decks into MP4s.
 Uses the ffmpeg that ships with imageio-ffmpeg, so there is nothing to install
 separately and nothing to find on PATH.
 
-Four seconds a slide by default, with a cross-fade between them. The fade is not
+Six seconds a slide by default, with a cross-fade between them. The fade is not
 decoration: cutting hard between two Minecraft screenshots that differ by one
 chat line reads as a glitch rather than a step, and a short dissolve makes the
 change legible.
@@ -31,7 +31,7 @@ def deck_files(deck):
     return sorted(glob.glob(os.path.join(SLIDES, "%s-*.png" % deck)))
 
 
-def build(deck, seconds=4.0):
+def build(deck, seconds=6.0):
     files = deck_files(deck)
     if not files:
         print("no slides for", deck)
@@ -74,6 +74,6 @@ def build(deck, seconds=4.0):
 
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else None
-    secs = float(sys.argv[2]) if len(sys.argv) > 2 else 4.0
+    secs = float(sys.argv[2]) if len(sys.argv) > 2 else 6.0
     for deck in ([which] if which else ["host", "guest", "states"]):
         build(deck, secs)

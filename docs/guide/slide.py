@@ -102,6 +102,14 @@ def build(step, deck, index):
 
     def probe(name):
         with Image.open(os.path.join(annotate.SRC, name)) as im:
+            c = step.get("crop")
+            rgb = im.convert("RGB")
+            if c == "row":
+                return annotate.crop_to_row(rgb).size
+            if c == "chat":
+                return annotate.crop_to_chat(rgb).size
+            if isinstance(c, (tuple, list)):
+                return (int(c[2] * rgb.width), int(c[3] * rgb.height))
             return im.size
 
     if step.get("pair"):
