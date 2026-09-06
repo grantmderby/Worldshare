@@ -210,8 +210,8 @@ def _tri(xx, yy, p0, p1, p2):
     return ~(neg & pos)
 
 
-def _arrow_mask(g, cx, cy, radius, a0_deg, a1_deg, width, head_scale=2.1):
-    """Boolean mask of one arc-with-arrowhead on a g x g grid.
+def _arrow_mask(gw, gh, cx, cy, radius, a0_deg, a1_deg, width, head_scale=2.1):
+    """Boolean mask of one arc-with-arrowhead on a gw x gh grid.
 
     Built by testing every cell against the shape rather than by stamping
     overlapping discs along the path. Discs gave a stroke that bulged and
@@ -219,7 +219,7 @@ def _arrow_mask(g, cx, cy, radius, a0_deg, a1_deg, width, head_scale=2.1):
     lumpiness that stops pixel art looking deliberate. A band between two radii
     is the same width everywhere by construction.
     """
-    yy, xx = np.mgrid[0:g, 0:g].astype(float)
+    yy, xx = np.mgrid[0:gh, 0:gw].astype(float)
     yy += 0.5
     xx += 0.5
     dx, dy = xx - cx, yy - cy
@@ -256,15 +256,21 @@ def sync_ring(size, cx, cy, radius, width, pix=PIXEL_SIZE):
     treatment the island gets, so the two sit together instead of looking like
     a drawing laid over a photograph.
     """
-    g = max(32, size[0] // pix)
-    sx = g / float(size[0])
+    # The grid has to carry the canvas's aspect. It used to be square, which
+    # was invisible while the banner was square and wrong the moment it was
+    # not: a 240x240 grid resized to 1920x1080 is scaled 8x across and 4.5x
+    # down, so the ring came out flattened and its centre climbed from y=540
+    # to y=304. One scale factor, two grid dimensions.
+    gw = max(32, size[0] // pix)
+    gh = max(32, size[1] // pix)
+    sx = gw / float(size[0])
 
-    green = _arrow_mask(g, cx * sx, cy * sx, radius * sx, 200, 344, width * sx)
-    blue = _arrow_mask(g, cx * sx, cy * sx, radius * sx, 20, 164, width * sx)
+    green = _arrow_mask(gw, gh, cx * sx, cy * sx, radius * sx, 200, 344, width * sx)
+    blue = _arrow_mask(gw, gh, cx * sx, cy * sx, radius * sx, 20, 164, width * sx)
     shape = green | blue
     outline = ndimage.binary_dilation(shape, np.ones((3, 3))) & ~shape
 
-    rgba = np.zeros((g, g, 4), dtype=np.uint8)
+    rgba = np.zeros((gh, gw, 4), dtype=np.uint8)
     rgba[outline] = (*OUTLINE_INK, 255)
     rgba[green] = (*ARROW_GREEN, 255)
     rgba[blue] = (*ARROW_BLUE, 255)
