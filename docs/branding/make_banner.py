@@ -28,6 +28,7 @@ fixed 8x8 grid but the font is not monospaced.
 
 Writes worldshare-banner.png and worldshare-island-512.png beside this script.
 """
+import math
 import os
 import zipfile
 
@@ -61,6 +62,10 @@ OUTLINE_INK = (34, 38, 50)
 
 BORDER_PX = 10           # frame around the whole canvas
 INK = (17, 17, 20)
+
+# The sync ring, in make_icon.py's colours so the two marks agree.
+ARROW_GREEN = (0x6C, 0xC2, 0x4A)
+ARROW_BLUE = (0x4E, 0xA8, 0xE0)
 
 SKY_TOP = (0xBE, 0xC6, 0xDD)
 SKY_BOTTOM = (0x9E, 0xB3, 0xCE)
@@ -180,6 +185,62 @@ def text_width(boxes, text, scale):
     return sum(boxes.get(c, boxes["?"])[1] for c in text) * scale
 
 
+# -------------------------------------------------------------------- arrows
+
+def arc_arrow(layer, cx, cy, radius, a0_deg, a1_deg, width, colour):
+    """One arc with an arrowhead at its far end, outlined to match the island.
+
+    Drawn as a run of overlapping discs rather than with ImageDraw.arc, which
+    has no control over its caps - and a chunky ring wants round ones. Two
+    passes: the outline first, slightly fatter, then the colour over it.
+
+    The head is built from the arc's own tangent. Its tip sits further along
+    the same circle and its base spans radially, so the triangle points where
+    the curve is actually going instead of at a guessed angle.
+    """
+    a0, a1 = math.radians(a0_deg), math.radians(a1_deg)
+    head_len = width * 2.0
+    head_half = width * 1.35
+
+    for pass_w, pass_col in ((width + OUTLINE_PX * 0.9, OUTLINE_INK), (width, colour)):
+        d = ImageDraw.Draw(layer)
+        # The shaft runs right up to the head's base rather than stopping short
+        # of it. The head is wider than the shaft and its tip sits beyond a1, so
+        # the last cap is swallowed by the triangle - shortening only opened a
+        # visible gap between the two.
+        a_end = a1
+        steps = max(24, int(abs(a_end - a0) * radius / 2))
+        for i in range(steps + 1):
+            t = a0 + (a_end - a0) * i / steps
+            x = cx + radius * math.cos(t)
+            y = cy + radius * math.sin(t)
+            r = pass_w / 2.0
+            d.ellipse([x - r, y - r, x + r, y + r], fill=(*pass_col, 255))
+
+        grow = (pass_w - width) / 2.0
+        tip_a = a1 + (head_len + grow) / radius
+        d.polygon([
+            (cx + radius * math.cos(tip_a), cy + radius * math.sin(tip_a)),
+            (cx + (radius + head_half + grow) * math.cos(a1),
+             cy + (radius + head_half + grow) * math.sin(a1)),
+            (cx + (radius - head_half - grow) * math.cos(a1),
+             cy + (radius - head_half - grow) * math.sin(a1)),
+        ], fill=(*pass_col, 255))
+
+
+def sync_ring(size, cx, cy, radius, width):
+    """Two arrows chasing each other around a circle: the round trip.
+
+    Both sweep the same way. The mod is not two one-way transfers, it is one
+    world going out and coming back, and two arrows pointing at each other
+    would say the opposite.
+    """
+    layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    arc_arrow(layer, cx, cy, radius, 200, 350, width, ARROW_GREEN)
+    arc_arrow(layer, cx, cy, radius, 20, 170, width, ARROW_BLUE)
+    return layer
+
+
 # ------------------------------------------------------------------ compose
 
 def sky_backdrop(size):
@@ -202,8 +263,8 @@ def build():
     W = H = 1024
     canvas = sky_backdrop((W, H))
 
-    art_h = int(H * 0.60)
-    scale_f = min(art_h / island.height, (W * 0.80) / island.width)
+    art_h = int(H * 0.56)
+    scale_f = min(art_h / island.height, (W * 0.72) / island.width)
     art = island.resize(
         (max(1, int(island.width * scale_f)), max(1, int(island.height * scale_f))),
         Image.LANCZOS)
@@ -227,7 +288,16 @@ def build():
                + gap_title_sub + glyph_h * sub_scale)
     y = (H - block_h) // 2
 
-    canvas.alpha_composite(art, ((W - art.width) // 2, y))
+    # Behind the island, so the ring passes around and out of sight rather than
+    # sitting on top of it - which is what makes it read as circling.
+    ax, ay = (W - art.width) // 2, y
+    canvas.alpha_composite(sync_ring(
+        (W, H),
+        ax + art.width / 2.0,
+        ay + art.height / 2.0,
+        max(art.width, art.height) * 0.56,
+        max(8, int(W * 0.026))))
+    canvas.alpha_composite(art, (ax, ay))
     y += art.height + gap_art_title
 
     tw = text_width(boxes, TITLE, title_scale)
